@@ -182,12 +182,20 @@ export function LoopSection({
     setLocalLoopEnd(loopEnd);
   }, [loopStart, loopEnd]);
 
-  // Count loops when position resets
+  // Track previous position to detect loop reset
+  const prevPositionRef = useRef(position);
+
+  // Count loops when position jumps back (indicating a loop)
   useEffect(() => {
-    if (loopEnabled && position < localLoopStart + 0.01 && position > localLoopStart - 0.01) {
-      setLoopCount((c) => c + 1);
+    if (loopEnabled && isPlaying) {
+      const prevPos = prevPositionRef.current;
+      // Detect when position jumps backwards significantly (loop occurred)
+      if (prevPos > localLoopEnd - 0.05 && position < localLoopStart + 0.05) {
+        setLoopCount((c) => c + 1);
+      }
     }
-  }, [position, loopEnabled, localLoopStart]);
+    prevPositionRef.current = position;
+  }, [position, loopEnabled, isPlaying, localLoopStart, localLoopEnd]);
 
   const getPositionFromEvent = useCallback((e: MouseEvent | React.MouseEvent): number => {
     if (!timelineRef.current) return 0;
@@ -201,26 +209,57 @@ export function LoopSection({
     onSeek?.(pos);
   }, [dragging, getPositionFromEvent, onSeek]);
 
+  // Track initial drag position for region dragging
+  const dragStartRef = useRef<{ pos: number; loopStart: number; loopEnd: number } | null>(null);
+
   const handleDragStart = useCallback((e: React.MouseEvent, type: 'start' | 'end' | 'region') => {
     e.stopPropagation();
     setDragging(type);
+
+    // Store initial state for region drag
+    if (type === 'region') {
+      const initialPos = getPositionFromEvent(e);
+      dragStartRef.current = {
+        pos: initialPos,
+        loopStart: localLoopStart,
+        loopEnd: localLoopEnd,
+      };
+    }
 
     const handleMove = (moveEvent: MouseEvent) => {
       const pos = getPositionFromEvent(moveEvent);
 
       if (type === 'start') {
-        const newStart = Math.min(pos, localLoopEnd - 0.05);
+        const newStart = Math.max(0, Math.min(pos, localLoopEnd - 0.05));
         setLocalLoopStart(newStart);
       } else if (type === 'end') {
-        const newEnd = Math.max(pos, localLoopStart + 0.05);
+        const newEnd = Math.min(1, Math.max(pos, localLoopStart + 0.05));
         setLocalLoopEnd(newEnd);
-      } else if (type === 'region') {
-        // Move entire region (would need initial offset tracking)
+      } else if (type === 'region' && dragStartRef.current) {
+        // Move entire region while maintaining size
+        const delta = pos - dragStartRef.current.pos;
+        const regionSize = dragStartRef.current.loopEnd - dragStartRef.current.loopStart;
+        let newStart = dragStartRef.current.loopStart + delta;
+        let newEnd = dragStartRef.current.loopEnd + delta;
+
+        // Clamp to valid range
+        if (newStart < 0) {
+          newStart = 0;
+          newEnd = regionSize;
+        }
+        if (newEnd > 1) {
+          newEnd = 1;
+          newStart = 1 - regionSize;
+        }
+
+        setLocalLoopStart(newStart);
+        setLocalLoopEnd(newEnd);
       }
     };
 
     const handleUp = () => {
       setDragging(null);
+      dragStartRef.current = null;
       onLoopChange?.(localLoopStart, localLoopEnd);
       document.removeEventListener('mousemove', handleMove);
       document.removeEventListener('mouseup', handleUp);

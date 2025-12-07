@@ -300,6 +300,7 @@ export function RecordMode() {
     }
 
     setExportingTrackId(track.id);
+    let audioContext: AudioContext | null = null;
 
     try {
       if (format === 'webm') {
@@ -314,7 +315,7 @@ export function RecordMode() {
         console.log(`[RecordMode] Exported ${track.name} as WebM`);
       } else {
         // Convert to WAV
-        const audioContext = new AudioContext();
+        audioContext = new AudioContext();
         const arrayBuffer = await track.blob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
@@ -330,12 +331,19 @@ export function RecordMode() {
         AudioExporter.downloadBlob(result.blob, `${safeName}.wav`);
 
         console.log(`[RecordMode] Exported ${track.name} as WAV (${bitDepth}-bit), size: ${AudioExporter.formatFileSize(result.fileSize)}`);
-        audioContext.close();
       }
     } catch (err) {
       console.error('[RecordMode] Export error:', err);
       setError(err instanceof Error ? err.message : 'Failed to export track');
     } finally {
+      // Always close AudioContext to prevent resource leak
+      if (audioContext) {
+        try {
+          await audioContext.close();
+        } catch (closeErr) {
+          // Ignore close errors
+        }
+      }
       setExportingTrackId(null);
     }
   };
@@ -662,6 +670,20 @@ export function RecordMode() {
                               const seekTime = pos * track.duration;
                               playerRef.current.seek(seekTime);
                               setPlaybackProgress((prev) => ({ ...prev, [track.id]: pos }));
+                            }
+                          }}
+                          onPlayFrom={async (pos) => {
+                            // Start playback from clicked position
+                            if (!isPlaying && !recorderState.isRecording) {
+                              setPlaybackProgress((prev) => ({ ...prev, [track.id]: pos }));
+                              await handlePlayTrack(track);
+                              // Seek after playback starts
+                              setTimeout(() => {
+                                if (playerRef.current) {
+                                  const seekTime = pos * track.duration;
+                                  playerRef.current.seek(seekTime);
+                                }
+                              }, 100);
                             }
                           }}
                         />

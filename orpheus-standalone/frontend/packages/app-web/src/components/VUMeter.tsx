@@ -155,69 +155,82 @@ export function VUMeter({
   // Set up audio metering
   useEffect(() => {
     if (audioNode) {
-      // Create meters for stereo analysis
-      if (stereo) {
-        splitRef.current = new Tone.Split();
-        meterLRef.current = new Tone.Meter({ smoothing: 0.8 });
-        meterRRef.current = new Tone.Meter({ smoothing: 0.8 });
+      try {
+        // Create meters for stereo analysis
+        if (stereo) {
+          splitRef.current = new Tone.Split();
+          meterLRef.current = new Tone.Meter({ smoothing: 0.8 });
+          meterRRef.current = new Tone.Meter({ smoothing: 0.8 });
 
-        audioNode.connect(splitRef.current);
-        splitRef.current.left.connect(meterLRef.current);
-        splitRef.current.right.connect(meterRRef.current);
-      } else {
-        meterRef.current = new Tone.Meter({ smoothing: 0.8 });
-        audioNode.connect(meterRef.current);
+          audioNode.connect(splitRef.current);
+          splitRef.current.left.connect(meterLRef.current);
+          splitRef.current.right.connect(meterRRef.current);
+        } else {
+          meterRef.current = new Tone.Meter({ smoothing: 0.8 });
+          audioNode.connect(meterRef.current);
+        }
+      } catch (err) {
+        console.error('[VUMeter] Failed to connect audio node:', err);
+        return;
       }
 
       // Start animation loop
       const updateMeters = () => {
-        let leftDb = -Infinity;
-        let rightDb = -Infinity;
+        try {
+          let leftDb = -Infinity;
+          let rightDb = -Infinity;
 
-        if (stereo && meterLRef.current && meterRRef.current) {
-          leftDb = meterLRef.current.getValue() as number;
-          rightDb = meterRRef.current.getValue() as number;
-        } else if (meterRef.current) {
-          leftDb = meterRef.current.getValue() as number;
-          rightDb = leftDb;
+          if (stereo && meterLRef.current && meterRRef.current) {
+            leftDb = meterLRef.current.getValue() as number;
+            rightDb = meterRRef.current.getValue() as number;
+          } else if (meterRef.current) {
+            leftDb = meterRef.current.getValue() as number;
+            rightDb = leftDb;
+          }
+
+          // Validate values (protect against NaN/undefined)
+          if (!isFinite(leftDb)) leftDb = -Infinity;
+          if (!isFinite(rightDb)) rightDb = -Infinity;
+
+          // Update levels
+          setLevels({ left: leftDb, right: rightDb });
+
+          // Update peaks
+          setPeaks((prev) => {
+            const newPeaks = { ...prev };
+
+            if (leftDb > prev.left) {
+              newPeaks.left = leftDb;
+              // Reset peak timer
+              if (peakTimersRef.current.left) {
+                clearTimeout(peakTimersRef.current.left);
+              }
+              peakTimersRef.current.left = setTimeout(() => {
+                setPeaks((p) => ({ ...p, left: -Infinity }));
+              }, peakHoldTime);
+            }
+
+            if (rightDb > prev.right) {
+              newPeaks.right = rightDb;
+              if (peakTimersRef.current.right) {
+                clearTimeout(peakTimersRef.current.right);
+              }
+              peakTimersRef.current.right = setTimeout(() => {
+                setPeaks((p) => ({ ...p, right: -Infinity }));
+              }, peakHoldTime);
+            }
+
+            return newPeaks;
+          });
+
+          // Check for clipping
+          setClipping({
+            left: leftDb > -0.1,
+            right: rightDb > -0.1,
+          });
+        } catch (err) {
+          // Silently ignore metering errors (e.g., disposed nodes)
         }
-
-        // Update levels
-        setLevels({ left: leftDb, right: rightDb });
-
-        // Update peaks
-        setPeaks((prev) => {
-          const newPeaks = { ...prev };
-
-          if (leftDb > prev.left) {
-            newPeaks.left = leftDb;
-            // Reset peak timer
-            if (peakTimersRef.current.left) {
-              clearTimeout(peakTimersRef.current.left);
-            }
-            peakTimersRef.current.left = setTimeout(() => {
-              setPeaks((p) => ({ ...p, left: -Infinity }));
-            }, peakHoldTime);
-          }
-
-          if (rightDb > prev.right) {
-            newPeaks.right = rightDb;
-            if (peakTimersRef.current.right) {
-              clearTimeout(peakTimersRef.current.right);
-            }
-            peakTimersRef.current.right = setTimeout(() => {
-              setPeaks((p) => ({ ...p, right: -Infinity }));
-            }, peakHoldTime);
-          }
-
-          return newPeaks;
-        });
-
-        // Check for clipping
-        setClipping({
-          left: leftDb > -0.1,
-          right: rightDb > -0.1,
-        });
 
         animationRef.current = requestAnimationFrame(updateMeters);
       };
@@ -234,10 +247,14 @@ export function VUMeter({
         if (peakTimersRef.current.right) {
           clearTimeout(peakTimersRef.current.right);
         }
-        meterRef.current?.dispose();
-        meterLRef.current?.dispose();
-        meterRRef.current?.dispose();
-        splitRef.current?.dispose();
+        try {
+          meterRef.current?.dispose();
+          meterLRef.current?.dispose();
+          meterRRef.current?.dispose();
+          splitRef.current?.dispose();
+        } catch (err) {
+          // Ignore disposal errors
+        }
       };
     }
   }, [audioNode, stereo, peakHoldTime]);
@@ -298,12 +315,13 @@ export function VUMeter({
     <div className={styles.container}>
       <div className={styles.meterWrapper}>
         {showScale && (
-          <div className={styles.scaleContainer} style={{ height: `${height}px` }}>
-            <span>0</span>
-            <span>-6</span>
-            <span>-12</span>
-            <span>-24</span>
-            <span>-48</span>
+          <div className={styles.scaleContainer} style={{ height: `${height}px`, position: 'relative' }}>
+            {/* Labels positioned at actual dB values */}
+            <span style={{ position: 'absolute', top: `${100 - dbToHeight(0)}%`, transform: 'translateY(-50%)' }}>0</span>
+            <span style={{ position: 'absolute', top: `${100 - dbToHeight(-6)}%`, transform: 'translateY(-50%)' }}>-6</span>
+            <span style={{ position: 'absolute', top: `${100 - dbToHeight(-12)}%`, transform: 'translateY(-50%)' }}>-12</span>
+            <span style={{ position: 'absolute', top: `${100 - dbToHeight(-24)}%`, transform: 'translateY(-50%)' }}>-24</span>
+            <span style={{ position: 'absolute', top: `${100 - dbToHeight(-48)}%`, transform: 'translateY(-50%)' }}>-48</span>
           </div>
         )}
         {renderMeter(leftDb, peaks.left, clipping.left, 'left')}

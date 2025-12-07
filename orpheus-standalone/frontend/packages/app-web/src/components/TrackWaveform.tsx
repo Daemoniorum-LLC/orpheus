@@ -4,7 +4,17 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { makeStyles, tokens } from '@fluentui/react-components';
+import { makeStyles, tokens, Spinner } from '@fluentui/react-components';
+
+// Shared AudioContext to avoid browser limits
+let sharedAudioContext: AudioContext | null = null;
+
+function getSharedAudioContext(): AudioContext {
+  if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+    sharedAudioContext = new AudioContext();
+  }
+  return sharedAudioContext;
+}
 
 const useStyles = makeStyles({
   container: {
@@ -49,7 +59,10 @@ interface TrackWaveformProps {
   isPlaying?: boolean;
   color?: string;
   height?: number;
+  /** Called when user clicks to seek - receives position 0-1 */
   onSeek?: (position: number) => void;
+  /** Called when user clicks to play from position - receives position 0-1 */
+  onPlayFrom?: (position: number) => void;
 }
 
 export function TrackWaveform({
@@ -60,21 +73,33 @@ export function TrackWaveform({
   color = '#667eea',
   height = 60,
   onSeek,
+  onPlayFrom,
 }: TrackWaveformProps) {
   const styles = useStyles();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [waveformData, setWaveformData] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [hoverPosition, setHoverPosition] = useState<number | null>(null);
 
-  // Decode audio and generate waveform data
+  // Decode audio and generate waveform data using shared context
   useEffect(() => {
+    let cancelled = false;
+
     const generateWaveform = async () => {
       setIsLoading(true);
       try {
-        const audioContext = new AudioContext();
+        const audioContext = getSharedAudioContext();
+
+        // Resume if suspended (browser autoplay policy)
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+
         const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+
+        if (cancelled) return;
 
         // Get the audio data from the first channel
         const channelData = audioBuffer.getChannelData(0);
@@ -96,22 +121,35 @@ export function TrackWaveform({
         }
 
         // Normalize
-        const max = Math.max(...waveform, 0.001);
+        let max = 0;
+        for (const v of waveform) {
+          if (v > max) max = v;
+        }
+        max = max || 0.001;
         const normalized = waveform.map((v) => v / max);
 
-        setWaveformData(normalized);
-        audioContext.close();
+        if (!cancelled) {
+          setWaveformData(normalized);
+        }
       } catch (err) {
         console.error('[TrackWaveform] Failed to decode audio:', err);
-        // Generate placeholder waveform
-        setWaveformData(Array(200).fill(0.1));
+        if (!cancelled) {
+          // Generate placeholder waveform
+          setWaveformData(Array(200).fill(0.1));
+        }
       }
-      setIsLoading(false);
+      if (!cancelled) {
+        setIsLoading(false);
+      }
     };
 
     if (audioBlob) {
       generateWaveform();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [audioBlob]);
 
   // Draw waveform
@@ -163,13 +201,34 @@ export function TrackWaveform({
     ctx.stroke();
   }, [waveformData, progress, isPlaying, color]);
 
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!onSeek || !containerRef.current) return;
-
+  const getPositionFromEvent = (e: React.MouseEvent<HTMLDivElement>): number => {
+    if (!containerRef.current) return 0;
     const rect = containerRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const position = x / rect.width;
-    onSeek(Math.max(0, Math.min(1, position)));
+    return Math.max(0, Math.min(1, x / rect.width));
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const position = getPositionFromEvent(e);
+
+    if (isPlaying && onSeek) {
+      // If playing, seek to position
+      onSeek(position);
+    } else if (onPlayFrom) {
+      // If not playing, start playback from this position
+      onPlayFrom(position);
+    } else if (onSeek) {
+      // Fallback: just seek
+      onSeek(position);
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    setHoverPosition(getPositionFromEvent(e));
+  };
+
+  const handleMouseLeave = () => {
+    setHoverPosition(null);
   };
 
   const formatTime = (seconds: number): string => {
@@ -184,15 +243,62 @@ export function TrackWaveform({
       className={styles.container}
       style={{ height: `${height}px` }}
       onClick={handleClick}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      role="slider"
+      aria-label={`Audio waveform, ${formatTime(duration)} duration. Click to ${isPlaying ? 'seek' : 'play from position'}.`}
+      aria-valuenow={Math.round(progress * 100)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      tabIndex={0}
     >
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      {/* Playhead */}
-      {isPlaying && (
+      {/* Playhead - show when playing or when there's progress */}
+      {(isPlaying || progress > 0) && (
         <div
           className={styles.playhead}
           style={{ left: `${progress * 100}%` }}
         />
+      )}
+
+      {/* Hover indicator */}
+      {hoverPosition !== null && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${hoverPosition * 100}%`,
+            top: 0,
+            bottom: 0,
+            width: '1px',
+            backgroundColor: `${color}88`,
+            pointerEvents: 'none',
+            zIndex: 1,
+          }}
+        />
+      )}
+
+      {/* Hover time tooltip */}
+      {hoverPosition !== null && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${hoverPosition * 100}%`,
+            top: '-20px',
+            transform: 'translateX(-50%)',
+            backgroundColor: tokens.colorNeutralBackground1,
+            padding: '2px 6px',
+            borderRadius: '4px',
+            fontSize: '10px',
+            fontFamily: 'monospace',
+            color: tokens.colorNeutralForeground1,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
+        >
+          {formatTime(hoverPosition * duration)}
+        </div>
       )}
 
       {/* Time markers */}
@@ -210,11 +316,15 @@ export function TrackWaveform({
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            fontSize: '12px',
-            color: tokens.colorNeutralForeground3,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
           }}
         >
-          Loading...
+          <Spinner size="tiny" />
+          <span style={{ fontSize: '12px', color: tokens.colorNeutralForeground3 }}>
+            Loading waveform...
+          </span>
         </div>
       )}
     </div>

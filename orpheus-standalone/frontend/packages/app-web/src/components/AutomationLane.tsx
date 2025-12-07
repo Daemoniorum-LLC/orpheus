@@ -200,6 +200,7 @@ export function AutomationLane({
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
   const [localPoints, setLocalPoints] = useState<AutomationPoint[]>(points);
 
   // Sync local points with prop
@@ -207,12 +208,26 @@ export function AutomationLane({
     setLocalPoints(points);
   }, [points]);
 
-  const getPositionFromEvent = useCallback((e: React.MouseEvent | MouseEvent): { time: number; value: number } => {
+  // Get position from mouse or touch event
+  const getPositionFromEvent = useCallback((e: React.MouseEvent | MouseEvent | React.TouchEvent | TouchEvent): { time: number; value: number } => {
     if (!containerRef.current) return { time: 0, value: 0 };
 
     const rect = containerRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const y = Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height));
+    let clientX: number, clientY: number;
+
+    if ('touches' in e) {
+      // Touch event
+      const touch = e.touches[0] || (e as TouchEvent).changedTouches[0];
+      clientX = touch.clientX;
+      clientY = touch.clientY;
+    } else {
+      // Mouse event
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, 1 - (clientY - rect.top) / rect.height));
 
     return { time: x, value: y };
   }, []);
@@ -256,6 +271,7 @@ export function AutomationLane({
     addPoint(time, value);
   }, [isDragging, getPositionFromEvent, addPoint]);
 
+  // Mouse drag handling
   const handlePointMouseDown = useCallback((e: React.MouseEvent, pointId: string) => {
     e.stopPropagation();
     setSelectedPointId(pointId);
@@ -276,26 +292,64 @@ export function AutomationLane({
     document.addEventListener('mouseup', handleMouseUp);
   }, [getPositionFromEvent, updatePoint]);
 
+  // Touch drag handling
+  const handlePointTouchStart = useCallback((e: React.TouchEvent, pointId: string) => {
+    e.stopPropagation();
+    setSelectedPointId(pointId);
+    setIsDragging(true);
+
+    const handleTouchMove = (moveEvent: TouchEvent) => {
+      moveEvent.preventDefault();
+      const { time, value } = getPositionFromEvent(moveEvent);
+      updatePoint(pointId, { time, value });
+    };
+
+    const handleTouchEnd = () => {
+      setIsDragging(false);
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+    };
+
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd);
+  }, [getPositionFromEvent, updatePoint]);
+
   const handleDeleteSelected = useCallback(() => {
     if (selectedPointId) {
       deletePoint(selectedPointId);
     }
   }, [selectedPointId, deletePoint]);
 
-  // Handle keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedPointId) {
-          e.preventDefault();
-          handleDeleteSelected();
-        }
+  // Handle keyboard shortcuts - only when focused
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (selectedPointId) {
+        e.preventDefault();
+        handleDeleteSelected();
       }
-    };
+    }
+    // Arrow keys for fine adjustment
+    if (selectedPointId && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const point = localPoints.find(p => p.id === selectedPointId);
+      if (point) {
+        const step = e.shiftKey ? 0.1 : 0.01;
+        let newTime = point.time;
+        let newValue = point.value;
 
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [selectedPointId, handleDeleteSelected]);
+        if (e.key === 'ArrowUp') newValue = Math.min(1, point.value + step);
+        if (e.key === 'ArrowDown') newValue = Math.max(0, point.value - step);
+        if (e.key === 'ArrowRight') newTime = Math.min(1, point.time + step);
+        if (e.key === 'ArrowLeft') newTime = Math.max(0, point.time - step);
+
+        updatePoint(selectedPointId, { time: newTime, value: newValue });
+      }
+    }
+    // Escape to deselect
+    if (e.key === 'Escape') {
+      setSelectedPointId(null);
+    }
+  }, [selectedPointId, handleDeleteSelected, localPoints, updatePoint]);
 
   // Generate SVG path for automation curve
   const generatePath = useCallback(() => {
@@ -373,6 +427,13 @@ export function AutomationLane({
         ref={containerRef}
         className={styles.laneContainer}
         onClick={handleLaneClick}
+        onKeyDown={handleKeyDown}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        tabIndex={0}
+        role="application"
+        aria-label={`${trackName} ${parameter} automation lane. ${localPoints.length} points. Click to add points, use arrow keys to adjust selected point.`}
+        style={{ outline: isFocused ? `2px solid ${tokens.colorBrandForeground1}` : undefined }}
       >
         {/* Grid lines */}
         <div className={styles.gridLines}>
@@ -393,7 +454,7 @@ export function AutomationLane({
 
         {/* Automation curve */}
         {localPoints.length > 0 && (
-          <svg className={styles.lanePath} viewBox="0 0 100 100" preserveAspectRatio="none">
+          <svg className={styles.lanePath} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             <path
               d={generatePath()}
               fill="none"
@@ -417,11 +478,12 @@ export function AutomationLane({
               pointerEvents: 'none',
               zIndex: 5,
             }}
+            aria-hidden="true"
           />
         )}
 
         {/* Automation points */}
-        {localPoints.map((point) => (
+        {localPoints.map((point, index) => (
           <div
             key={point.id}
             className={`${styles.point} ${selectedPointId === point.id ? styles.pointSelected : ''}`}
@@ -430,6 +492,13 @@ export function AutomationLane({
               top: `${(1 - point.value) * 100}%`,
             }}
             onMouseDown={(e) => handlePointMouseDown(e, point.id)}
+            onTouchStart={(e) => handlePointTouchStart(e, point.id)}
+            role="slider"
+            aria-label={`Point ${index + 1}: ${formatValue(point.value, parameter)} at ${(point.time * duration).toFixed(1)}s`}
+            aria-valuenow={point.value * 100}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            tabIndex={-1}
             title={`${formatValue(point.value, parameter)} @ ${(point.time * duration).toFixed(1)}s`}
           />
         ))}

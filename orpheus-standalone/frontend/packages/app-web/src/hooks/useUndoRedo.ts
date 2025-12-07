@@ -62,30 +62,29 @@ export function useUndoRedo<T>(
   // Push a new state to history
   const push = useCallback((state: T) => {
     const executePush = () => {
+      // Use a single state update to avoid race conditions
       setHistory((prevHistory) => {
-        setCurrentIndex((prevIndex) => {
-          // Truncate any future states (redo stack)
-          const newHistory = prevHistory.slice(0, prevIndex + 1);
+        // Get current index from history length calculation
+        // Note: We need to track index within the same update
+        const prevIndex = Math.min(currentIndex, prevHistory.length - 1);
 
-          // Add new state
-          newHistory.push(state);
+        // Truncate any future states (redo stack)
+        const truncated = prevHistory.slice(0, prevIndex + 1);
 
-          // Limit history size
-          if (newHistory.length > maxHistorySize) {
-            // Remove oldest entry and adjust index
-            newHistory.shift();
-            return newHistory.length - 1;
-          }
-
-          return newHistory.length - 1;
-        });
-
-        // Return updated history
-        const truncated = prevHistory.slice(0, currentIndex + 1);
+        // Add new state
         truncated.push(state);
+
+        // Limit history size
         if (truncated.length > maxHistorySize) {
           truncated.shift();
         }
+
+        // Update index to point to new state
+        // We schedule this in a microtask to ensure history is updated first
+        queueMicrotask(() => {
+          setCurrentIndex(truncated.length - 1);
+        });
+
         return truncated;
       });
 

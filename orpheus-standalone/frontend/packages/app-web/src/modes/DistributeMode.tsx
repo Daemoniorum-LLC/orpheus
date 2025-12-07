@@ -31,6 +31,7 @@ import {
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useProject, useAppStore } from '../store/app-store';
 import { importFile } from '../services/file-import';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 // Draft auto-save storage key prefix
 const DRAFT_STORAGE_KEY = 'orpheus-distribute-draft';
@@ -348,7 +349,9 @@ export function DistributeMode() {
   const [draftStatus, setDraftStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
+  const [showClearDraftConfirm, setShowClearDraftConfirm] = useState(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInitialLoadRef = useRef(true); // Skip first auto-save after loading
 
   // Get storage key for current project
   const getDraftKey = useCallback(() => {
@@ -429,6 +432,12 @@ export function DistributeMode() {
   // Debounced auto-save effect
   useEffect(() => {
     if (!draftLoaded) return; // Don't save while loading
+
+    // Skip the first render after loading (prevents "Saving..." flash on initial load)
+    if (isInitialLoadRef.current) {
+      isInitialLoadRef.current = false;
+      return;
+    }
 
     // Clear previous timeout
     if (saveTimeoutRef.current) {
@@ -710,7 +719,7 @@ export function DistributeMode() {
               icon={<Delete24Regular />}
               appearance="subtle"
               size="small"
-              onClick={clearDraft}
+              onClick={() => setShowClearDraftConfirm(true)}
               title="Clear saved draft"
             >
               Clear Draft
@@ -1085,6 +1094,18 @@ export function DistributeMode() {
           </Card>
         </div>
       </div>
+
+      {/* Clear Draft Confirmation Dialog */}
+      <ConfirmDialog
+        open={showClearDraftConfirm}
+        onConfirm={clearDraft}
+        onCancel={() => setShowClearDraftConfirm(false)}
+        title="Clear Draft?"
+        message="Are you sure you want to clear all saved draft data? This will reset the form and cannot be undone."
+        confirmText="Clear Draft"
+        cancelText="Keep Draft"
+        type="danger"
+      />
     </div>
   );
 }
