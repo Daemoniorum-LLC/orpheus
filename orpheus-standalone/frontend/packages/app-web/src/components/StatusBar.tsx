@@ -74,12 +74,12 @@ const useStyles = makeStyles({
 });
 
 const MODE_LABELS: Record<AppMode, string> = {
-  compose: '🎼 Compose',
-  record: '🎙️ Record',
-  mix: '🎚️ Mix',
-  master: '✨ Master',
-  practice: '🎸 Practice',
-  distribute: '🌍 Distribute',
+  compose: 'Compose',
+  record: 'Record',
+  mix: 'Mix',
+  master: 'Master',
+  practice: 'Practice',
+  distribute: 'Distribute',
 };
 
 export const StatusBar = memo(function StatusBar() {

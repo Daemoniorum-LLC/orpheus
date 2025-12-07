@@ -3,7 +3,8 @@
  * The world's first unified music production platform
  */
 
-import { FluentProvider, webDarkTheme, makeStyles, shorthands } from '@fluentui/react-components';
+import { FluentProvider, makeStyles, shorthands } from '@fluentui/react-components';
+import daemoniorumDarkTheme from './theme/daemoniorum-theme';
 import { ModeSelector } from './components/ModeSelector';
 import { Toolbar } from './components/Toolbar';
 import { Sidebar } from './components/Sidebar';
@@ -19,6 +20,15 @@ import { LoadingOverlay } from './components/LoadingOverlay';
 import { KeyboardShortcutsDialog } from './components/KeyboardShortcutsDialog';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { lazy, Suspense, useEffect, useState } from 'react';
+import {
+  MusicNote224Regular,
+  Record24Regular,
+  SpeakerSettings24Regular,
+  WandRegular,
+  LearningApp24Regular,
+  CloudArrowUp24Regular,
+  BotSparkleRegular,
+} from '@fluentui/react-icons';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { loadAutoSave, clearAutoSave, getAutoSaveManager } from './services/project-save';
 import { loadSessionState, saveSessionState } from './services/session-persistence';
@@ -41,8 +51,8 @@ const useStyles = makeStyles({
     height: '100vh',
     width: '100vw',
     overflow: 'hidden',
-    backgroundColor: '#1e1e1e',
-    color: '#ffffff',
+    backgroundColor: 'var(--color-charcoal-850)',
+    color: '#f0f0f0',
   },
   mainContent: {
     display: 'flex',
@@ -72,16 +82,19 @@ const useStyles = makeStyles({
   splashTitle: {
     fontSize: '48px',
     fontWeight: 700,
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    fontFamily: 'var(--font-display)',
+    letterSpacing: '-0.03em',
+    background: 'linear-gradient(135deg, var(--color-phthalo-highlight) 0%, var(--color-phthalo-bright) 100%)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     backgroundClip: 'text',
   },
   splashSubtitle: {
     fontSize: '20px',
-    color: '#999',
+    color: 'var(--color-charcoal-300)',
     textAlign: 'center',
     maxWidth: '600px',
+    lineHeight: '1.6',
   },
   featureGrid: {
     display: 'grid',
@@ -92,18 +105,33 @@ const useStyles = makeStyles({
   },
   featureCard: {
     ...shorthands.padding('20px'),
-    backgroundColor: '#2a2a2a',
-    ...shorthands.borderRadius('8px'),
-    ...shorthands.border('1px', 'solid', '#3a3a3a'),
+    backgroundColor: 'var(--color-charcoal-650)',
+    ...shorthands.borderRadius('6px'),
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-500)'),
+    ...shorthands.transition('all', '200ms', 'ease'),
+    ':hover': {
+      borderColor: 'var(--color-phthalo-base)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+    },
   },
   featureTitle: {
-    fontSize: '18px',
+    fontSize: '16px',
     fontWeight: 600,
     marginBottom: '8px',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--color-phthalo-highlight)',
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+  },
+  featureIcon: {
+    width: '20px',
+    height: '20px',
+    color: 'var(--color-phthalo-light)',
   },
   featureDesc: {
-    fontSize: '14px',
-    color: '#999',
+    fontSize: '13px',
+    color: 'var(--color-charcoal-300)',
     lineHeight: '1.6',
   },
   modeLoading: {
@@ -304,7 +332,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <FluentProvider theme={webDarkTheme}>
+      <FluentProvider theme={daemoniorumDarkTheme}>
         <div className={styles.root}>
         <Toolbar />
         <ModeSelector />
@@ -363,73 +391,87 @@ function SplashScreen() {
 
   return (
     <div className={styles.splashContainer}>
-      <h1 className={styles.splashTitle}>🎸 Maestro AI</h1>
+      <h1 className={styles.splashTitle}>Orpheus</h1>
       <p className={styles.splashSubtitle}>
-        The world's first unified music production platform.
+        The unified music production platform.
         <br />
-        From first chord to final master - one application, infinite possibilities.
+        From first chord to final master — one application, infinite possibilities.
       </p>
 
       <div className={styles.featureGrid}>
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🎼 Compose Mode</div>
+          <div className={styles.featureTitle}>
+            <MusicNote224Regular className={styles.featureIcon} />
+            Compose
+          </div>
           <div className={styles.featureDesc}>
             Professional tablature editing with Guitar Pro import.
-            <br />
             100+ chords, 20+ scales, AI composition assistance.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🎙️ Record Mode</div>
+          <div className={styles.featureTitle}>
+            <Record24Regular className={styles.featureIcon} />
+            Record
+          </div>
           <div className={styles.featureDesc}>
             Multi-track audio recording with real-time monitoring.
-            <br />
             VST/AU/AAX plugin hosting, MIDI recording.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🎚️ Mix Mode</div>
+          <div className={styles.featureTitle}>
+            <SpeakerSettings24Regular className={styles.featureIcon} />
+            Mix
+          </div>
           <div className={styles.featureDesc}>
             Professional mixing console with AI suggestions.
-            <br />
             EQ, compression, reverb, automation.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>✨ Master Mode</div>
+          <div className={styles.featureTitle}>
+            <WandRegular className={styles.featureIcon} />
+            Master
+          </div>
           <div className={styles.featureDesc}>
             AI-powered mastering with platform-specific targets.
-            <br />
             LUFS metering, multi-format export.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🎸 Practice Mode</div>
+          <div className={styles.featureTitle}>
+            <LearningApp24Regular className={styles.featureIcon} />
+            Practice
+          </div>
           <div className={styles.featureDesc}>
             Speed trainer with AI performance analysis.
-            <br />
             Loop sections, track progress, improve technique.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🌍 Distribute Mode</div>
+          <div className={styles.featureTitle}>
+            <CloudArrowUp24Regular className={styles.featureIcon} />
+            Distribute
+          </div>
           <div className={styles.featureDesc}>
-            Upload to Spotify, Apple Music, and all streaming platforms.
-            <br />
-            DistroKid integration, release management, analytics.
+            Upload to Spotify, Apple Music, and streaming platforms.
+            Release management, analytics, royalty tracking.
           </div>
         </div>
 
         <div className={styles.featureCard}>
-          <div className={styles.featureTitle}>🤖 AI Assistance</div>
+          <div className={styles.featureTitle}>
+            <BotSparkleRegular className={styles.featureIcon} />
+            AI Assistant
+          </div>
           <div className={styles.featureDesc}>
             7 specialized AI personas guide you through production.
-            <br />
             Music theory, composition, mixing, mastering, learning.
           </div>
         </div>

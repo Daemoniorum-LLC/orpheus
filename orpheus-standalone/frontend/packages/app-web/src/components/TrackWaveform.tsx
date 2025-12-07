@@ -88,7 +88,7 @@ export function TrackWaveform({
   duration,
   progress = 0,
   isPlaying = false,
-  color = '#667eea',
+  color = '#1e5e38', // Phthalo green medium
   height = 60,
   onSeek,
   onPlayFrom,

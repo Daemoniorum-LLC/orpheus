@@ -86,10 +86,10 @@ export function Sidebar() {
 
         <div className={styles.trackList}>
           {tracks.length === 0 ? (
-            <div style={{ padding: '16px', color: '#999', textAlign: 'center' }}>
+            <div style={{ padding: '16px', color: 'var(--color-charcoal-300)', textAlign: 'center' }}>
               No tracks yet.
               <br />
-              Import a Guitar Pro file to get started!
+              Import a Guitar Pro file to get started.
             </div>
           ) : (
             tracks.map((track: any) => (
