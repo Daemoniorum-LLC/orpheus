@@ -14,9 +14,9 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     ...shorthands.gap('16px'),
     ...shorthands.padding('16px'),
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.borderRadius('8px'),
-    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    backgroundColor: 'var(--color-charcoal-700)',
+    ...shorthands.borderRadius('6px'),
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-500)'),
   },
   header: {
     display: 'flex',
@@ -24,11 +24,13 @@ const useStyles = makeStyles({
     alignItems: 'center',
   },
   title: {
-    fontSize: '16px',
+    fontSize: '14px',
     fontWeight: tokens.fontWeightSemibold,
+    fontFamily: 'var(--font-display)',
     display: 'flex',
     alignItems: 'center',
     ...shorthands.gap('8px'),
+    color: 'var(--color-phthalo-highlight)',
   },
   timeline: {
     display: 'flex',
@@ -37,8 +39,9 @@ const useStyles = makeStyles({
   },
   timelineBar: {
     height: '40px',
-    backgroundColor: tokens.colorNeutralBackground4,
+    backgroundColor: 'var(--color-charcoal-850)',
     ...shorthands.borderRadius('4px'),
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-500)'),
     position: 'relative',
     cursor: 'pointer',
     ...shorthands.overflow('hidden'),
@@ -47,8 +50,8 @@ const useStyles = makeStyles({
     position: 'absolute',
     top: 0,
     bottom: 0,
-    backgroundColor: tokens.colorBrandBackground,
-    opacity: 0.3,
+    backgroundColor: 'var(--color-phthalo-base)',
+    opacity: 0.4,
     cursor: 'ew-resize',
   },
   loopHandle: {
@@ -56,11 +59,11 @@ const useStyles = makeStyles({
     top: 0,
     bottom: 0,
     width: '8px',
-    backgroundColor: tokens.colorBrandBackground,
+    backgroundColor: 'var(--color-phthalo-medium)',
     cursor: 'ew-resize',
     ...shorthands.transition('background-color', '100ms'),
     ':hover': {
-      backgroundColor: tokens.colorBrandForeground1,
+      backgroundColor: 'var(--color-phthalo-highlight)',
     },
   },
   playhead: {
@@ -68,9 +71,10 @@ const useStyles = makeStyles({
     top: 0,
     bottom: 0,
     width: '2px',
-    backgroundColor: tokens.colorPaletteRedBackground3,
+    backgroundColor: '#e06060',  // Muted red for visibility
     pointerEvents: 'none',
     zIndex: 2,
+    boxShadow: '0 0 4px rgba(224, 96, 96, 0.5)',
   },
   measureMarkers: {
     position: 'absolute',
@@ -108,6 +112,9 @@ const useStyles = makeStyles({
   infoCard: {
     ...shorthands.padding('12px'),
     textAlign: 'center',
+    backgroundColor: 'var(--color-charcoal-800)',
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-600)'),
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.25)',
   },
   infoLabel: {
     fontSize: '11px',

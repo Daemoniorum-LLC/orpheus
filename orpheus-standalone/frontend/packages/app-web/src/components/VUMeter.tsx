@@ -21,8 +21,9 @@ const useStyles = makeStyles({
   },
   meterContainer: {
     position: 'relative',
-    backgroundColor: tokens.colorNeutralBackground4,
+    backgroundColor: 'var(--color-charcoal-900)',
     ...shorthands.borderRadius('2px'),
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-500)'),
     ...shorthands.overflow('hidden'),
   },
   meterFill: {
@@ -72,20 +73,23 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     justifyContent: 'space-between',
     fontSize: '8px',
-    color: tokens.colorNeutralForeground3,
-    fontFamily: 'monospace',
+    color: 'var(--color-charcoal-300)',
+    fontFamily: 'var(--font-mono)',
     height: '100%',
-    marginRight: '2px',
+    marginRight: '4px',
   },
   label: {
     fontSize: '10px',
     color: tokens.colorNeutralForeground2,
     fontWeight: 500,
+    fontFamily: 'var(--font-display)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
   },
   dbValue: {
     fontSize: '9px',
-    fontFamily: 'monospace',
-    color: tokens.colorNeutralForeground3,
+    fontFamily: 'var(--font-mono)',
+    color: 'var(--color-charcoal-300)',
     textAlign: 'center',
     minWidth: '36px',
   },
@@ -127,13 +131,13 @@ function linearToDb(value: number): number {
 }
 
 /**
- * Get color for meter level
+ * Get color for meter level (using phthalo green for safe levels)
  */
 function getMeterColor(db: number): string {
-  if (db > -3) return tokens.colorPaletteRedBackground3;
-  if (db > -6) return tokens.colorPaletteDarkOrangeBackground3;
-  if (db > -12) return tokens.colorPaletteYellowBackground3;
-  return tokens.colorPaletteGreenBackground3;
+  if (db > -3) return '#4a1e1e';   // Dark red for danger
+  if (db > -6) return '#4a3e18';   // Dark amber for warning
+  if (db > -12) return '#3d4a18'; // Dark yellow-green for caution
+  return '#1a4a2c';                // Phthalo green for safe
 }
 
 /**
@@ -390,7 +394,7 @@ export function VUMeter({
           className={styles.meterFill}
           style={{
             height: `${heightPercent}%`,
-            background: `linear-gradient(to top, ${tokens.colorPaletteGreenBackground3} 0%, ${tokens.colorPaletteGreenBackground3} 60%, ${tokens.colorPaletteYellowBackground3} 75%, ${tokens.colorPaletteDarkOrangeBackground3} 85%, ${tokens.colorPaletteRedBackground3} 100%)`,
+            background: 'linear-gradient(to top, #1a4a2c 0%, #1e5e38 50%, #3d4a18 70%, #4a3e18 85%, #4a1e1e 100%)',
           }}
         />
 

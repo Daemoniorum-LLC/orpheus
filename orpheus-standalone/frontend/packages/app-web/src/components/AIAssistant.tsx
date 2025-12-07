@@ -149,28 +149,28 @@ const useStyles = makeStyles({
 
 const PERSONAS = {
   compose: {
-    name: '🎼 Music Theory Tutor',
-    description: 'I can help you with chords, scales, progressions, and composition techniques. Ask me about harmony, melody writing, or song structure!',
+    name: 'Music Theory Tutor',
+    description: 'I can help you with chords, scales, progressions, and composition techniques. Ask me about harmony, melody writing, or song structure.',
   },
   record: {
-    name: '🎙️ Session Assistant',
-    description: 'I\'ll help you set up your recording session and get the best takes. Ask about microphone placement, gain staging, or recording techniques!',
+    name: 'Session Assistant',
+    description: 'I\'ll help you set up your recording session and get the best takes. Ask about microphone placement, gain staging, or recording techniques.',
   },
   mix: {
-    name: '🎚️ Mixing Engineer',
-    description: 'I can suggest EQ, compression, and other mixing techniques for your tracks. Ask me about balance, effects, or troubleshooting mix issues!',
+    name: 'Mixing Engineer',
+    description: 'I can suggest EQ, compression, and other mixing techniques for your tracks. Ask me about balance, effects, or troubleshooting mix issues.',
   },
   master: {
-    name: '✨ Mastering Engineer',
-    description: 'I\'ll help you achieve broadcast-standard loudness and prepare for distribution. Ask about LUFS targets, platform requirements, or mastering chains!',
+    name: 'Mastering Engineer',
+    description: 'I\'ll help you achieve broadcast-standard loudness and prepare for distribution. Ask about LUFS targets, platform requirements, or mastering chains.',
   },
   practice: {
-    name: '🎸 Guitar Coach',
-    description: 'I can help you practice techniques, build speed, and improve your playing. Ask me about exercises, practice routines, or overcoming technical challenges!',
+    name: 'Guitar Coach',
+    description: 'I can help you practice techniques, build speed, and improve your playing. Ask me about exercises, practice routines, or overcoming technical challenges.',
   },
   distribute: {
-    name: '🌍 Distribution Manager',
-    description: 'I can help you prepare your music for release and navigate streaming platforms. Ask about DistroKid, metadata, release strategies, or royalties!',
+    name: 'Distribution Manager',
+    description: 'I can help you prepare your music for release and navigate streaming platforms. Ask about DistroKid, metadata, release strategies, or royalties.',
   },
 };
 

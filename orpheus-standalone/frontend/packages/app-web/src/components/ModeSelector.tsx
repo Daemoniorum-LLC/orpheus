@@ -1,5 +1,5 @@
 /**
- * Mode Selector - Switch between the 5 modes of Maestro AI
+ * Mode Selector - Switch between the 6 modes of Orpheus
  */
 
 import {
@@ -24,25 +24,38 @@ const useStyles = makeStyles({
     display: 'flex',
     ...shorthands.gap('8px'),
     ...shorthands.padding('12px'),
-    backgroundColor: tokens.colorNeutralBackground3,
-    ...shorthands.borderBottom('1px', 'solid', tokens.colorNeutralStroke1),
+    backgroundColor: 'var(--color-charcoal-900)',
+    ...shorthands.borderBottom('1px', 'solid', 'var(--color-charcoal-600)'),
   },
   modeButton: {
     minWidth: '120px',
     height: '48px',
     fontSize: '14px',
     fontWeight: tokens.fontWeightSemibold,
+    fontFamily: 'var(--font-display)',
+    backgroundColor: 'var(--color-charcoal-800)',
+    color: 'var(--color-charcoal-300)',
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-600)'),
+    ...shorthands.transition('all', '150ms', 'ease'),
+    ':hover': {
+      backgroundColor: 'var(--color-charcoal-700)',
+      color: 'var(--color-charcoal-100)',
+      borderColor: 'var(--color-charcoal-500)',
+    },
   },
   active: {
-    backgroundColor: tokens.colorBrandBackground,
-    color: tokens.colorNeutralForegroundOnBrand,
+    backgroundColor: 'var(--color-phthalo-base)',
+    color: 'var(--color-phthalo-bright)',
+    ...shorthands.border('1px', 'solid', 'var(--color-phthalo-medium)'),
+    boxShadow: '0 0 12px rgba(91, 194, 132, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
     ':hover': {
-      backgroundColor: tokens.colorBrandBackgroundHover,
+      backgroundColor: 'var(--color-phthalo-medium)',
+      color: 'var(--color-phthalo-bright)',
     },
   },
   disabledBadge: {
     fontSize: '10px',
-    color: tokens.colorPaletteRedForeground1,
+    color: '#b05050',
     marginLeft: '4px',
   },
 });
@@ -140,7 +153,7 @@ export function ModeSelector() {
               disabled={isDisabled}
             >
               {modeInfo.label}
-              {isDisabled && <span className={styles.disabledBadge}>⚠</span>}
+              {isDisabled && <span className={styles.disabledBadge}>*</span>}
             </Button>
           </Tooltip>
         );

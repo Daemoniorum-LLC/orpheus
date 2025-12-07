@@ -51,6 +51,9 @@ const useStyles = makeStyles({
   },
   card: {
     ...shorthands.padding('20px'),
+    backgroundColor: 'var(--color-charcoal-800)',
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-600)'),
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.02)',
   },
   cardTitle: {
     fontSize: '16px',
@@ -104,8 +107,9 @@ const useStyles = makeStyles({
     justifyContent: 'space-between',
     alignItems: 'center',
     ...shorthands.padding('12px'),
-    backgroundColor: tokens.colorNeutralBackground3,
+    backgroundColor: 'var(--color-charcoal-850)',
     ...shorthands.borderRadius('6px'),
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-700)'),
   },
   formatList: {
     display: 'flex',
@@ -251,7 +255,7 @@ export function MasterMode() {
     return (
       <div className={styles.container}>
         <div className={styles.header}>
-          <div className={styles.title}>✨ Master - AI Mastering</div>
+          <div className={styles.title}>Master - AI Mastering</div>
         </div>
         <div className={styles.emptyState}>
           <h3>No Project Loaded</h3>
@@ -286,7 +290,7 @@ export function MasterMode() {
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <div className={styles.title}>✨ Master - AI Mastering</div>
+        <div className={styles.title}>Master - AI Mastering</div>
         <Button icon={<BotRegular />} appearance="primary" onClick={() => setAIAssistantOpen(true)}>
           AI Auto-Master
         </Button>

@@ -95,6 +95,9 @@ const useStyles = makeStyles({
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: 'var(--color-charcoal-800)',
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-600)'),
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.02)',
   },
   trackInfo: {
     display: 'flex',
@@ -449,11 +452,11 @@ export function RecordMode() {
     return (
       <div className={styles.container}>
         <div className={styles.header}>
-          <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+          <div className={styles.title}>Record - Nexus DAW</div>
         </div>
         <div className={styles.content}>
           <div className={styles.emptyState}>
-            <h3 style={{ color: tokens.colorPaletteRedForeground1 }}>⚠️ Error</h3>
+            <h3 style={{ color: tokens.colorPaletteRedForeground1 }}>Error</h3>
             <p>{error}</p>
             <p style={{ marginTop: '16px', fontSize: '12px' }}>
               Make sure you have granted microphone permission and are using HTTPS.
@@ -468,7 +471,7 @@ export function RecordMode() {
     return (
       <div className={styles.container}>
         <div className={styles.header}>
-          <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+          <div className={styles.title}>Record - Nexus DAW</div>
         </div>
         <div className={styles.content}>
           <div className={styles.emptyState}>
@@ -493,7 +496,7 @@ export function RecordMode() {
       )}
 
       <div className={styles.header}>
-        <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+        <div className={styles.title}>Record - Nexus DAW</div>
         <div className={styles.controls}>
           {recorderState.isRecording && (
             <div className={styles.recordingTime}>{formatTime(recorderState.currentTime)}</div>

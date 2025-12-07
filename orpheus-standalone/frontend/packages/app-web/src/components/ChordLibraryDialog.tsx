@@ -172,7 +172,7 @@ export function ChordLibraryDialog({
       <DialogSurface className={styles.dialogSurface}>
         <DialogBody>
           <DialogTitle>
-            🎸 Chord Library
+            Chord Library
             <Button
               appearance="subtle"
               icon={<Dismiss24Regular />}
