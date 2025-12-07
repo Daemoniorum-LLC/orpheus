@@ -1,0 +1,165 @@
+version: '3.8'
+
+# Maestro AI - Standalone Application
+# Complete music production platform with AI assistance
+# Runs: PostgreSQL, Redis, MinIO, Spring Boot Backend, Rust Audio Service, Web App
+
+services:
+  # =============================================================================
+  # Data Layer
+  # =============================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: maestro-postgres
+    environment:
+      POSTGRES_DB: maestro
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - maestro-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: maestro-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - maestro-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: maestro-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - maestro-network
+
+  # Create MinIO bucket
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing myminio/maestro-audio;
+      /usr/bin/mc anonymous set public myminio/maestro-audio;
+      exit 0;
+      "
+    networks:
+      - maestro-network
+
+  # =============================================================================
+  # Backend Services
+  # =============================================================================
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: maestro-backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: maestro
+      DB_PORT: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      S3_BUCKET: maestro-audio
+      S3_ENDPOINT: http://minio:9000
+      AWS_REGION: us-east-1
+      AUDIO_SERVICE_HOST: audio-service
+      AUDIO_SERVICE_PORT: 50051
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - maestro-network
+
+  audio-service:
+    build:
+      context: ./audio-engine
+      dockerfile: Dockerfile
+    container_name: maestro-audio-service
+    environment:
+      RUST_LOG: info
+    ports:
+      - "50051:50051"
+    healthcheck:
+      test: ["CMD", "grpcurl", "-plaintext", "localhost:50051", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - maestro-network
+
+  # =============================================================================
+  # Frontend
+  # =============================================================================
+
+  web:
+    build:
+      context: ./frontend/packages/app-web
+      dockerfile: Dockerfile
+    container_name: maestro-web
+    environment:
+      VITE_API_URL: http://localhost:8080
+      VITE_AUDIO_SERVICE_URL: http://localhost:50051
+    ports:
+      - "5176:80"
+    depends_on:
+      - backend
+      - audio-service
+    networks:
+      - maestro-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  maestro-network:
+    driver: bridge

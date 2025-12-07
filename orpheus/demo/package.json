@@ -1,0 +1,29 @@
+{
+  "name": "@orpheus/demo-app",
+  "version": "1.0.0",
+  "description": "Comprehensive demo showcasing all Orpheus packages",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "demo:import": "ts-node src/examples/guitar-pro-import.ts",
+    "demo:music-theory": "ts-node src/examples/music-theory-demo.ts",
+    "demo:audio-analysis": "ts-node src/examples/audio-analysis-demo.ts",
+    "demo:full-workflow": "ts-node src/examples/full-workflow.ts"
+  },
+  "dependencies": {
+    "@orpheus/shared-types": "^1.0.0",
+    "@orpheus/project-model": "^1.0.0",
+    "@orpheus/music-theory": "^1.0.0",
+    "@orpheus/midi-utils": "^1.0.0",
+    "@orpheus/timeline-sync": "^1.0.0",
+    "@orpheus/audio-analysis": "^1.0.0",
+    "@orpheus/guitar-pro-parser": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  }
+}

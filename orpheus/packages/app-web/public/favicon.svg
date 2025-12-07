@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="lyreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2dd4a8"/>
+      <stop offset="50%" style="stop-color:#10b981"/>
+      <stop offset="100%" style="stop-color:#059669"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Simplified lyre for favicon -->
+  <g fill="url(#lyreGrad)">
+    <!-- Left flame arm -->
+    <path d="M16 52
+             Q12 40 13 30
+             Q14 20 18 14
+             Q20 10 21 6
+             Q22 4 24 6
+             Q25 10 24 14
+             Q26 22 27 32
+             Q28 42 26 50"/>
+
+    <!-- Right flame arm -->
+    <path d="M48 52
+             Q52 40 51 30
+             Q50 20 46 14
+             Q44 10 43 6
+             Q42 4 40 6
+             Q39 10 40 14
+             Q38 22 37 32
+             Q36 42 38 50"/>
+
+    <!-- Left outer flame -->
+    <path d="M12 48
+             Q8 36 9 26
+             Q10 16 14 10
+             Q16 6 17 3
+             Q18 1 20 3
+             Q20 6 19 10
+             Q18 16 19 26
+             Q20 36 18 46" opacity="0.7"/>
+
+    <!-- Right outer flame -->
+    <path d="M52 48
+             Q56 36 55 26
+             Q54 16 50 10
+             Q48 6 47 3
+             Q46 1 44 3
+             Q44 6 45 10
+             Q46 16 45 26
+             Q44 36 46 46" opacity="0.7"/>
+
+    <!-- Center prongs -->
+    <rect x="26" y="4" width="3" height="14" rx="1"/>
+    <rect x="30.5" y="2" width="3" height="16" rx="1"/>
+    <rect x="35" y="4" width="3" height="14" rx="1"/>
+
+    <!-- Crossbar -->
+    <rect x="24" y="16" width="16" height="3" rx="1"/>
+
+    <!-- Base -->
+    <ellipse cx="32" cy="52" rx="10" ry="6"/>
+
+    <!-- Strings -->
+    <line x1="28" y1="19" x2="28" y2="48" stroke="#10b981" stroke-width="1" opacity="0.5"/>
+    <line x1="32" y1="19" x2="32" y2="48" stroke="#10b981" stroke-width="1" opacity="0.5"/>
+    <line x1="36" y1="19" x2="36" y2="48" stroke="#10b981" stroke-width="1" opacity="0.5"/>
+
+    <!-- Music note (simplified) -->
+    <ellipse cx="29" cy="40" rx="4" ry="3" transform="rotate(-15, 29, 40)"/>
+    <rect x="32" y="26" width="2" height="16"/>
+    <path d="M34 26 Q40 28 38 34 Q37 36 34 34"/>
+  </g>
+</svg>

@@ -1,0 +1,37 @@
+{
+  "name": "@orpheus/e2e-tests",
+  "version": "1.0.0",
+  "description": "End-to-end tests for Orpheus standalone application",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:chromium": "playwright test --project=chromium",
+    "test:firefox": "playwright test --project=firefox",
+    "test:webkit": "playwright test --project=webkit",
+    "test:project": "playwright test tests/01-project-management.spec.ts",
+    "test:tracks": "playwright test tests/02-track-management.spec.ts",
+    "test:audio": "playwright test tests/03-audio-processing.spec.ts",
+    "test:playback": "playwright test tests/04-playback-transport.spec.ts",
+    "test:collab": "playwright test tests/05-collaboration.spec.ts",
+    "test:integration": "playwright test tests/06-full-integration.spec.ts",
+    "test:ci": "playwright test --reporter=github",
+    "report": "playwright show-report test-results/html",
+    "codegen": "playwright codegen http://localhost:5176"
+  },
+  "keywords": [
+    "e2e",
+    "testing",
+    "playwright",
+    "maestro",
+    "music-production"
+  ],
+  "author": "Orpheus Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "@types/node": "^20.14.0"
+  }
+}

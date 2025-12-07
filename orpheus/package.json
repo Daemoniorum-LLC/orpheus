@@ -1,0 +1,27 @@
+{
+  "name": "orpheus-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Orpheus - Unified Music Production Suite Workspace",
+  "author": {
+    "name": "Lilith Crook",
+    "email": "lilith@daemoniorum.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paraphilic-ecchymosis/persona-framework.git",
+    "directory": "orpheus"
+  },
+  "license": "UNLICENSED",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:all": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspace=@orpheus/app-web",
+    "clean": "find packages -name 'node_modules' -type d -prune -exec rm -rf '{}' +"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.2"
+  }
+}
