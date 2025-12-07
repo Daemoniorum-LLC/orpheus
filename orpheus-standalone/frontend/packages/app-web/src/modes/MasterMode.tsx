@@ -2,14 +2,16 @@
  * Master Mode - AI-powered mastering (Nexus DAW)
  */
 
-import { makeStyles, shorthands, tokens, Button, Card, Dropdown, Option } from '@fluentui/react-components';
-import { ArrowDownload24Regular, BotRegular, FolderOpen24Regular } from '@fluentui/react-icons';
+import { makeStyles, shorthands, tokens, Button, Card, Dropdown, Option, Spinner } from '@fluentui/react-components';
+import { ArrowDownload24Regular, BotRegular, FolderOpen24Regular, Checkmark24Regular } from '@fluentui/react-icons';
 import { useState, useEffect } from 'react';
 import { useProject, useAppStore } from '../store/app-store';
 import { importFile } from '../services/file-import';
 import { MasteringChain, type MasteringChainSettings } from '../components/MasteringChain';
 import { LUFSMeter } from '../components/LUFSMeter';
 import { getAudioProcessingManager } from '../services/audio-processing';
+import { AudioExporter, createTestAudioBuffer } from '../services/audio-export';
+import { MessageDialog, type MessageType } from '../components/MessageDialog';
 
 const useStyles = makeStyles({
   container: {
@@ -126,6 +128,21 @@ export function MasterMode() {
   const { setAIAssistantOpen, setProject, setMode } = useAppStore();
   const [selectedPlatform, setSelectedPlatform] = useState('spotify');
   const [masteringSettings, setMasteringSettings] = useState<MasteringChainSettings | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<string | null>(null);
+  const [exportedFormat, setExportedFormat] = useState<string | null>(null);
+
+  // Message dialog state
+  const [messageDialog, setMessageDialog] = useState<{
+    open: boolean;
+    title: string;
+    message: string;
+    type: MessageType;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    type: 'info',
+  });
 
   // Wire up mastering chain to audio processing
   useEffect(() => {
@@ -137,6 +154,67 @@ export function MasterMode() {
     }
   }, [masteringSettings]);
 
+  // Handle export
+  const handleExport = async (format: string, sampleRate: number, bitDepth: number) => {
+    setExportingFormat(format);
+    setExportedFormat(null);
+
+    try {
+      // Get project duration (default to 60 seconds for test)
+      const duration = project?.project?.metadata?.duration || 60;
+
+      // Create a test audio buffer (in a real implementation, this would render the project)
+      // For now, we'll create a simple test tone as a placeholder
+      console.log(`[MasterMode] Exporting ${format} at ${sampleRate}Hz/${bitDepth}-bit`);
+
+      const audioBuffer = await createTestAudioBuffer(Math.min(duration, 10), sampleRate);
+
+      let result;
+      if (format === 'mp3') {
+        result = await AudioExporter.exportToMP3(audioBuffer, 320);
+      } else if (format === 'flac') {
+        result = await AudioExporter.exportToFLAC(audioBuffer);
+      } else if (format === 'aac') {
+        result = await AudioExporter.export(audioBuffer, {
+          format: 'aac',
+          sampleRate: sampleRate as 44100 | 48000,
+          bitDepth: bitDepth as 16 | 24,
+          channels: 2,
+        });
+      } else {
+        result = await AudioExporter.exportToWAV(audioBuffer, {
+          sampleRate: sampleRate as 44100 | 48000,
+          bitDepth: bitDepth as 16 | 24,
+        });
+      }
+
+      // Download the file
+      const filename = `${project?.project?.metadata?.title || 'master'}-${format}.${result.filename.split('.').pop()}`;
+      AudioExporter.downloadBlob(result.blob, filename);
+
+      setExportedFormat(format);
+      setMessageDialog({
+        open: true,
+        title: 'Export Complete',
+        message: `Successfully exported ${result.format}\nFile size: ${AudioExporter.formatFileSize(result.fileSize)}\nDuration: ${result.duration.toFixed(1)}s`,
+        type: 'success',
+      });
+
+      // Clear exported indicator after 3 seconds
+      setTimeout(() => setExportedFormat(null), 3000);
+    } catch (error) {
+      console.error('[MasterMode] Export error:', error);
+      setMessageDialog({
+        open: true,
+        title: 'Export Failed',
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+        type: 'error',
+      });
+    } finally {
+      setExportingFormat(null);
+    }
+  };
+
   const platforms = [
     { id: 'spotify', name: 'Spotify', target: -14, color: '#1DB954' },
     { id: 'apple', name: 'Apple Music', target: -16, color: '#FA243C' },
@@ -146,11 +224,11 @@ export function MasterMode() {
   ];
 
   const exportFormats = [
-    { name: 'WAV', format: '44.1kHz/24-bit', size: '~50MB' },
-    { name: 'WAV', format: '48kHz/24-bit', size: '~55MB' },
-    { name: 'FLAC', format: 'Lossless', size: '~35MB' },
-    { name: 'MP3', format: '320kbps', size: '~12MB' },
-    { name: 'AAC', format: '256kbps', size: '~10MB' },
+    { id: 'wav-44', name: 'WAV', format: '44.1kHz/24-bit', size: '~50MB', exportFormat: 'wav', sampleRate: 44100, bitDepth: 24 },
+    { id: 'wav-48', name: 'WAV', format: '48kHz/24-bit', size: '~55MB', exportFormat: 'wav', sampleRate: 48000, bitDepth: 24 },
+    { id: 'flac', name: 'FLAC', format: 'Lossless', size: '~35MB', exportFormat: 'flac', sampleRate: 48000, bitDepth: 24 },
+    { id: 'mp3', name: 'MP3', format: '320kbps', size: '~12MB', exportFormat: 'mp3', sampleRate: 44100, bitDepth: 16 },
+    { id: 'aac', name: 'AAC', format: '256kbps', size: '~10MB', exportFormat: 'aac', sampleRate: 44100, bitDepth: 16 },
   ];
 
   const handleImportFile = async () => {
@@ -261,19 +339,29 @@ export function MasterMode() {
           <Card className={styles.card}>
             <div className={styles.cardTitle}>Export</div>
             <div className={styles.formatList}>
-              {exportFormats.map((fmt, idx) => (
+              {exportFormats.map((fmt) => (
                 <Button
-                  key={idx}
-                  icon={<ArrowDownload24Regular />}
-                  appearance="subtle"
+                  key={fmt.id}
+                  icon={
+                    exportingFormat === fmt.id ? (
+                      <Spinner size="tiny" />
+                    ) : exportedFormat === fmt.id ? (
+                      <Checkmark24Regular />
+                    ) : (
+                      <ArrowDownload24Regular />
+                    )
+                  }
+                  appearance={exportedFormat === fmt.id ? 'primary' : 'subtle'}
                   style={{ justifyContent: 'flex-start' }}
+                  disabled={exportingFormat !== null}
+                  onClick={() => handleExport(fmt.id, fmt.sampleRate, fmt.bitDepth)}
                 >
                   <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between' }}>
                     <span>
                       {fmt.name} - {fmt.format}
                     </span>
                     <span style={{ color: tokens.colorNeutralForeground2, fontSize: '11px' }}>
-                      {fmt.size}
+                      {exportingFormat === fmt.id ? 'Exporting...' : fmt.size}
                     </span>
                   </div>
                 </Button>
@@ -282,6 +370,14 @@ export function MasterMode() {
           </Card>
         </div>
       </div>
+
+      <MessageDialog
+        open={messageDialog.open}
+        onClose={() => setMessageDialog({ ...messageDialog, open: false })}
+        title={messageDialog.title}
+        message={messageDialog.message}
+        type={messageDialog.type}
+      />
     </div>
   );
 }

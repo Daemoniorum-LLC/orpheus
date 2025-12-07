@@ -2,7 +2,7 @@
  * Record Mode - Multi-track audio recording (Nexus DAW)
  */
 
-import { makeStyles, shorthands, tokens, Button, Input, Card, Dropdown, Option } from '@fluentui/react-components';
+import { makeStyles, shorthands, tokens, Button, Input, Card, Dropdown, Option, ProgressBar } from '@fluentui/react-components';
 import {
   Record24Regular,
   Stop24Regular,
@@ -12,7 +12,8 @@ import {
   ArrowDownload24Regular,
   Mic24Regular,
 } from '@fluentui/react-icons';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import * as Tone from 'tone';
 import { WaveformVisualizer } from '../components/WaveformVisualizer';
 import { Metronome } from '../components/Metronome';
 import { InputLevelMeter } from '../components/InputLevelMeter';
@@ -183,6 +184,12 @@ export function RecordMode() {
     trackName: '',
   });
 
+  // Playback state
+  const [playingTrackId, setPlayingTrackId] = useState<string | null>(null);
+  const [playbackProgress, setPlaybackProgress] = useState<Record<string, number>>({});
+  const playerRef = useRef<Tone.Player | null>(null);
+  const playbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   const recorder = getAudioRecorder();
 
   // Initialize recorder
@@ -291,6 +298,96 @@ export function RecordMode() {
       setError(err instanceof Error ? err.message : 'Failed to export track');
     }
   };
+
+  // Play a recorded track
+  const handlePlayTrack = async (track: RecordingTrack) => {
+    try {
+      // Stop any currently playing track
+      await handleStopPlayback();
+
+      // Start Tone.js if not started
+      await Tone.start();
+
+      if (!track.blob) {
+        setError('No audio data available for this track');
+        return;
+      }
+
+      // Create URL from blob
+      const url = URL.createObjectURL(track.blob);
+
+      // Create player
+      const player = new Tone.Player(url);
+      player.toDestination();
+
+      // Wait for player to load
+      await new Promise<void>((resolve, reject) => {
+        player.buffer.onload = () => resolve();
+        player.buffer.onerror = reject;
+        // Also resolve after a timeout if already loaded
+        if (player.buffer.loaded) {
+          resolve();
+        }
+      });
+
+      playerRef.current = player;
+      setPlayingTrackId(track.id);
+
+      // Start playback
+      player.start();
+
+      // Track progress
+      const startTime = Tone.now();
+      playbackIntervalRef.current = setInterval(() => {
+        const elapsed = Tone.now() - startTime;
+        const progress = Math.min(elapsed / track.duration, 1);
+        setPlaybackProgress((prev) => ({ ...prev, [track.id]: progress }));
+
+        if (progress >= 1) {
+          handleStopPlayback();
+        }
+      }, 100);
+
+      // Handle playback end
+      player.onstop = () => {
+        handleStopPlayback();
+      };
+
+      console.log(`[RecordMode] Playing track: ${track.name}`);
+    } catch (err) {
+      console.error('[RecordMode] Playback error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to play track');
+      handleStopPlayback();
+    }
+  };
+
+  // Stop playback
+  const handleStopPlayback = async () => {
+    if (playbackIntervalRef.current) {
+      clearInterval(playbackIntervalRef.current);
+      playbackIntervalRef.current = null;
+    }
+
+    if (playerRef.current) {
+      try {
+        playerRef.current.stop();
+        playerRef.current.dispose();
+      } catch {
+        // Ignore errors when stopping
+      }
+      playerRef.current = null;
+    }
+
+    setPlayingTrackId(null);
+    setPlaybackProgress({});
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      handleStopPlayback();
+    };
+  }, []);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -443,33 +540,66 @@ export function RecordMode() {
               </p>
             </div>
           ) : (
-            recorderState.tracks.map((track) => (
-              <Card key={track.id} className={styles.trackCard}>
-                <div className={styles.trackInfo}>
-                  <div className={styles.trackName}>{track.name}</div>
-                  <div className={styles.trackMeta}>
-                    Duration: {formatTime(track.duration)} • ID: {track.id.slice(-8)}
+            recorderState.tracks.map((track) => {
+              const isPlaying = playingTrackId === track.id;
+              const progress = playbackProgress[track.id] || 0;
+
+              return (
+                <Card key={track.id} className={styles.trackCard}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div className={styles.trackInfo}>
+                        <div className={styles.trackName}>{track.name}</div>
+                        <div className={styles.trackMeta}>
+                          Duration: {formatTime(track.duration)} • ID: {track.id.slice(-8)}
+                        </div>
+                      </div>
+                      <div className={styles.trackActions}>
+                        <Button
+                          icon={isPlaying ? <Stop24Regular /> : <Play24Regular />}
+                          size="small"
+                          appearance={isPlaying ? 'primary' : 'secondary'}
+                          onClick={() => isPlaying ? handleStopPlayback() : handlePlayTrack(track)}
+                          disabled={recorderState.isRecording}
+                        >
+                          {isPlaying ? 'Stop' : 'Play'}
+                        </Button>
+                        <Button
+                          icon={<ArrowDownload24Regular />}
+                          size="small"
+                          onClick={() => handleExportTrack(track)}
+                        >
+                          Export
+                        </Button>
+                        <Button
+                          icon={<Delete24Regular />}
+                          size="small"
+                          appearance="subtle"
+                          onClick={() => handleDeleteClick(track)}
+                          disabled={isPlaying}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                    {/* Playback progress bar */}
+                    {isPlaying && (
+                      <div style={{ marginTop: '12px' }}>
+                        <ProgressBar value={progress} thickness="medium" />
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                          <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground2 }}>
+                            {formatTime(progress * track.duration)}
+                          </span>
+                          <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground2 }}>
+                            {formatTime(track.duration)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-                <div className={styles.trackActions}>
-                  <Button
-                    icon={<ArrowDownload24Regular />}
-                    size="small"
-                    onClick={() => handleExportTrack(track)}
-                  >
-                    Export
-                  </Button>
-                  <Button
-                    icon={<Delete24Regular />}
-                    size="small"
-                    appearance="subtle"
-                    onClick={() => handleDeleteClick(track)}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </Card>
-            ))
+                </Card>
+              );
+            })
           )}
         </div>
       </div>

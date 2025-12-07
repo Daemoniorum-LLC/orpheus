@@ -4,7 +4,7 @@
 
 import { makeStyles, shorthands, tokens, Button } from '@fluentui/react-components';
 import { Add24Regular, BotRegular, FolderOpen24Regular } from '@fluentui/react-icons';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useProject, useAppStore } from '../store/app-store';
 import { importFile } from '../services/file-import';
 import { ChannelStripWithProcessors } from '../components/ChannelStripWithProcessors';
@@ -55,27 +55,100 @@ const useStyles = makeStyles({
   },
 });
 
-interface Track {
+interface MixerTrack {
   id: string;
   name: string;
   volume: number;
   pan: number;
   solo: boolean;
   mute: boolean;
+  type: 'audio' | 'midi' | 'instrument' | 'aux';
+  color?: string;
+  sourceType: 'session' | 'composition' | 'added';
+}
+
+/**
+ * Create mixer tracks from project data
+ */
+function createTracksFromProject(project: any): MixerTrack[] {
+  const mixerTracks: MixerTrack[] = [];
+
+  // First, check if we have session tracks (audio/midi recordings)
+  if (project.project.session?.tracks?.length > 0) {
+    for (const track of project.project.session.tracks) {
+      mixerTracks.push({
+        id: track.id,
+        name: track.name,
+        volume: track.volume ?? 0,
+        pan: track.pan ?? 0,
+        solo: track.solo ?? false,
+        mute: track.muted ?? false,
+        type: track.type || 'audio',
+        color: track.color,
+        sourceType: 'session',
+      });
+    }
+  }
+
+  // Also add composition tracks (from Guitar Pro import, etc.)
+  if (project.project.composition?.tracks?.length > 0) {
+    for (const track of project.project.composition.tracks) {
+      // Don't duplicate if already in session
+      if (!mixerTracks.find((t) => t.id === track.id)) {
+        mixerTracks.push({
+          id: track.id,
+          name: track.name,
+          volume: 0,
+          pan: 0,
+          solo: false,
+          mute: false,
+          type: 'midi',
+          sourceType: 'composition',
+        });
+      }
+    }
+  }
+
+  // If no tracks found, create a default track
+  if (mixerTracks.length === 0) {
+    mixerTracks.push({
+      id: 'track-1',
+      name: project.project.metadata?.title || 'Main Track',
+      volume: 0,
+      pan: 0,
+      solo: false,
+      mute: false,
+      type: 'audio',
+      sourceType: 'added',
+    });
+  }
+
+  return mixerTracks;
 }
 
 export function MixMode() {
   const styles = useStyles();
   const project = useProject();
-  const { setAIAssistantOpen, setProject, setMode } = useAppStore();
-  const [tracks, setTracks] = useState<Track[]>([
-    { id: '1', name: 'Guitar', volume: 0, pan: 0, solo: false, mute: false },
-    { id: '2', name: 'Bass', volume: -3, pan: 0, solo: false, mute: false },
-    { id: '3', name: 'Drums', volume: -6, pan: 0, solo: false, mute: false },
-    { id: '4', name: 'Vocals', volume: -2, pan: 0, solo: false, mute: false },
-  ]);
+  const { setAIAssistantOpen, setProject, setMode, updateProject } = useAppStore();
+  const [tracks, setTracks] = useState<MixerTrack[]>([]);
   const [masterVolume, setMasterVolume] = useState(0);
   const [masterPan, setMasterPan] = useState(0);
+  const [tracksInitialized, setTracksInitialized] = useState(false);
+
+  // Initialize tracks from project when project changes
+  useEffect(() => {
+    if (project && !tracksInitialized) {
+      const projectTracks = createTracksFromProject(project);
+      setTracks(projectTracks);
+      setTracksInitialized(true);
+      console.log('[MixMode] Loaded tracks from project:', projectTracks.length);
+    }
+  }, [project, tracksInitialized]);
+
+  // Reset initialization when project changes
+  useEffect(() => {
+    setTracksInitialized(false);
+  }, [project?.project?.metadata?.id]);
 
   // Confirm dialog state
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -89,18 +162,20 @@ export function MixMode() {
   });
 
   const handleAddTrack = () => {
-    const newTrack: Track = {
-      id: Date.now().toString(),
+    const newTrack: MixerTrack = {
+      id: `track-${Date.now()}`,
       name: `Track ${tracks.length + 1}`,
       volume: 0,
       pan: 0,
       solo: false,
       mute: false,
+      type: 'audio',
+      sourceType: 'added',
     };
     setTracks([...tracks, newTrack]);
   };
 
-  const updateTrack = (id: string, updates: Partial<Track>) => {
+  const updateTrack = (id: string, updates: Partial<MixerTrack>) => {
     setTracks(tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)));
   };
 

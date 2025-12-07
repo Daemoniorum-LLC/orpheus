@@ -259,19 +259,44 @@ function App() {
   }, [mode, useAppStore.getState().sidebarOpen, useAppStore.getState().zoomLevel]);
 
   const renderMode = () => {
+    // Wrap each mode in its own ErrorBoundary for isolated error handling
     switch (mode) {
       case 'compose':
-        return <ComposeMode />;
+        return (
+          <ErrorBoundary key="compose">
+            <ComposeMode />
+          </ErrorBoundary>
+        );
       case 'record':
-        return <RecordMode />;
+        return (
+          <ErrorBoundary key="record">
+            <RecordMode />
+          </ErrorBoundary>
+        );
       case 'mix':
-        return <MixMode />;
+        return (
+          <ErrorBoundary key="mix">
+            <MixMode />
+          </ErrorBoundary>
+        );
       case 'master':
-        return <MasterMode />;
+        return (
+          <ErrorBoundary key="master">
+            <MasterMode />
+          </ErrorBoundary>
+        );
       case 'practice':
-        return <PracticeMode />;
+        return (
+          <ErrorBoundary key="practice">
+            <PracticeMode />
+          </ErrorBoundary>
+        );
       case 'distribute':
-        return <DistributeMode />;
+        return (
+          <ErrorBoundary key="distribute">
+            <DistributeMode />
+          </ErrorBoundary>
+        );
       default:
         return <SplashScreen />;
     }

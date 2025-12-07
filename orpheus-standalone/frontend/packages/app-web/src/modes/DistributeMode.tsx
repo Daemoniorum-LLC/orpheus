@@ -231,6 +231,13 @@ export function DistributeMode() {
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  // Artwork state
+  const [artworkFile, setArtworkFile] = useState<File | null>(null);
+  const [artworkPreview, setArtworkPreview] = useState<string | null>(null);
+  const [artworkError, setArtworkError] = useState<string | null>(null);
+  const [artworkDimensions, setArtworkDimensions] = useState<{ width: number; height: number } | null>(null);
+
   const [albumTitle, setAlbumTitle] = useState('');
   const [genre, setGenre] = useState('');
   const [releaseDate, setReleaseDate] = useState('');
@@ -304,6 +311,66 @@ export function DistributeMode() {
 
   const togglePlatform = (id: string) => {
     setPlatforms(platforms.map((p) => (p.id === id ? { ...p, selected: !p.selected } : p)));
+  };
+
+  // Handle artwork upload
+  const handleArtworkUpload = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,image/png';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      // Reset errors
+      setArtworkError(null);
+
+      // Validate file type
+      if (!file.type.match(/^image\/(jpeg|png)$/)) {
+        setArtworkError('Please upload a JPG or PNG file');
+        return;
+      }
+
+      // Validate file size (max 20MB)
+      if (file.size > 20 * 1024 * 1024) {
+        setArtworkError('File size must be less than 20MB');
+        return;
+      }
+
+      // Create preview and validate dimensions
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          // Check dimensions
+          if (img.width !== img.height) {
+            setArtworkError(`Artwork must be square. Current: ${img.width}x${img.height}px`);
+            return;
+          }
+
+          if (img.width < 1400) {
+            setArtworkError(`Minimum size is 1400x1400px. Current: ${img.width}x${img.height}px`);
+            return;
+          }
+
+          // Store file and preview
+          setArtworkFile(file);
+          setArtworkPreview(event.target?.result as string);
+          setArtworkDimensions({ width: img.width, height: img.height });
+          console.log(`[Distribute] Artwork uploaded: ${file.name} (${img.width}x${img.height})`);
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
+
+  const removeArtwork = () => {
+    setArtworkFile(null);
+    setArtworkPreview(null);
+    setArtworkDimensions(null);
+    setArtworkError(null);
   };
 
   const validateForm = (): boolean => {
@@ -598,29 +665,93 @@ export function DistributeMode() {
               Cover Artwork
             </div>
             <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
-              <div className={styles.artworkUpload}>
-                <Image24Regular fontSize={32} color={tokens.colorNeutralForeground2} />
-                <div style={{ fontSize: '12px', color: tokens.colorNeutralForeground2 }}>
-                  Click to upload artwork
+              {artworkPreview ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div
+                    style={{
+                      width: '200px',
+                      height: '200px',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      position: 'relative',
+                    }}
+                  >
+                    <img
+                      src={artworkPreview}
+                      alt="Cover artwork preview"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                      }}
+                    />
+                  </div>
+                  <div style={{ fontSize: '11px', color: tokens.colorNeutralForeground2, textAlign: 'center' }}>
+                    {artworkFile?.name}
+                    <br />
+                    {artworkDimensions && `${artworkDimensions.width}x${artworkDimensions.height}px`}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <Button size="small" onClick={handleArtworkUpload}>
+                      Replace
+                    </Button>
+                    <Button size="small" appearance="subtle" onClick={removeArtwork}>
+                      Remove
+                    </Button>
+                  </div>
                 </div>
-                <div style={{ fontSize: '10px', color: tokens.colorNeutralForeground3 }}>
-                  3000x3000px JPG or PNG
+              ) : (
+                <div
+                  className={styles.artworkUpload}
+                  onClick={handleArtworkUpload}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === 'Enter' && handleArtworkUpload()}
+                  style={{
+                    borderColor: artworkError ? tokens.colorPaletteRedBorder1 : undefined,
+                  }}
+                >
+                  <Image24Regular fontSize={32} color={tokens.colorNeutralForeground2} />
+                  <div style={{ fontSize: '12px', color: tokens.colorNeutralForeground2 }}>
+                    Click to upload artwork
+                  </div>
+                  <div style={{ fontSize: '10px', color: tokens.colorNeutralForeground3 }}>
+                    3000x3000px JPG or PNG
+                  </div>
                 </div>
-              </div>
+              )}
               <div className={styles.requirementsList}>
                 <div style={{ fontWeight: tokens.fontWeightSemibold, marginBottom: '8px' }}>
                   Artwork Requirements:
                 </div>
+                {artworkError && (
+                  <div style={{ color: tokens.colorPaletteRedForeground1, fontSize: '12px', marginBottom: '8px' }}>
+                    {artworkError}
+                  </div>
+                )}
                 <div className={styles.requirementItem}>
-                  <Checkmark24Regular fontSize={16} color={tokens.colorPaletteGreenForeground1} />
+                  <Checkmark24Regular
+                    fontSize={16}
+                    color={artworkDimensions && artworkDimensions.width >= 3000
+                      ? tokens.colorPaletteGreenForeground1
+                      : tokens.colorNeutralForeground3}
+                  />
                   Minimum 3000x3000 pixels (recommended)
                 </div>
                 <div className={styles.requirementItem}>
-                  <Checkmark24Regular fontSize={16} color={tokens.colorPaletteGreenForeground1} />
+                  <Checkmark24Regular
+                    fontSize={16}
+                    color={artworkFile ? tokens.colorPaletteGreenForeground1 : tokens.colorNeutralForeground3}
+                  />
                   JPG or PNG format
                 </div>
                 <div className={styles.requirementItem}>
-                  <Checkmark24Regular fontSize={16} color={tokens.colorPaletteGreenForeground1} />
+                  <Checkmark24Regular
+                    fontSize={16}
+                    color={artworkDimensions && artworkDimensions.width === artworkDimensions.height
+                      ? tokens.colorPaletteGreenForeground1
+                      : tokens.colorNeutralForeground3}
+                  />
                   Perfect square aspect ratio (1:1)
                 </div>
                 <div className={styles.requirementItem}>
