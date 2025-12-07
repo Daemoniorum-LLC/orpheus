@@ -1,0 +1,248 @@
+.effects-processor {
+  background: #1f1f1f;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  border: 1px solid #2a2a2a;
+}
+
+.processor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.processor-header h4 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.processor-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.bypass-btn {
+  padding: 0.5rem 1rem;
+  background: #2a2a2a;
+  color: #888888;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.bypass-btn:hover {
+  background: #3a3a3a;
+}
+
+.bypass-btn.active {
+  background: #eab308;
+  color: #000000;
+}
+
+.remove-btn {
+  padding: 0.5rem 1rem;
+  background: #ef4444;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background 0.2s ease;
+}
+
+.remove-btn:hover {
+  background: #dc2626;
+}
+
+.processor-parameters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+}
+
+.parameter-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.parameter-control label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #888888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.parameter-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.parameter-input input[type="range"] {
+  flex: 1;
+  height: 4px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.parameter-input input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #3b82f6;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.parameter-input input[type="range"]::-webkit-slider-thumb:hover {
+  background: #2563eb;
+}
+
+.parameter-input input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #3b82f6;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s ease;
+}
+
+.parameter-input input[type="range"]::-moz-range-thumb:hover {
+  background: #2563eb;
+}
+
+.parameter-input input[type="number"] {
+  width: 80px;
+  padding: 0.5rem;
+  background: #2a2a2a;
+  color: #ffffff;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  text-align: right;
+}
+
+.parameter-input input[type="number"]:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.parameter-unit {
+  min-width: 40px;
+  font-size: 0.875rem;
+  color: #666666;
+}
+
+/* EQ Visualizer */
+.eq-visualizer {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #1a1a1a;
+  border-radius: 4px;
+  border: 1px solid #2a2a2a;
+}
+
+.eq-graph {
+  width: 100%;
+  height: auto;
+}
+
+/* Compressor Meter */
+.compressor-meter {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #1a1a1a;
+  border-radius: 4px;
+  border: 1px solid #2a2a2a;
+}
+
+.meter-label {
+  font-size: 0.875rem;
+  color: #888888;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.meter-bar {
+  height: 24px;
+  background: #2a2a2a;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e 0%, #eab308 70%, #ef4444 100%);
+  transition: width 0.1s ease;
+}
+
+.meter-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #ffffff;
+  text-align: right;
+}
+
+/* Effect-specific styles */
+.effects-processor.eq {
+  border-left: 3px solid #3b82f6;
+}
+
+.effects-processor.compressor {
+  border-left: 3px solid #8b5cf6;
+}
+
+.effects-processor.reverb {
+  border-left: 3px solid #06b6d4;
+}
+
+.effects-processor.delay {
+  border-left: 3px solid #10b981;
+}
+
+.effects-processor.distortion {
+  border-left: 3px solid #ef4444;
+}
+
+.effects-processor.limiter {
+  border-left: 3px solid #f59e0b;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .processor-parameters {
+    grid-template-columns: 1fr;
+  }
+
+  .processor-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .processor-controls {
+    width: 100%;
+  }
+
+  .bypass-btn,
+  .remove-btn {
+    flex: 1;
+  }
+}

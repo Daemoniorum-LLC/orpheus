@@ -1,0 +1,24 @@
+[package]
+name = "maestro-audio-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "maestro-audio-server"
+path = "src/main.rs"
+
+[dependencies]
+maestro-proto = { path = "../maestro-proto" }
+maestro-audio-common = { path = "../maestro-audio-common" }
+maestro-juce-bridge = { path = "../maestro-juce-bridge" }
+
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }

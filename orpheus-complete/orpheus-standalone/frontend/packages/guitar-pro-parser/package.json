@@ -1,0 +1,38 @@
+{
+  "name": "@orpheus/guitar-pro-parser",
+  "version": "1.0.0",
+  "description": "Guitar Pro file format parser (GP7, GP6, GP5) for Orpheus",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts"
+  },
+  "keywords": [
+    "guitar-pro",
+    "tablature",
+    "parser",
+    "gp7",
+    "gp6",
+    "gp5",
+    "gpx",
+    "music-notation"
+  ],
+  "author": "Orpheus",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "eslint": "^8.0.0"
+  },
+  "dependencies": {
+    "@orpheus/shared-types": "file:../shared-types",
+    "@orpheus/project-model": "file:../project-model",
+    "jszip": "^3.10.1",
+    "fast-xml-parser": "^4.3.0"
+  }
+}

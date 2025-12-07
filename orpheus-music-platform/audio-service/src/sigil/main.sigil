@@ -1,0 +1,496 @@
+// Maestro Audio Service - Main Entry Point
+// JSON-RPC over stdin/stdout for gRPC bridge communication
+
+// Import DSP module (assuming module system works this way)
+// If not, the DSP functions should be included in this file
+
+// ============================================================================
+// State Management
+// ============================================================================
+
+let processing_chains = map_new()
+let plugins = map_new()
+let service_sample_rate = 48000
+let service_buffer_size = 512
+
+// ============================================================================
+// JSON-RPC Request Handlers
+// ============================================================================
+
+fn handle_process_audio(params) {
+  let chain_id = map_get(params, "chain_id")
+  let sample_rate = map_get(params, "sample_rate")
+  let samples = map_get(params, "samples")
+  let config = map_get(params, "config")
+
+  // Get or create processing chain
+  let chain = null
+  if map_has(processing_chains, chain_id) {
+    chain = map_get(processing_chains, chain_id)
+  } else {
+    chain = chain_new(sample_rate)
+    map_set(processing_chains, chain_id, chain)
+  }
+
+  // Apply config updates if provided
+  if config != null {
+    apply_chain_config(chain, config)
+  }
+
+  // Process audio
+  let start_time = time_now()
+  let output = chain_process_buffer(chain, samples)
+  let end_time = time_now()
+  let processing_time_us = (end_time - start_time) * 1000000.0
+
+  // Analyze results
+  let peak_db = analyze_peak(output)
+  let rms_db = analyze_rms(output)
+
+  return map_new()
+    |> map_set("samples", output)
+    |> map_set("processing_time_us", processing_time_us)
+    |> map_set("peak_db", peak_db)
+    |> map_set("rms_db", rms_db)
+    |> map_set("clipping", peak_db > -0.1)
+}
+
+fn handle_update_effect(params) {
+  let chain_id = map_get(params, "chain_id")
+  let effect_id = map_get(params, "effect_id")
+  let parameter_id = map_get(params, "parameter_id")
+  let value = map_get(params, "value")
+
+  if !map_has(processing_chains, chain_id) {
+    return map_new()
+      |> map_set("success", false)
+      |> map_set("error", "Chain not found: " + chain_id)
+  }
+
+  let chain = map_get(processing_chains, chain_id)
+
+  // Update the appropriate effect parameter
+  if effect_id == "eq" {
+    let eq = map_get(chain, "eq")
+    if parameter_id == "low_gain" {
+      eq_set_low(eq, 200.0, value)
+    } else if parameter_id == "mid_gain" {
+      eq_set_mid(eq, 1000.0, value, 1.0)
+    } else if parameter_id == "high_gain" {
+      eq_set_high(eq, 4000.0, value)
+    } else if parameter_id == "enabled" {
+      map_set(chain, "eq_enabled", value > 0.5)
+    }
+  } else if effect_id == "compressor" {
+    let comp = map_get(chain, "compressor")
+    if parameter_id == "threshold" {
+      map_set(comp, "threshold_db", value)
+    } else if parameter_id == "ratio" {
+      map_set(comp, "ratio", max(1.0, value))
+    } else if parameter_id == "attack" {
+      map_set(comp, "attack_ms", max(0.1, value))
+    } else if parameter_id == "release" {
+      map_set(comp, "release_ms", max(1.0, value))
+    } else if parameter_id == "enabled" {
+      map_set(chain, "compressor_enabled", value > 0.5)
+    }
+  } else if effect_id == "reverb" {
+    let reverb = map_get(chain, "reverb")
+    if parameter_id == "wet" {
+      map_set(reverb, "wet", clamp(value, 0.0, 1.0))
+    } else if parameter_id == "room_size" {
+      reverb_set_params(reverb, map_get(reverb, "wet"), value, map_get(reverb, "damping"))
+    } else if parameter_id == "enabled" {
+      map_set(chain, "reverb_enabled", value > 0.5)
+    }
+  } else if effect_id == "delay" {
+    let delay = map_get(chain, "delay")
+    if parameter_id == "time" {
+      delay_set_params(delay, value, map_get(delay, "feedback"), map_get(delay, "wet"))
+    } else if parameter_id == "feedback" {
+      delay_set_params(delay, map_get(delay, "delay_samples") * 1000.0 / map_get(delay, "sample_rate"), value, map_get(delay, "wet"))
+    } else if parameter_id == "wet" {
+      delay_set_params(delay, map_get(delay, "delay_samples") * 1000.0 / map_get(delay, "sample_rate"), map_get(delay, "feedback"), value)
+    } else if parameter_id == "enabled" {
+      map_set(chain, "delay_enabled", value > 0.5)
+    }
+  } else if effect_id == "limiter" {
+    let limiter = map_get(chain, "limiter")
+    if parameter_id == "ceiling" {
+      limiter_set_ceiling(limiter, value)
+    } else if parameter_id == "enabled" {
+      map_set(chain, "limiter_enabled", value > 0.5)
+    }
+  } else {
+    return map_new()
+      |> map_set("success", false)
+      |> map_set("error", "Unknown effect: " + effect_id)
+  }
+
+  return map_new()
+    |> map_set("success", true)
+}
+
+fn handle_get_chain_config(params) {
+  let chain_id = map_get(params, "chain_id")
+
+  if !map_has(processing_chains, chain_id) {
+    return map_new()
+      |> map_set("chain_id", chain_id)
+      |> map_set("effects", [])
+  }
+
+  let chain = map_get(processing_chains, chain_id)
+
+  let effects = []
+
+  // EQ config
+  let eq = map_get(chain, "eq")
+  effects = push(effects, map_new()
+    |> map_set("effect_id", "eq")
+    |> map_set("effect_type", "EQ")
+    |> map_set("enabled", map_get(chain, "eq_enabled"))
+    |> map_set("parameters", [
+      map_new() |> map_set("id", "low_gain") |> map_set("value", 0.0),
+      map_new() |> map_set("id", "mid_gain") |> map_set("value", 0.0),
+      map_new() |> map_set("id", "high_gain") |> map_set("value", 0.0)
+    ])
+  )
+
+  // Compressor config
+  let comp = map_get(chain, "compressor")
+  effects = push(effects, map_new()
+    |> map_set("effect_id", "compressor")
+    |> map_set("effect_type", "COMPRESSOR")
+    |> map_set("enabled", map_get(chain, "compressor_enabled"))
+    |> map_set("parameters", [
+      map_new() |> map_set("id", "threshold") |> map_set("value", map_get(comp, "threshold_db")),
+      map_new() |> map_set("id", "ratio") |> map_set("value", map_get(comp, "ratio")),
+      map_new() |> map_set("id", "attack") |> map_set("value", map_get(comp, "attack_ms")),
+      map_new() |> map_set("id", "release") |> map_set("value", map_get(comp, "release_ms"))
+    ])
+  )
+
+  // Reverb config
+  let reverb = map_get(chain, "reverb")
+  effects = push(effects, map_new()
+    |> map_set("effect_id", "reverb")
+    |> map_set("effect_type", "REVERB")
+    |> map_set("enabled", map_get(chain, "reverb_enabled"))
+    |> map_set("parameters", [
+      map_new() |> map_set("id", "wet") |> map_set("value", map_get(reverb, "wet")),
+      map_new() |> map_set("id", "room_size") |> map_set("value", map_get(reverb, "room_size")),
+      map_new() |> map_set("id", "damping") |> map_set("value", map_get(reverb, "damping"))
+    ])
+  )
+
+  // Delay config
+  let delay = map_get(chain, "delay")
+  effects = push(effects, map_new()
+    |> map_set("effect_id", "delay")
+    |> map_set("effect_type", "DELAY")
+    |> map_set("enabled", map_get(chain, "delay_enabled"))
+    |> map_set("parameters", [
+      map_new() |> map_set("id", "time") |> map_set("value", map_get(delay, "delay_samples") * 1000.0 / map_get(delay, "sample_rate")),
+      map_new() |> map_set("id", "feedback") |> map_set("value", map_get(delay, "feedback")),
+      map_new() |> map_set("id", "wet") |> map_set("value", map_get(delay, "wet"))
+    ])
+  )
+
+  // Limiter config
+  let limiter = map_get(chain, "limiter")
+  effects = push(effects, map_new()
+    |> map_set("effect_id", "limiter")
+    |> map_set("effect_type", "LIMITER")
+    |> map_set("enabled", map_get(chain, "limiter_enabled"))
+    |> map_set("parameters", [
+      map_new() |> map_set("id", "ceiling") |> map_set("value", map_get(limiter, "ceiling_db"))
+    ])
+  )
+
+  return map_new()
+    |> map_set("chain_id", chain_id)
+    |> map_set("effects", effects)
+}
+
+fn handle_set_chain_config(params) {
+  let chain_id = map_get(params, "chain_id")
+  let effects = map_get(params, "effects")
+
+  // Create new chain if doesn't exist
+  if !map_has(processing_chains, chain_id) {
+    map_set(processing_chains, chain_id, chain_new(service_sample_rate))
+  }
+
+  let chain = map_get(processing_chains, chain_id)
+
+  // Apply each effect config
+  let i = 0
+  while i < len(effects) {
+    let effect_config = get(effects, i)
+    let effect_id = map_get(effect_config, "effect_id")
+    let enabled = map_get(effect_config, "enabled")
+    let parameters = map_get(effect_config, "parameters")
+
+    // Set enabled state
+    if effect_id == "eq" {
+      map_set(chain, "eq_enabled", enabled)
+    } else if effect_id == "compressor" {
+      map_set(chain, "compressor_enabled", enabled)
+    } else if effect_id == "reverb" {
+      map_set(chain, "reverb_enabled", enabled)
+    } else if effect_id == "delay" {
+      map_set(chain, "delay_enabled", enabled)
+    } else if effect_id == "limiter" {
+      map_set(chain, "limiter_enabled", enabled)
+    }
+
+    // Apply parameters
+    let j = 0
+    while j < len(parameters) {
+      let param = get(parameters, j)
+      handle_update_effect(map_new()
+        |> map_set("chain_id", chain_id)
+        |> map_set("effect_id", effect_id)
+        |> map_set("parameter_id", map_get(param, "id"))
+        |> map_set("value", map_get(param, "value"))
+      )
+      j = j + 1
+    }
+
+    i = i + 1
+  }
+
+  return map_new()
+    |> map_set("success", true)
+}
+
+fn handle_analyze_audio(params) {
+  let samples = map_get(params, "samples")
+  let analysis_types = map_get(params, "analysis_types")
+
+  let result = map_new()
+
+  let i = 0
+  while i < len(analysis_types) {
+    let analysis_type = get(analysis_types, i)
+
+    if analysis_type == "PEAK" {
+      map_set(result, "peak_db", analyze_peak(samples))
+    } else if analysis_type == "RMS" {
+      map_set(result, "rms_db", analyze_rms(samples))
+    } else if analysis_type == "LOUDNESS" {
+      map_set(result, "momentary_lufs", analyze_lufs_momentary(samples, service_sample_rate))
+    } else if analysis_type == "DYNAMIC_RANGE" {
+      let peak = analyze_peak(samples)
+      let rms = analyze_rms(samples)
+      map_set(result, "dynamic_range_db", peak - rms)
+    }
+
+    i = i + 1
+  }
+
+  return result
+}
+
+// ============================================================================
+// Polycultural Tuning Handlers
+// ============================================================================
+
+fn handle_get_tuning(params) {
+  let tuning_type = map_get(params, "type")
+  let name = map_get(params, "name")
+  let index = map_get(params, "index")
+  let base_freq = map_get(params, "base_freq")
+
+  if base_freq == null {
+    base_freq = 440.0
+  }
+
+  let freq = 0.0
+  let description = ""
+
+  if tuning_type == "sacred" {
+    freq = sacred_freq(name)
+    description = "Sacred frequency: " + name
+  } else if tuning_type == "chakra" {
+    freq = chakra_freq(name)
+    description = "Chakra frequency: " + name
+  } else if tuning_type == "shruti" {
+    freq = shruti_freq(index, base_freq)
+    description = "Shruti " + index + " (base Sa=" + base_freq + " Hz)"
+  } else if tuning_type == "maqam" {
+    let scale = maqam_scale(name)
+    let degree = index % len(scale)
+    let octave = floor(index / len(scale))
+    freq = arabic_quarter_freq(get(scale, degree), base_freq) * pow(2.0, octave)
+    description = "Maqam " + name + " degree " + index
+  } else if tuning_type == "pelog" {
+    freq = pelog_freq(index, base_freq)
+    description = "Gamelan pelog degree " + index
+  } else if tuning_type == "slendro" {
+    freq = slendro_freq(index, base_freq)
+    description = "Gamelan slendro degree " + index
+  } else if tuning_type == "midi" {
+    let system = map_get(params, "system")
+    if system == null { system = "equal" }
+    freq = note_to_freq(index, system, base_freq)
+    description = "MIDI note " + index + " (" + system + " temperament)"
+  } else {
+    return map_new()
+      |> map_set("error", "Unknown tuning type: " + tuning_type)
+  }
+
+  return map_new()
+    |> map_set("frequency", freq)
+    |> map_set("description", description)
+    |> map_set("tuning_type", tuning_type)
+}
+
+fn handle_generate_drone(params) {
+  let tuning_type = map_get(params, "type")
+  let name = map_get(params, "name")
+  let duration_ms = map_get(params, "duration_ms")
+  let amplitude = map_get(params, "amplitude")
+
+  if duration_ms == null { duration_ms = 1000.0 }
+  if amplitude == null { amplitude = 0.3 }
+
+  // Get frequency based on tuning type
+  let freq = 136.1  // Default Om
+  if tuning_type == "sacred" {
+    freq = sacred_freq(name)
+  } else if tuning_type == "chakra" {
+    freq = chakra_freq(name)
+  } else if tuning_type == "custom" {
+    freq = map_get(params, "frequency")
+    if freq == null { freq = 136.1 }
+  }
+
+  // Create drone and generate samples
+  let drone = drone_new(service_sample_rate)
+  drone_set_frequency(drone, freq)
+  map_set(drone, "amplitude", amplitude)
+
+  let num_samples = floor(service_sample_rate * duration_ms / 1000.0)
+  let samples = []
+  let i = 0
+  while i < num_samples {
+    samples = push(samples, drone_process(drone))
+    i = i + 1
+  }
+
+  return map_new()
+    |> map_set("samples", samples)
+    |> map_set("frequency", freq)
+    |> map_set("duration_ms", duration_ms)
+    |> map_set("sample_rate", service_sample_rate)
+}
+
+fn handle_list_tunings(params) {
+  return map_new()
+    |> map_set("sacred", ["om", "earth", "love", "liberation", "miracle", "intuition", "unity", "dna", "golden"])
+    |> map_set("chakra", ["root", "sacral", "solar", "heart", "throat", "third_eye", "crown"])
+    |> map_set("maqam", ["rast", "bayati", "hijaz", "saba", "nahawand", "kurd"])
+    |> map_set("tuning_systems", ["equal", "just", "pythagorean", "432", "verdi"])
+    |> map_set("shruti_count", 22)
+    |> map_set("pelog_notes", 7)
+    |> map_set("slendro_notes", 5)
+}
+
+// ============================================================================
+// Main RPC Loop
+// ============================================================================
+
+fn handle_request(request) {
+  let method = map_get(request, "method")
+  let params = map_get(request, "params")
+  let id = map_get(request, "id")
+
+  let result = null
+  let error = null
+
+  if method == "process_audio" {
+    result = handle_process_audio(params)
+  } else if method == "update_effect" {
+    result = handle_update_effect(params)
+  } else if method == "get_chain_config" {
+    result = handle_get_chain_config(params)
+  } else if method == "set_chain_config" {
+    result = handle_set_chain_config(params)
+  } else if method == "analyze_audio" {
+    result = handle_analyze_audio(params)
+  } else if method == "get_tuning" {
+    result = handle_get_tuning(params)
+  } else if method == "generate_drone" {
+    result = handle_generate_drone(params)
+  } else if method == "list_tunings" {
+    result = handle_list_tunings(params)
+  } else if method == "ping" {
+    result = map_new() |> map_set("pong", true) |> map_set("version", "1.1.0-polycultural")
+  } else if method == "shutdown" {
+    return map_new()
+      |> map_set("id", id)
+      |> map_set("result", map_new() |> map_set("shutdown", true))
+      |> map_set("shutdown_requested", true)
+  } else {
+    error = map_new()
+      |> map_set("code", -32601)
+      |> map_set("message", "Method not found: " + method)
+  }
+
+  let response = map_new() |> map_set("id", id)
+
+  if error != null {
+    map_set(response, "error", error)
+  } else {
+    map_set(response, "result", result)
+  }
+
+  return response
+}
+
+fn main() {
+  println("Maestro Audio Service v1.0.0")
+  println("Sigil DSP Engine Ready")
+  println("Listening for JSON-RPC requests on stdin...")
+
+  // Main event loop - read JSON from stdin, process, write to stdout
+  let running = true
+
+  while running {
+    // Read line from stdin
+    let line = read_line()
+
+    if line == null || line == "" {
+      // EOF or empty line - continue
+      continue
+    }
+
+    // Parse JSON request
+    let request = json_parse(line)
+
+    if request == null {
+      let error_response = map_new()
+        |> map_set("error", map_new()
+          |> map_set("code", -32700)
+          |> map_set("message", "Parse error"))
+      println(json_stringify(error_response))
+      continue
+    }
+
+    // Handle the request
+    let response = handle_request(request)
+
+    // Check for shutdown
+    if map_has(response, "shutdown_requested") {
+      map_remove(response, "shutdown_requested")
+      println(json_stringify(response))
+      running = false
+    } else {
+      println(json_stringify(response))
+    }
+  }
+
+  println("Maestro Audio Service shutting down...")
+}
