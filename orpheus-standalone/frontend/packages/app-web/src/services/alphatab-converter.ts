@@ -161,17 +161,39 @@ function mapInstrumentToMIDI(type?: string): number {
 
 /**
  * Get a hash/version of the project for change detection
+ * This hash includes note data to properly detect edits
  */
 export function getProjectHash(project: MaestroProject | null): string {
   if (!project) return '';
 
-  // Create a simple hash based on project structure
-  // In production, you might use a proper hash function
+  // Create a comprehensive hash that includes note data
   const modified = project.project.metadata.modified;
   const trackCount = project.project.composition.tracks?.length || 0;
-  const measureCounts = (project.project.composition.tracks || [])
+
+  // Build a hash that includes actual note data
+  let noteHash = 0;
+  const tracks = project.project.composition.tracks || [];
+
+  for (const track of tracks) {
+    const measures = (track as any).measures || [];
+    for (const measure of measures) {
+      const voices = measure.voices || [];
+      for (const voice of voices) {
+        const beats = voice.beats || [];
+        for (const beat of beats) {
+          const notes = beat.notes || [];
+          for (const note of notes) {
+            // Simple hash accumulator - combines string and fret
+            noteHash = (noteHash * 31 + (note.string || 0) * 1000 + (note.fret || 0)) % 1000000007;
+          }
+        }
+      }
+    }
+  }
+
+  const measureCounts = tracks
     .map((track: any) => track.measures?.length || 0)
     .join('-');
 
-  return `${modified}-${trackCount}-${measureCounts}`;
+  return `${modified}-${trackCount}-${measureCounts}-${noteHash}`;
 }

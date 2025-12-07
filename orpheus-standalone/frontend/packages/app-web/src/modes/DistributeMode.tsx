@@ -25,10 +25,29 @@ import {
   Checkmark24Regular,
   Warning24Regular,
   FolderOpen24Regular,
+  SaveRegular,
+  Delete24Regular,
 } from '@fluentui/react-icons';
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useProject, useAppStore } from '../store/app-store';
 import { importFile } from '../services/file-import';
+
+// Draft auto-save storage key prefix
+const DRAFT_STORAGE_KEY = 'orpheus-distribute-draft';
+
+interface DraftData {
+  trackTitle: string;
+  artistName: string;
+  albumTitle: string;
+  genre: string;
+  releaseDate: string;
+  isrc: string;
+  upc: string;
+  lyrics: string;
+  explicitContent: boolean;
+  platforms: string[]; // Just IDs of selected platforms
+  savedAt: number;
+}
 
 const useStyles = makeStyles({
   container: {
@@ -202,6 +221,22 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     ...shorthands.gap('16px'),
   },
+  draftIndicator: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+    fontSize: '12px',
+    color: tokens.colorNeutralForeground2,
+    ...shorthands.padding('4px', '12px'),
+    backgroundColor: tokens.colorNeutralBackground3,
+    ...shorthands.borderRadius('4px'),
+  },
+  draftSaving: {
+    color: tokens.colorBrandForeground1,
+  },
+  draftSaved: {
+    color: tokens.colorPaletteGreenForeground1,
+  },
 });
 
 interface Platform {
@@ -308,6 +343,146 @@ export function DistributeMode() {
   ]);
 
   const [uploadProgress, setUploadProgress] = useState(0);
+
+  // Draft auto-save state
+  const [draftStatus, setDraftStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Get storage key for current project
+  const getDraftKey = useCallback(() => {
+    const projectId = project?.project?.metadata?.id || 'default';
+    return `${DRAFT_STORAGE_KEY}-${projectId}`;
+  }, [project]);
+
+  // Load draft from localStorage on mount
+  useEffect(() => {
+    if (!project || draftLoaded) return;
+
+    try {
+      const draftKey = getDraftKey();
+      const savedDraft = localStorage.getItem(draftKey);
+
+      if (savedDraft) {
+        const draft: DraftData = JSON.parse(savedDraft);
+
+        // Restore form fields
+        setTrackTitle(draft.trackTitle || '');
+        setArtistName(draft.artistName || '');
+        setAlbumTitle(draft.albumTitle || '');
+        setGenre(draft.genre || '');
+        setReleaseDate(draft.releaseDate || '');
+        setIsrc(draft.isrc || '');
+        setUpc(draft.upc || '');
+        setLyrics(draft.lyrics || '');
+        setExplicitContent(draft.explicitContent || false);
+
+        // Restore platform selections
+        if (draft.platforms && draft.platforms.length > 0) {
+          setPlatforms(prev => prev.map(p => ({
+            ...p,
+            selected: draft.platforms.includes(p.id)
+          })));
+        }
+
+        setLastSavedAt(new Date(draft.savedAt));
+        setDraftStatus('saved');
+        console.log(`[Distribute] Draft loaded from ${new Date(draft.savedAt).toLocaleString()}`);
+      }
+    } catch (err) {
+      console.error('[Distribute] Failed to load draft:', err);
+    }
+
+    setDraftLoaded(true);
+  }, [project, getDraftKey, draftLoaded]);
+
+  // Auto-save draft when form changes (debounced)
+  const saveDraft = useCallback(() => {
+    if (!project) return;
+
+    const draft: DraftData = {
+      trackTitle,
+      artistName,
+      albumTitle,
+      genre,
+      releaseDate,
+      isrc,
+      upc,
+      lyrics,
+      explicitContent,
+      platforms: platforms.filter(p => p.selected).map(p => p.id),
+      savedAt: Date.now(),
+    };
+
+    try {
+      const draftKey = getDraftKey();
+      localStorage.setItem(draftKey, JSON.stringify(draft));
+      setLastSavedAt(new Date(draft.savedAt));
+      setDraftStatus('saved');
+      console.log('[Distribute] Draft auto-saved');
+    } catch (err) {
+      console.error('[Distribute] Failed to save draft:', err);
+    }
+  }, [project, trackTitle, artistName, albumTitle, genre, releaseDate, isrc, upc, lyrics, explicitContent, platforms, getDraftKey]);
+
+  // Debounced auto-save effect
+  useEffect(() => {
+    if (!draftLoaded) return; // Don't save while loading
+
+    // Clear previous timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Show saving indicator immediately
+    setDraftStatus('saving');
+
+    // Debounce save by 1 second
+    saveTimeoutRef.current = setTimeout(() => {
+      saveDraft();
+    }, 1000);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [trackTitle, artistName, albumTitle, genre, releaseDate, isrc, upc, lyrics, explicitContent, platforms, saveDraft, draftLoaded]);
+
+  // Clear draft
+  const clearDraft = useCallback(() => {
+    if (!project) return;
+
+    try {
+      const draftKey = getDraftKey();
+      localStorage.removeItem(draftKey);
+
+      // Reset form fields
+      setTrackTitle('');
+      setArtistName('');
+      setAlbumTitle('');
+      setGenre('');
+      setReleaseDate('');
+      setIsrc('');
+      setUpc('');
+      setLyrics('');
+      setExplicitContent(false);
+      setPlatforms(prev => prev.map(p => ({
+        ...p,
+        selected: ['spotify', 'apple', 'youtube', 'amazon'].includes(p.id)
+      })));
+
+      setDraftStatus('idle');
+      setLastSavedAt(null);
+      setTouched({});
+      setErrors({});
+
+      console.log('[Distribute] Draft cleared');
+    } catch (err) {
+      console.error('[Distribute] Failed to clear draft:', err);
+    }
+  }, [project, getDraftKey]);
 
   const togglePlatform = (id: string) => {
     setPlatforms(platforms.map((p) => (p.id === id ? { ...p, selected: !p.selected } : p)));
@@ -514,19 +689,48 @@ export function DistributeMode() {
     <div className={styles.container}>
       <div className={styles.header}>
         <div className={styles.title}>🌍 Distribute - Music Distribution</div>
-        <Button
-          icon={<CloudArrowUp24Regular />}
-          appearance="primary"
-          onClick={handleSubmit}
-          disabled={selectedPlatformCount === 0}
-        >
-          Submit to {selectedPlatformCount} {selectedPlatformCount === 1 ? 'Platform' : 'Platforms'}
-        </Button>
-        {touched.platforms && errors.platforms && (
-          <div style={{ color: tokens.colorPaletteRedForeground1, fontSize: '12px', marginLeft: '8px' }}>
-            {errors.platforms}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Draft auto-save indicator */}
+          {draftStatus !== 'idle' && (
+            <div className={`${styles.draftIndicator} ${draftStatus === 'saving' ? styles.draftSaving : styles.draftSaved}`}>
+              <SaveRegular fontSize={14} />
+              <span>
+                {draftStatus === 'saving'
+                  ? 'Saving...'
+                  : lastSavedAt
+                    ? `Draft saved ${lastSavedAt.toLocaleTimeString()}`
+                    : 'Draft saved'}
+              </span>
+            </div>
+          )}
+
+          {/* Clear draft button */}
+          {lastSavedAt && (
+            <Button
+              icon={<Delete24Regular />}
+              appearance="subtle"
+              size="small"
+              onClick={clearDraft}
+              title="Clear saved draft"
+            >
+              Clear Draft
+            </Button>
+          )}
+
+          <Button
+            icon={<CloudArrowUp24Regular />}
+            appearance="primary"
+            onClick={handleSubmit}
+            disabled={selectedPlatformCount === 0}
+          >
+            Submit to {selectedPlatformCount} {selectedPlatformCount === 1 ? 'Platform' : 'Platforms'}
+          </Button>
+          {touched.platforms && errors.platforms && (
+            <div style={{ color: tokens.colorPaletteRedForeground1, fontSize: '12px' }}>
+              {errors.platforms}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className={styles.content}>

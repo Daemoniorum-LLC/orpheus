@@ -3,13 +3,14 @@
  */
 
 import { makeStyles, shorthands, tokens, Button } from '@fluentui/react-components';
-import { Add24Regular, BotRegular, FolderOpen24Regular } from '@fluentui/react-icons';
-import { useState, useEffect } from 'react';
+import { Add24Regular, BotRegular, FolderOpen24Regular, ChartMultiple24Regular } from '@fluentui/react-icons';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useProject, useAppStore } from '../store/app-store';
 import { importFile } from '../services/file-import';
 import { ChannelStripWithProcessors } from '../components/ChannelStripWithProcessors';
 import { ChannelStrip } from '../components/ChannelStrip';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { AutomationLanesContainer, type AutomationPoint, type AutomationParameter } from '../components/AutomationLane';
 
 const useStyles = makeStyles({
   container: {
@@ -52,6 +53,23 @@ const useStyles = makeStyles({
   master: {
     ...shorthands.borderLeft('2px', 'solid', tokens.colorBrandBackground),
     paddingLeft: '12px',
+  },
+  automationSection: {
+    width: '100%',
+    ...shorthands.borderTop('1px', 'solid', tokens.colorNeutralStroke1),
+    paddingTop: '16px',
+    marginTop: '16px',
+  },
+  automationHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+  },
+  automationTitle: {
+    fontSize: '14px',
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground2,
   },
 });
 
@@ -134,6 +152,8 @@ export function MixMode() {
   const [masterVolume, setMasterVolume] = useState(0);
   const [masterPan, setMasterPan] = useState(0);
   const [tracksInitialized, setTracksInitialized] = useState(false);
+  const [showAutomation, setShowAutomation] = useState(false);
+  const [automationData, setAutomationData] = useState<Record<string, Record<AutomationParameter, AutomationPoint[]>>>({});
 
   // Initialize tracks from project when project changes
   useEffect(() => {
@@ -175,9 +195,56 @@ export function MixMode() {
     setTracks([...tracks, newTrack]);
   };
 
-  const updateTrack = (id: string, updates: Partial<MixerTrack>) => {
-    setTracks(tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)));
-  };
+  // Check if any track is soloed
+  const anySoloed = useMemo(() => tracks.some((t) => t.solo), [tracks]);
+
+  const updateTrack = useCallback((id: string, updates: Partial<MixerTrack>) => {
+    setTracks((prevTracks) => prevTracks.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+  }, []);
+
+  // Handle solo toggle with exclusive mode option
+  const handleSoloToggle = useCallback((id: string, exclusive: boolean = false) => {
+    setTracks((prevTracks) => {
+      const track = prevTracks.find((t) => t.id === id);
+      if (!track) return prevTracks;
+
+      const newSoloState = !track.solo;
+
+      if (exclusive && newSoloState) {
+        // Exclusive mode: unsolo all other tracks
+        return prevTracks.map((t) => ({
+          ...t,
+          solo: t.id === id ? true : false,
+        }));
+      } else {
+        // Additive mode: just toggle this track's solo
+        return prevTracks.map((t) =>
+          t.id === id ? { ...t, solo: newSoloState } : t
+        );
+      }
+    });
+  }, []);
+
+  // Get effective mute state (considering solo)
+  const getEffectiveMute = useCallback((track: MixerTrack): boolean => {
+    // If track is explicitly muted, it's muted
+    if (track.mute) return true;
+    // If any track is soloed and this one isn't, it's effectively muted
+    if (anySoloed && !track.solo) return true;
+    return false;
+  }, [anySoloed]);
+
+  // Handle automation data changes
+  const handleAutomationChange = useCallback((trackId: string, parameter: AutomationParameter, points: AutomationPoint[]) => {
+    setAutomationData((prev) => ({
+      ...prev,
+      [trackId]: {
+        ...(prev[trackId] || {}),
+        [parameter]: points,
+      },
+    }));
+    console.log(`[MixMode] Automation updated: ${trackId} - ${parameter}`, points.length, 'points');
+  }, []);
 
   const handleDeleteClick = (id: string) => {
     const track = tracks.find((t) => t.id === id);
@@ -252,6 +319,13 @@ export function MixMode() {
           <Button icon={<Add24Regular />} onClick={handleAddTrack}>
             Add Track
           </Button>
+          <Button
+            icon={<ChartMultiple24Regular />}
+            appearance={showAutomation ? 'primary' : 'secondary'}
+            onClick={() => setShowAutomation(!showAutomation)}
+          >
+            Automation
+          </Button>
           <Button icon={<BotRegular />} appearance="subtle" onClick={() => setAIAssistantOpen(true)}>
             AI Mix Suggestions
           </Button>
@@ -259,36 +333,58 @@ export function MixMode() {
       </div>
 
       <div className={styles.content}>
-        <div className={styles.mixerSection}>
-          {/* Track Channels */}
-          {tracks.map((track) => (
-            <ChannelStripWithProcessors
-              key={track.id}
-              trackId={track.id}
-              trackName={track.name}
-              volume={track.volume}
-              pan={track.pan}
-              solo={track.solo}
-              mute={track.mute}
-              onVolumeChange={(v) => updateTrack(track.id, { volume: v })}
-              onPanChange={(p) => updateTrack(track.id, { pan: p })}
-              onSoloToggle={() => updateTrack(track.id, { solo: !track.solo })}
-              onMuteToggle={() => updateTrack(track.id, { mute: !track.mute })}
-              onDelete={() => handleDeleteClick(track.id)}
-            />
-          ))}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+          <div className={styles.mixerSection}>
+            {/* Track Channels */}
+            {tracks.map((track) => (
+              <ChannelStripWithProcessors
+                key={track.id}
+                trackId={track.id}
+                trackName={track.name}
+                volume={track.volume}
+                pan={track.pan}
+                solo={track.solo}
+                mute={track.mute}
+                effectiveMute={getEffectiveMute(track)}
+                color={track.color}
+                onVolumeChange={(v) => updateTrack(track.id, { volume: v })}
+                onPanChange={(p) => updateTrack(track.id, { pan: p })}
+                onSoloToggle={(e) => handleSoloToggle(track.id, e?.ctrlKey || e?.metaKey)}
+                onMuteToggle={() => updateTrack(track.id, { mute: !track.mute })}
+                onDelete={() => handleDeleteClick(track.id)}
+              />
+            ))}
 
-          {/* Master Channel */}
-          <div className={styles.master}>
-            <ChannelStrip
-              trackId="master"
-              trackName="MASTER"
-              volume={masterVolume}
-              pan={masterPan}
-              onVolumeChange={setMasterVolume}
-              onPanChange={setMasterPan}
-            />
+            {/* Master Channel */}
+            <div className={styles.master}>
+              <ChannelStrip
+                trackId="master"
+                trackName="MASTER"
+                volume={masterVolume}
+                pan={masterPan}
+                onVolumeChange={setMasterVolume}
+                onPanChange={setMasterPan}
+              />
+            </div>
           </div>
+
+          {/* Automation Lanes */}
+          {showAutomation && tracks.length > 0 && (
+            <div className={styles.automationSection}>
+              <div className={styles.automationHeader}>
+                <span className={styles.automationTitle}>Automation Lanes</span>
+                <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground3 }}>
+                  Click to add points, drag to move, Delete key to remove
+                </span>
+              </div>
+              <AutomationLanesContainer
+                tracks={tracks.map((t) => ({ id: t.id, name: t.name, color: t.color }))}
+                automationData={automationData}
+                duration={project?.project?.metadata?.duration || 180}
+                onAutomationChange={handleAutomationChange}
+              />
+            </div>
+          )}
         </div>
       </div>
 

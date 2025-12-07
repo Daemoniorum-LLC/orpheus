@@ -4,9 +4,10 @@
 
 import { makeStyles, shorthands, tokens, Button, Card } from '@fluentui/react-components';
 import { BotRegular, FolderOpen24Regular, Play24Regular, Stop24Regular } from '@fluentui/react-icons';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore, useProject } from '../store/app-store';
 import { SpeedTrainer } from '../components/SpeedTrainer';
+import { LoopSection } from '../components/LoopSection';
 import { importFile } from '../services/file-import';
 import { getPlaybackCoordinator } from '../services/playback-coordinator';
 
@@ -90,6 +91,11 @@ export function PracticeMode() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTempo, setCurrentTempo] = useState(120);
   const [initialized, setInitialized] = useState(false);
+  const [playbackPosition, setPlaybackPosition] = useState(0);
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [loopStart, setLoopStart] = useState(0);
+  const [loopEnd, setLoopEnd] = useState(1);
+  const positionUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const coordinator = getPlaybackCoordinator();
 
@@ -111,16 +117,36 @@ export function PracticeMode() {
     initCoordinator();
   }, [project, coordinator, initialized]);
 
-  // Subscribe to playback state changes
+  // Subscribe to playback state changes and track position
   useEffect(() => {
     const unsubscribe = coordinator.onStateChange((state) => {
       setIsPlaying(state.isPlaying);
     });
 
+    // Update position periodically when playing
+    const updatePosition = () => {
+      const state = coordinator.getState();
+      if (state.isPlaying && state.duration > 0) {
+        const pos = state.currentTime / state.duration;
+        setPlaybackPosition(pos);
+
+        // Handle loop
+        if (loopEnabled && pos >= loopEnd) {
+          coordinator.seek(loopStart * state.duration);
+          setPlaybackPosition(loopStart);
+        }
+      }
+    };
+
+    positionUpdateRef.current = setInterval(updatePosition, 100);
+
     return () => {
       unsubscribe();
+      if (positionUpdateRef.current) {
+        clearInterval(positionUpdateRef.current);
+      }
     };
-  }, [coordinator]);
+  }, [coordinator, loopEnabled, loopStart, loopEnd]);
 
   const handleSpeedChange = useCallback((bpm: number) => {
     setCurrentTempo(bpm);
@@ -138,7 +164,27 @@ export function PracticeMode() {
 
   const handleStop = () => {
     coordinator.stop();
+    setPlaybackPosition(0);
   };
+
+  const handleSeek = useCallback((position: number) => {
+    const state = coordinator.getState();
+    if (state.duration > 0) {
+      coordinator.seek(position * state.duration);
+      setPlaybackPosition(position);
+    }
+  }, [coordinator]);
+
+  const handleLoopChange = useCallback((start: number, end: number) => {
+    setLoopStart(start);
+    setLoopEnd(end);
+    console.log(`[PracticeMode] Loop changed: ${(start * 100).toFixed(0)}% - ${(end * 100).toFixed(0)}%`);
+  }, []);
+
+  const handleLoopToggle = useCallback((enabled: boolean) => {
+    setLoopEnabled(enabled);
+    console.log(`[PracticeMode] Loop ${enabled ? 'enabled' : 'disabled'}`);
+  }, []);
 
   const handleImportFile = async () => {
     const input = document.createElement('input');
@@ -242,6 +288,24 @@ export function PracticeMode() {
             incrementStep={5}
             repsBeforeIncrement={3}
             onSpeedChange={handleSpeedChange}
+          />
+        </div>
+
+        {/* Loop Section Practice */}
+        <div className={styles.trainerContainer}>
+          <LoopSection
+            project={project}
+            totalMeasures={(project.project.composition?.tracks?.[0] as any)?.measures?.length}
+            position={playbackPosition}
+            isPlaying={isPlaying}
+            loopEnabled={loopEnabled}
+            loopStart={loopStart}
+            loopEnd={loopEnd}
+            onLoopChange={handleLoopChange}
+            onLoopToggle={handleLoopToggle}
+            onSeek={handleSeek}
+            onPlay={handlePlayPause}
+            onPause={handlePlayPause}
           />
         </div>
       </div>

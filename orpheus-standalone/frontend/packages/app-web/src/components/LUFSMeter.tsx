@@ -1,11 +1,13 @@
 /**
  * LUFS Meter - Broadcast-standard loudness metering
  * Displays integrated LUFS, short-term LUFS, momentary LUFS, and true peak
+ * Uses ITU-R BS.1770 compliant K-weighted measurement
  */
 
-import { makeStyles, shorthands, tokens } from '@fluentui/react-components';
-import { useRef, useEffect, useState } from 'react';
-import * as Tone from 'tone';
+import { makeStyles, shorthands, tokens, Button } from '@fluentui/react-components';
+import { ArrowReset24Regular } from '@fluentui/react-icons';
+import { useEffect, useState, useCallback } from 'react';
+import { getLUFSAnalyzer, type LUFSMeasurement } from '../services/lufs-analyzer';
 
 const useStyles = makeStyles({
   container: {
@@ -17,10 +19,19 @@ const useStyles = makeStyles({
     ...shorthands.borderRadius('8px'),
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
   },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   title: {
     fontSize: '14px',
     fontWeight: tokens.fontWeightSemibold,
     color: tokens.colorNeutralForeground1,
+  },
+  subtitle: {
+    fontSize: '10px',
+    color: tokens.colorNeutralForeground3,
   },
   metersContainer: {
     display: 'grid',
@@ -99,6 +110,18 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorBrandStroke1,
     pointerEvents: 'none',
   },
+  activeIndicator: {
+    width: '8px',
+    height: '8px',
+    ...shorthands.borderRadius('50%'),
+    transition: 'background-color 200ms',
+  },
+  rangeValue: {
+    fontSize: '14px',
+    fontWeight: 600,
+    fontFamily: 'monospace',
+    color: tokens.colorNeutralForeground2,
+  },
 });
 
 export interface LUFSMeterProps {
@@ -106,13 +129,6 @@ export interface LUFSMeterProps {
   target?: number;
   /** Show platform recommendations */
   showTargets?: boolean;
-}
-
-interface LUFSValues {
-  integrated: number;
-  shortTerm: number;
-  momentary: number;
-  truePeak: number;
 }
 
 const PLATFORM_TARGETS = {
@@ -124,57 +140,49 @@ const PLATFORM_TARGETS = {
 
 export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = true }: LUFSMeterProps) {
   const styles = useStyles();
-  const analyzerRef = useRef<Tone.Analyser | null>(null);
-  const [values, setValues] = useState<LUFSValues>({
-    integrated: -70,
-    shortTerm: -70,
-    momentary: -70,
-    truePeak: -70,
+  const [measurement, setMeasurement] = useState<LUFSMeasurement>({
+    integrated: -Infinity,
+    shortTerm: -Infinity,
+    momentary: -Infinity,
+    truePeak: -Infinity,
+    range: 0,
+    active: false,
   });
 
+  // Get analyzer and connect
   useEffect(() => {
-    // Create analyzer for LUFS calculation
-    const analyzer = new Tone.Analyser('waveform', 2048);
-    analyzerRef.current = analyzer;
+    const analyzer = getLUFSAnalyzer();
+    analyzer.connect();
 
-    // Connect to master output
-    Tone.getDestination().connect(analyzer);
-
-    // Update LUFS values periodically
+    // Update measurements periodically
     const interval = setInterval(() => {
-      if (!analyzerRef.current) return;
-
-      const waveform = analyzerRef.current.getValue() as Float32Array;
-
-      // Calculate RMS (approximation of LUFS)
-      let sum = 0;
-      for (let i = 0; i < waveform.length; i++) {
-        sum += waveform[i] * waveform[i];
-      }
-      const rms = Math.sqrt(sum / waveform.length);
-
-      // Convert RMS to approximate LUFS (20 * log10(rms) - offset)
-      const lufs = 20 * Math.log10(Math.max(rms, 0.00001)) - 10;
-
-      // Update all meters
-      setValues((prev) => ({
-        integrated: lerp(prev.integrated, lufs, 0.1), // Slow integration
-        shortTerm: lerp(prev.shortTerm, lufs, 0.3), // 3-second window
-        momentary: lerp(prev.momentary, lufs, 0.6), // 400ms window
-        truePeak: Math.max(prev.truePeak * 0.95, Math.max(...Array.from(waveform).map(Math.abs)) * 1.2), // Peak hold with decay
-      }));
+      const m = analyzer.getMeasurement();
+      setMeasurement(m);
     }, 100);
 
     return () => {
       clearInterval(interval);
-      if (analyzerRef.current) {
-        analyzerRef.current.dispose();
-      }
+      analyzer.disconnect();
     };
   }, []);
 
-  const getStatus = (value: number, target: number): 'good' | 'warning' | 'bad' => {
-    const diff = Math.abs(value - target);
+  // Reset measurements
+  const handleReset = useCallback(() => {
+    const analyzer = getLUFSAnalyzer();
+    analyzer.reset();
+    setMeasurement({
+      integrated: -Infinity,
+      shortTerm: -Infinity,
+      momentary: -Infinity,
+      truePeak: -Infinity,
+      range: 0,
+      active: false,
+    });
+  }, []);
+
+  const getStatus = (value: number, targetValue: number): 'good' | 'warning' | 'bad' => {
+    if (!isFinite(value)) return 'bad';
+    const diff = Math.abs(value - targetValue);
     if (diff <= 1) return 'good';
     if (diff <= 3) return 'warning';
     return 'bad';
@@ -182,38 +190,70 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
 
   const getBarWidth = (value: number): number => {
     // Map -70 to 0 LUFS to 0-100%
+    if (!isFinite(value) || value < -70) return 0;
     return Math.max(0, Math.min(100, ((value + 70) / 70) * 100));
   };
 
-  const getBarColor = (value: number, target: number): string => {
-    const status = getStatus(value, target);
+  const getBarColor = (value: number, targetValue: number): string => {
+    const status = getStatus(value, targetValue);
     if (status === 'good') return tokens.colorPaletteGreenBackground3;
     if (status === 'warning') return tokens.colorPaletteYellowBackground3;
     return tokens.colorPaletteRedBackground3;
   };
 
   const formatLUFS = (value: number): string => {
-    return value > -70 ? value.toFixed(1) : '-∞';
+    if (!isFinite(value) || value < -70) return '-∞';
+    return value.toFixed(1);
+  };
+
+  const formatRange = (value: number): string => {
+    if (!isFinite(value) || value <= 0) return '0.0';
+    return value.toFixed(1);
   };
 
   return (
     <div className={styles.container}>
-      <div className={styles.title}>LUFS Metering</div>
+      <div className={styles.header}>
+        <div>
+          <div className={styles.title}>LUFS Metering</div>
+          <div className={styles.subtitle}>ITU-R BS.1770 K-weighted</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div
+            className={styles.activeIndicator}
+            style={{
+              backgroundColor: measurement.active
+                ? tokens.colorPaletteGreenBackground3
+                : tokens.colorNeutralBackground4,
+            }}
+            title={measurement.active ? 'Audio active' : 'No audio signal'}
+          />
+          <Button
+            icon={<ArrowReset24Regular />}
+            appearance="subtle"
+            size="small"
+            onClick={handleReset}
+            title="Reset integrated measurements"
+          >
+            Reset
+          </Button>
+        </div>
+      </div>
 
       <div className={styles.metersContainer}>
         {/* Integrated LUFS */}
         <div className={styles.meterCard}>
-          <div className={styles.meterLabel}>Integrated</div>
+          <div className={styles.meterLabel}>Integrated (Program)</div>
           <div>
-            <span className={styles.meterValue}>{formatLUFS(values.integrated)}</span>
+            <span className={styles.meterValue}>{formatLUFS(measurement.integrated)}</span>
             <span className={styles.meterUnit}>LUFS</span>
           </div>
           <div className={styles.barContainer}>
             <div
               className={styles.bar}
               style={{
-                width: `${getBarWidth(values.integrated)}%`,
-                backgroundColor: getBarColor(values.integrated, target),
+                width: `${getBarWidth(measurement.integrated)}%`,
+                backgroundColor: getBarColor(measurement.integrated, target),
               }}
             />
             <div
@@ -227,13 +267,14 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
                 Target: {target} LUFS
               </div>
               <span className={`${styles.statusBadge} ${
-                getStatus(values.integrated, target) === 'good' ? styles.statusGood :
-                getStatus(values.integrated, target) === 'warning' ? styles.statusWarning :
+                getStatus(measurement.integrated, target) === 'good' ? styles.statusGood :
+                getStatus(measurement.integrated, target) === 'warning' ? styles.statusWarning :
                 styles.statusBad
               }`}>
-                {getStatus(values.integrated, target) === 'good' ? '✓ On Target' :
-                 getStatus(values.integrated, target) === 'warning' ? '⚠ Close' :
-                 values.integrated > target ? '↑ Too Loud' : '↓ Too Quiet'}
+                {!isFinite(measurement.integrated) ? '⏸ No Signal' :
+                 getStatus(measurement.integrated, target) === 'good' ? '✓ On Target' :
+                 getStatus(measurement.integrated, target) === 'warning' ? '⚠ Close' :
+                 measurement.integrated > target ? '↑ Too Loud' : '↓ Too Quiet'}
               </span>
             </>
           )}
@@ -243,15 +284,15 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
         <div className={styles.meterCard}>
           <div className={styles.meterLabel}>Short-term (3s)</div>
           <div>
-            <span className={styles.meterValue}>{formatLUFS(values.shortTerm)}</span>
+            <span className={styles.meterValue}>{formatLUFS(measurement.shortTerm)}</span>
             <span className={styles.meterUnit}>LUFS</span>
           </div>
           <div className={styles.barContainer}>
             <div
               className={styles.bar}
               style={{
-                width: `${getBarWidth(values.shortTerm)}%`,
-                backgroundColor: getBarColor(values.shortTerm, target),
+                width: `${getBarWidth(measurement.shortTerm)}%`,
+                backgroundColor: getBarColor(measurement.shortTerm, target),
               }}
             />
           </div>
@@ -261,15 +302,15 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
         <div className={styles.meterCard}>
           <div className={styles.meterLabel}>Momentary (400ms)</div>
           <div>
-            <span className={styles.meterValue}>{formatLUFS(values.momentary)}</span>
+            <span className={styles.meterValue}>{formatLUFS(measurement.momentary)}</span>
             <span className={styles.meterUnit}>LUFS</span>
           </div>
           <div className={styles.barContainer}>
             <div
               className={styles.bar}
               style={{
-                width: `${getBarWidth(values.momentary)}%`,
-                backgroundColor: getBarColor(values.momentary, target),
+                width: `${getBarWidth(measurement.momentary)}%`,
+                backgroundColor: getBarColor(measurement.momentary, target),
               }}
             />
           </div>
@@ -279,20 +320,37 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
         <div className={styles.meterCard}>
           <div className={styles.meterLabel}>True Peak</div>
           <div>
-            <span className={styles.meterValue}>{formatLUFS(values.truePeak)}</span>
+            <span className={styles.meterValue}>{formatLUFS(measurement.truePeak)}</span>
             <span className={styles.meterUnit}>dBTP</span>
           </div>
           <div className={styles.barContainer}>
             <div
               className={styles.bar}
               style={{
-                width: `${getBarWidth(values.truePeak)}%`,
-                backgroundColor: values.truePeak > -1 ? tokens.colorPaletteRedBackground3 : tokens.colorPaletteGreenBackground3,
+                width: `${getBarWidth(measurement.truePeak)}%`,
+                backgroundColor: measurement.truePeak > -1 ? tokens.colorPaletteRedBackground3 : tokens.colorPaletteGreenBackground3,
               }}
             />
           </div>
           <div className={styles.targetIndicator}>
-            {values.truePeak > -1 ? '⚠ Clipping Risk' : '✓ Safe'}
+            {!isFinite(measurement.truePeak) ? '⏸ No Signal' :
+             measurement.truePeak > -0.3 ? '⚠ Clipping!' :
+             measurement.truePeak > -1 ? '⚠ Clipping Risk' : '✓ Safe (-1 dBTP limit)'}
+          </div>
+        </div>
+
+        {/* Loudness Range (LRA) */}
+        <div className={styles.meterCard}>
+          <div className={styles.meterLabel}>Loudness Range (LRA)</div>
+          <div>
+            <span className={styles.meterValue}>{formatRange(measurement.range)}</span>
+            <span className={styles.meterUnit}>LU</span>
+          </div>
+          <div className={styles.targetIndicator}>
+            {measurement.range <= 0 ? '⏸ Measuring...' :
+             measurement.range < 4 ? '↓ Very Compressed' :
+             measurement.range < 8 ? '○ Moderate' :
+             measurement.range < 15 ? '✓ Dynamic' : '↑ Very Dynamic'}
           </div>
         </div>
       </div>
@@ -314,9 +372,4 @@ export function LUFSMeter({ target = PLATFORM_TARGETS.spotify, showTargets = tru
       )}
     </div>
   );
-}
-
-/** Linear interpolation helper */
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
 }
