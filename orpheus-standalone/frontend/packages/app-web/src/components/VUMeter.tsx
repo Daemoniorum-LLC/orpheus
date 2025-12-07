@@ -48,6 +48,25 @@ const useStyles = makeStyles({
     height: '4px',
     transition: 'background-color 100ms',
   },
+  // Colorblind-friendly threshold markers
+  thresholdMarker: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: '1px',
+    backgroundColor: tokens.colorNeutralForeground3,
+    pointerEvents: 'none',
+    zIndex: 1,
+  },
+  thresholdTick: {
+    position: 'absolute',
+    right: '-3px',
+    width: '6px',
+    height: '3px',
+    backgroundColor: tokens.colorNeutralForeground2,
+    ...shorthands.borderRadius('1px'),
+    transform: 'translateY(-50%)',
+  },
   scaleContainer: {
     display: 'flex',
     flexDirection: 'column',
@@ -95,6 +114,8 @@ interface VUMeterProps {
   label?: string;
   /** Show dB value below */
   showDbValue?: boolean;
+  /** Show colorblind-friendly threshold markers at -12dB, -6dB, -3dB */
+  showThresholdMarkers?: boolean;
 }
 
 /**
@@ -137,6 +158,7 @@ export function VUMeter({
   peakHoldTime = 1500,
   label,
   showDbValue = false,
+  showThresholdMarkers = true, // Enabled by default for accessibility
 }: VUMeterProps) {
   const styles = useStyles();
   const [levels, setLevels] = useState({ left: 0, right: 0 });
@@ -147,10 +169,18 @@ export function VUMeter({
   const meterLRef = useRef<Tone.Meter | null>(null);
   const meterRRef = useRef<Tone.Meter | null>(null);
   const animationRef = useRef<number | null>(null);
+  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isIdleRef = useRef(false);
+  const idleFrameCountRef = useRef(0);
   const peakTimersRef = useRef<{ left: NodeJS.Timeout | null; right: NodeJS.Timeout | null }>({
     left: null,
     right: null,
   });
+
+  // Idle detection constants
+  const IDLE_THRESHOLD_DB = -60; // Consider idle when below -60dB
+  const IDLE_FRAME_COUNT = 120; // ~2 seconds at 60fps before going idle
+  const IDLE_POLL_INTERVAL = 500; // Poll every 500ms when idle
 
   // Set up audio metering
   useEffect(() => {
@@ -174,6 +204,19 @@ export function VUMeter({
         return;
       }
 
+      // Schedule next update based on idle state
+      const scheduleNextUpdate = (updateFn: () => void) => {
+        if (isIdleRef.current) {
+          // In idle mode, use slower polling
+          idleTimeoutRef.current = setTimeout(() => {
+            animationRef.current = requestAnimationFrame(updateFn);
+          }, IDLE_POLL_INTERVAL);
+        } else {
+          // Active mode, use full frame rate
+          animationRef.current = requestAnimationFrame(updateFn);
+        }
+      };
+
       // Start animation loop
       const updateMeters = () => {
         try {
@@ -191,6 +234,28 @@ export function VUMeter({
           // Validate values (protect against NaN/undefined)
           if (!isFinite(leftDb)) leftDb = -Infinity;
           if (!isFinite(rightDb)) rightDb = -Infinity;
+
+          // Idle detection: check if audio is below threshold
+          const isCurrentlyIdle = leftDb < IDLE_THRESHOLD_DB && rightDb < IDLE_THRESHOLD_DB;
+
+          if (isCurrentlyIdle) {
+            idleFrameCountRef.current++;
+            if (idleFrameCountRef.current >= IDLE_FRAME_COUNT && !isIdleRef.current) {
+              // Enter idle mode
+              isIdleRef.current = true;
+            }
+          } else {
+            // Audio detected, wake up from idle
+            idleFrameCountRef.current = 0;
+            if (isIdleRef.current) {
+              isIdleRef.current = false;
+              // Clear any pending idle timeout
+              if (idleTimeoutRef.current) {
+                clearTimeout(idleTimeoutRef.current);
+                idleTimeoutRef.current = null;
+              }
+            }
+          }
 
           // Update levels
           setLevels({ left: leftDb, right: rightDb });
@@ -232,7 +297,7 @@ export function VUMeter({
           // Silently ignore metering errors (e.g., disposed nodes)
         }
 
-        animationRef.current = requestAnimationFrame(updateMeters);
+        scheduleNextUpdate(updateMeters);
       };
 
       animationRef.current = requestAnimationFrame(updateMeters);
@@ -241,12 +306,18 @@ export function VUMeter({
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
         }
+        if (idleTimeoutRef.current) {
+          clearTimeout(idleTimeoutRef.current);
+        }
         if (peakTimersRef.current.left) {
           clearTimeout(peakTimersRef.current.left);
         }
         if (peakTimersRef.current.right) {
           clearTimeout(peakTimersRef.current.right);
         }
+        // Reset idle state
+        isIdleRef.current = false;
+        idleFrameCountRef.current = 0;
         try {
           meterRef.current?.dispose();
           meterLRef.current?.dispose();
@@ -268,6 +339,13 @@ export function VUMeter({
     }
   }, [audioNode, levelL, levelR]);
 
+  // Threshold levels for colorblind-friendly markers
+  const THRESHOLD_LEVELS = [
+    { db: -12, label: 'Safe' },   // Green to Yellow transition
+    { db: -6, label: 'Caution' }, // Yellow to Orange transition
+    { db: -3, label: 'Warning' }, // Orange to Red transition
+  ];
+
   const renderMeter = (level: number, peak: number, isClipping: boolean, key: string) => {
     const heightPercent = dbToHeight(level);
     const peakHeightPercent = dbToHeight(peak);
@@ -278,6 +356,11 @@ export function VUMeter({
         key={key}
         className={styles.meterContainer}
         style={{ width: `${width}px`, height: `${height}px` }}
+        role="meter"
+        aria-valuenow={Math.round(level)}
+        aria-valuemin={-60}
+        aria-valuemax={0}
+        aria-label={`Audio level: ${level > -60 ? `${level.toFixed(1)} dB` : 'silent'}${isClipping ? ', clipping!' : ''}`}
       >
         {/* Clip indicator */}
         <div
@@ -286,6 +369,21 @@ export function VUMeter({
             backgroundColor: isClipping ? tokens.colorPaletteRedBackground3 : 'transparent',
           }}
         />
+
+        {/* Colorblind-friendly threshold markers */}
+        {showThresholdMarkers && THRESHOLD_LEVELS.map(({ db, label }) => {
+          const markerHeight = dbToHeight(db);
+          return (
+            <div
+              key={`threshold-${db}`}
+              className={styles.thresholdMarker}
+              style={{ bottom: `${markerHeight}%` }}
+              title={`${db} dB (${label})`}
+            >
+              <div className={styles.thresholdTick} />
+            </div>
+          );
+        })}
 
         {/* Main meter fill */}
         <div

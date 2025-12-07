@@ -92,6 +92,7 @@ const useStyles = makeStyles({
     left: '4px',
     fontSize: '9px',
     color: tokens.colorNeutralForeground3,
+    whiteSpace: 'nowrap',
   },
   controls: {
     display: 'flex',
@@ -287,6 +288,21 @@ export function LoopSection({
     return (measure - 1) / measures;
   }, [measures]);
 
+  // Determine which measures should show labels to avoid overlap
+  const getMeasureLabelInterval = useCallback((): number => {
+    if (measures <= 16) return 1; // Show all labels
+    if (measures <= 32) return 2; // Show every 2nd measure
+    if (measures <= 64) return 4; // Show every 4th measure
+    if (measures <= 128) return 8; // Show every 8th measure
+    return 16; // Show every 16th measure
+  }, [measures]);
+
+  const shouldShowMeasureLabel = useCallback((measureNum: number): boolean => {
+    const interval = getMeasureLabelInterval();
+    // Always show measure 1, and then at intervals
+    return measureNum === 1 || measureNum % interval === 0;
+  }, [getMeasureLabelInterval]);
+
   return (
     <div className={styles.container}>
       <div className={styles.header}>
@@ -318,7 +334,9 @@ export function LoopSection({
           <div className={styles.measureMarkers}>
             {Array.from({ length: measures }, (_, i) => (
               <div key={i} className={styles.measureMarker}>
-                <span className={styles.measureLabel}>{i + 1}</span>
+                {shouldShowMeasureLabel(i + 1) && (
+                  <span className={styles.measureLabel}>{i + 1}</span>
+                )}
               </div>
             ))}
           </div>
@@ -400,40 +418,60 @@ export function LoopSection({
         </Card>
       </div>
 
-      {/* Preset sections */}
+      {/* Preset sections - measure-based for musical relevance */}
       <div>
         <div className={styles.infoLabel} style={{ marginBottom: '8px' }}>
           Quick Select Section
         </div>
         <div className={styles.presets}>
+          {/* Common practice section lengths */}
           <Button
             className={styles.presetButton}
             appearance="subtle"
-            onClick={() => handlePreset(0, 0.25)}
+            onClick={() => handlePreset(0, Math.min(4 / measures, 1))}
           >
-            Intro (M1-{Math.ceil(measures * 0.25)})
+            First 4 bars
           </Button>
           <Button
             className={styles.presetButton}
             appearance="subtle"
-            onClick={() => handlePreset(0.25, 0.5)}
+            onClick={() => handlePreset(0, Math.min(8 / measures, 1))}
           >
-            Verse ({Math.ceil(measures * 0.25 + 1)}-{Math.ceil(measures * 0.5)})
+            First 8 bars
+          </Button>
+          {measures >= 16 && (
+            <Button
+              className={styles.presetButton}
+              appearance="subtle"
+              onClick={() => handlePreset(0, Math.min(16 / measures, 1))}
+            >
+              First 16 bars
+            </Button>
+          )}
+          {/* Half sections */}
+          <Button
+            className={styles.presetButton}
+            appearance="subtle"
+            onClick={() => handlePreset(0, 0.5)}
+          >
+            First half (M1-{Math.ceil(measures / 2)})
           </Button>
           <Button
             className={styles.presetButton}
             appearance="subtle"
-            onClick={() => handlePreset(0.5, 0.75)}
+            onClick={() => handlePreset(0.5, 1)}
           >
-            Chorus ({Math.ceil(measures * 0.5 + 1)}-{Math.ceil(measures * 0.75)})
+            Second half (M{Math.ceil(measures / 2) + 1}-{measures})
           </Button>
+          {/* Last N bars - for practicing endings */}
           <Button
             className={styles.presetButton}
             appearance="subtle"
-            onClick={() => handlePreset(0.75, 1)}
+            onClick={() => handlePreset(Math.max(0, 1 - 8 / measures), 1)}
           >
-            Outro ({Math.ceil(measures * 0.75 + 1)}-{measures})
+            Last 8 bars
           </Button>
+          {/* Full song */}
           <Button
             className={styles.presetButton}
             appearance="subtle"

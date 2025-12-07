@@ -26,9 +26,27 @@ const useStyles = makeStyles({
     overflow: 'hidden',
     cursor: 'pointer',
   },
+  canvasContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   canvas: {
     width: '100%',
     height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
+  playedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    pointerEvents: 'none',
   },
   playhead: {
     position: 'absolute',
@@ -77,10 +95,12 @@ export function TrackWaveform({
 }: TrackWaveformProps) {
   const styles = useStyles();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const playedCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [waveformData, setWaveformData] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hoverPosition, setHoverPosition] = useState<number | null>(null);
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
 
   // Decode audio and generate waveform data using shared context
   useEffect(() => {
@@ -152,11 +172,13 @@ export function TrackWaveform({
     };
   }, [audioBlob]);
 
-  // Draw waveform
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || waveformData.length === 0) return;
-
+  // Helper function to draw waveform on a canvas
+  const drawWaveform = (
+    canvas: HTMLCanvasElement,
+    waveform: number[],
+    fillColor: string,
+    strokeColor: string
+  ) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -168,38 +190,47 @@ export function TrackWaveform({
 
     const width = rect.width;
     const canvasHeight = rect.height;
-    const barWidth = width / waveformData.length;
+    const barWidth = width / waveform.length;
     const centerY = canvasHeight / 2;
 
     // Clear canvas
     ctx.clearRect(0, 0, width, canvasHeight);
 
     // Draw waveform bars
-    waveformData.forEach((value, index) => {
+    ctx.fillStyle = fillColor;
+    waveform.forEach((value, index) => {
       const barHeight = value * (canvasHeight - 8) * 0.9;
       const x = index * barWidth;
-      const playedPercent = progress;
-
-      // Determine color based on playback position
-      const barProgress = index / waveformData.length;
-      if (barProgress <= playedPercent && isPlaying) {
-        ctx.fillStyle = color;
-      } else {
-        ctx.fillStyle = `${color}66`; // Semi-transparent
-      }
-
       // Draw symmetric bars
       ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, barHeight);
     });
 
     // Draw center line
-    ctx.strokeStyle = `${color}33`;
+    ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, centerY);
     ctx.lineTo(width, centerY);
     ctx.stroke();
-  }, [waveformData, progress, isPlaying, color]);
+
+    return { width: rect.width, height: rect.height };
+  };
+
+  // Draw both waveform canvases (static - only redraws when waveform data or color changes)
+  useEffect(() => {
+    const unplayedCanvas = canvasRef.current;
+    const playedCanvas = playedCanvasRef.current;
+    if (!unplayedCanvas || !playedCanvas || waveformData.length === 0) return;
+
+    // Draw unplayed waveform (semi-transparent)
+    drawWaveform(unplayedCanvas, waveformData, `${color}66`, `${color}33`);
+
+    // Draw played waveform (full color) - this will be revealed via CSS
+    const dims = drawWaveform(playedCanvas, waveformData, color, `${color}33`);
+    if (dims) {
+      setCanvasDimensions(dims);
+    }
+  }, [waveformData, color]);
 
   const getPositionFromEvent = (e: React.MouseEvent<HTMLDivElement>): number => {
     if (!containerRef.current) return 0;
@@ -252,7 +283,26 @@ export function TrackWaveform({
       aria-valuemax={100}
       tabIndex={0}
     >
-      <canvas ref={canvasRef} className={styles.canvas} />
+      {/* Canvas container with layered canvases for performance */}
+      <div className={styles.canvasContainer}>
+        {/* Unplayed waveform (semi-transparent, always visible) */}
+        <canvas ref={canvasRef} className={styles.canvas} />
+
+        {/* Played waveform overlay (revealed via CSS width, no redraw needed) */}
+        <div
+          className={styles.playedOverlay}
+          style={{
+            width: isPlaying ? `${progress * 100}%` : 0,
+            transition: isPlaying ? 'none' : 'width 0.1s ease-out',
+          }}
+        >
+          <canvas
+            ref={playedCanvasRef}
+            className={styles.canvas}
+            style={{ width: canvasDimensions.width || '100%' }}
+          />
+        </div>
+      </div>
 
       {/* Playhead - show when playing or when there's progress */}
       {(isPlaying || progress > 0) && (

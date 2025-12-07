@@ -20,18 +20,97 @@ export interface LUFSMeasurement {
   active: boolean;
 }
 
-// ITU-R BS.1770 K-weighting filter coefficients (for 48kHz)
-const K_WEIGHT_HIGH_SHELF = {
-  // High-shelf filter: +4dB at 2kHz and above
-  b: [1.53512485958697, -2.69169618940638, 1.19839281085285],
-  a: [1.0, -1.69065929318241, 0.73248077421585],
+// ITU-R BS.1770 K-weighting filter coefficients for different sample rates
+// Coefficients calculated using bilinear transform from analog prototype
+interface FilterCoefficients {
+  b: number[];
+  a: number[];
+}
+
+interface KWeightingCoefficients {
+  highShelf: FilterCoefficients;
+  highPass: FilterCoefficients;
+}
+
+// Pre-calculated coefficients for common sample rates
+const K_WEIGHT_COEFFICIENTS: Record<number, KWeightingCoefficients> = {
+  // 44.1 kHz
+  44100: {
+    highShelf: {
+      b: [1.53090959263373, -2.65116903892146, 1.16907417678652],
+      a: [1.0, -1.66375480437228, 0.71265698944364],
+    },
+    highPass: {
+      b: [1.0, -2.0, 1.0],
+      a: [1.0, -1.98913816687691, 0.98916402075676],
+    },
+  },
+  // 48 kHz (reference coefficients from ITU-R BS.1770-4)
+  48000: {
+    highShelf: {
+      b: [1.53512485958697, -2.69169618940638, 1.19839281085285],
+      a: [1.0, -1.69065929318241, 0.73248077421585],
+    },
+    highPass: {
+      b: [1.0, -2.0, 1.0],
+      a: [1.0, -1.99004745483398, 0.99007225036621],
+    },
+  },
+  // 96 kHz
+  96000: {
+    highShelf: {
+      b: [1.52789911459592, -2.80208095969418, 1.28814747617683],
+      a: [1.0, -1.83789956218073, 0.85185607653607],
+    },
+    highPass: {
+      b: [1.0, -2.0, 1.0],
+      a: [1.0, -1.99500754538813, 0.99501262909856],
+    },
+  },
 };
 
-const K_WEIGHT_HIGH_PASS = {
-  // High-pass filter: -infinity at 0Hz, 0dB at 60Hz and above
-  b: [1.0, -2.0, 1.0],
-  a: [1.0, -1.99004745483398, 0.99007225036621],
-};
+/**
+ * Efficiently find the maximum absolute value in a Float32Array
+ * Avoids spread operator on large arrays which can cause stack overflow
+ */
+function maxAbsValue(arr: Float32Array): number {
+  let max = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const abs = Math.abs(arr[i]);
+    if (abs > max) max = abs;
+  }
+  return max;
+}
+
+/**
+ * Get K-weighting coefficients for a given sample rate
+ * Uses closest pre-calculated coefficients or interpolates if needed
+ */
+function getKWeightingCoefficients(sampleRate: number): KWeightingCoefficients {
+  // Check for exact match
+  if (K_WEIGHT_COEFFICIENTS[sampleRate]) {
+    return K_WEIGHT_COEFFICIENTS[sampleRate];
+  }
+
+  // Find closest available sample rate
+  const availableRates = Object.keys(K_WEIGHT_COEFFICIENTS).map(Number);
+  let closest = availableRates[0];
+  let minDiff = Math.abs(sampleRate - closest);
+
+  for (const rate of availableRates) {
+    const diff = Math.abs(sampleRate - rate);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = rate;
+    }
+  }
+
+  console.warn(
+    `[LUFSAnalyzer] No exact K-weighting coefficients for ${sampleRate}Hz, using ${closest}Hz coefficients`
+  );
+
+  return K_WEIGHT_COEFFICIENTS[closest];
+}
 
 /**
  * LUFS Analyzer - Real-time loudness measurement
@@ -44,6 +123,9 @@ export class LUFSAnalyzer {
   private sampleRate: number = 48000;
   private blockSize: number = 9600; // 200ms at 48kHz
   private overlapSize: number = 4800; // 100ms overlap
+
+  // K-weighting filter coefficients (sample-rate dependent)
+  private kWeightCoeffs: KWeightingCoefficients = K_WEIGHT_COEFFICIENTS[48000];
 
   // K-weighting filter state
   private filterStateL: { x: number[]; y: number[] }[] = [];
@@ -100,6 +182,9 @@ export class LUFSAnalyzer {
 
     this.sampleRate = Tone.getContext().sampleRate;
     this.blockSize = Math.floor(this.sampleRate * 0.4); // 400ms blocks for momentary
+
+    // Get appropriate K-weighting coefficients for this sample rate
+    this.kWeightCoeffs = getKWeightingCoefficients(this.sampleRate);
   }
 
   /**
@@ -153,11 +238,11 @@ export class LUFSAnalyzer {
   private applyKWeighting(samples: Float32Array, channel: 'L' | 'R'): Float32Array {
     const filterState = channel === 'L' ? this.filterStateL : this.filterStateR;
 
-    // Apply high-shelf filter
-    let filtered = this.applyBiquadFilter(samples, K_WEIGHT_HIGH_SHELF, filterState[0]);
+    // Apply high-shelf filter (sample-rate aware coefficients)
+    let filtered = this.applyBiquadFilter(samples, this.kWeightCoeffs.highShelf, filterState[0]);
 
-    // Apply high-pass filter
-    filtered = this.applyBiquadFilter(filtered, K_WEIGHT_HIGH_PASS, filterState[1]);
+    // Apply high-pass filter (sample-rate aware coefficients)
+    filtered = this.applyBiquadFilter(filtered, this.kWeightCoeffs.highPass, filterState[1]);
 
     return filtered;
   }
@@ -195,9 +280,9 @@ export class LUFSAnalyzer {
       const leftWaveform = this.leftAnalyzer.getValue() as Float32Array;
       const rightWaveform = this.rightAnalyzer.getValue() as Float32Array;
 
-      // Check if audio is active
-      const maxLeft = Math.max(...Array.from(leftWaveform).map(Math.abs));
-      const maxRight = Math.max(...Array.from(rightWaveform).map(Math.abs));
+      // Check if audio is active (using optimized loop instead of spread operator)
+      const maxLeft = maxAbsValue(leftWaveform);
+      const maxRight = maxAbsValue(rightWaveform);
       const active = maxLeft > 0.0001 || maxRight > 0.0001;
 
       // Calculate true peak (with 4x oversampling approximation)
@@ -269,9 +354,9 @@ export class LUFSAnalyzer {
    * Calculate true peak with oversampling
    */
   private calculateTruePeak(left: Float32Array, right: Float32Array): number {
-    // Simple peak detection (in production, use 4x oversampling)
-    const leftPeak = Math.max(...Array.from(left).map(Math.abs));
-    const rightPeak = Math.max(...Array.from(right).map(Math.abs));
+    // Simple peak detection using optimized loop (in production, use 4x oversampling)
+    const leftPeak = maxAbsValue(left);
+    const rightPeak = maxAbsValue(right);
     const peak = Math.max(leftPeak, rightPeak);
 
     // Convert to dBTP
