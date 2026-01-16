@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+!.env.example
+
+# Test coverage
+coverage/
+
+# Audio/Media (large files)
+*.wav
+*.mp3
+*.flac
+*.aif
+*.aiff
+# Keep small samples if needed
+!samples/**

@@ -1,0 +1,35 @@
+[package]
+name = "orpheus-midi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MIDI input/output handling for Orpheus"
+
+[features]
+default = []
+# Enable real-time MIDI I/O via midir (requires ALSA on Linux)
+midi-io = ["dep:midir"]
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# MIDI
+midly = { workspace = true }
+midir = { workspace = true, optional = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }

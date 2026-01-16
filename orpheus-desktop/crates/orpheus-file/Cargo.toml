@@ -1,0 +1,60 @@
+[package]
+name = "orpheus-file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "File format handling for Orpheus - .maestro, Guitar Pro, audio files"
+
+[features]
+default = []
+# Enable native file dialogs (requires GTK or portal on Linux)
+dialogs = ["dep:rfd"]
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Audio files
+hound = { workspace = true }
+claxon = { workspace = true }
+
+# MIDI files
+midly = { workspace = true }
+
+# File dialogs (optional - requires desktop environment)
+rfd = { workspace = true, optional = true }
+
+# Directories (for config/recent files)
+dirs = "5.0"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Compression
+flate2 = "1.0"
+zip = "2.2"
+
+# PDF export
+printpdf = { workspace = true }
+
+# XML parsing (for Guitar Pro)
+quick-xml = "0.37"
+
+# Utilities
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+tempfile = "3"

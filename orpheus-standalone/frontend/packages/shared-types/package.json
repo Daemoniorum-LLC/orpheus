@@ -1,0 +1,23 @@
+{
+  "name": "@orpheus/shared-types",
+  "version": "0.1.0",
+  "description": "Shared TypeScript types for Orpheus project format",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "maestro",
+    "music",
+    "daw",
+    "notation",
+    "types"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,193 @@
+//! # Orpheus MIDI
+//!
+//! MIDI input/output handling for Orpheus.
+//!
+//! ## Features
+//!
+//! - `midi-io`: Enable real-time MIDI I/O via midir (requires ALSA on Linux)
+//!
+//! ## Modules
+//!
+//! - [`message`]: MIDI message types and parsing
+//! - [`input`]: MIDI input device handling
+//! - [`router`]: MIDI routing to synthesizers
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use orpheus_midi::{MidiMessage, MidiRouter, SynthTarget};
+//!
+//! // Create a router with default guitar/piano/bass/drums mapping
+//! let router = MidiRouter::new();
+//!
+//! // Route a MIDI note
+//! let msg = MidiMessage::NoteOn { channel: 0, note: 64, velocity: 100 };
+//! router.route(msg, 0);
+//!
+//! // Receive routed events
+//! while let Some(event) = router.try_recv() {
+//!     match event.target {
+//!         SynthTarget::Guitar => {
+//!             if let Some(string) = event.string {
+//!                 println!("Guitar string {} note", string);
+//!             }
+//!         }
+//!         SynthTarget::Piano => println!("Piano note"),
+//!         SynthTarget::Bass => println!("Bass note"),
+//!         SynthTarget::Drums => println!("Drum hit"),
+//!         SynthTarget::Custom(id) => println!("Custom synth {}", id),
+//!     }
+//! }
+//! ```
+
+pub mod message;
+pub mod input;
+pub mod router;
+
+// Re-exports
+pub use message::{MidiMessage, Channel, Note, Velocity, ControlNumber, ControlValue, PitchBend};
+pub use message::cc;
+pub use input::{
+    MidiInputDevice, MidiInputPort, MidiInputManager, TimestampedMidiMessage,
+    MockMidiInputPort,
+    list_input_devices, open_input, open_input_by_name,
+};
+pub use router::{
+    MidiRouter, RouterConfig, ChannelMapping, RoutedMidiEvent, RouterStats,
+    SynthTarget,
+};
+
+/// Result type for MIDI operations
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// MIDI error types
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("MIDI device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("MIDI connection error: {0}")]
+    ConnectionError(String),
+
+    #[error("MIDI I/O error: {0}")]
+    IoError(String),
+
+    #[error("Invalid MIDI data: {0}")]
+    InvalidData(String),
+}
+
+/// Placeholder for backward compatibility
+#[deprecated(since = "0.1.0", note = "Use MidiInputManager instead")]
+pub struct MidiService;
+
+#[allow(deprecated)]
+impl MidiService {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[allow(deprecated)]
+impl Default for MidiService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_midi_message_reexport() {
+        let msg = MidiMessage::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        };
+        assert!(msg.is_channel_message());
+    }
+
+    #[test]
+    fn test_router_reexport() {
+        let router = MidiRouter::new();
+        router.route(
+            MidiMessage::NoteOn {
+                channel: 0,
+                note: 64,
+                velocity: 100,
+            },
+            0,
+        );
+        assert!(router.try_recv().is_some());
+    }
+
+    #[test]
+    fn test_cc_constants() {
+        assert_eq!(cc::VOLUME, 7);
+        assert_eq!(cc::SUSTAIN, 64);
+        assert_eq!(cc::MODULATION, 1);
+    }
+
+    #[test]
+    fn test_input_manager_reexport() {
+        let manager = MidiInputManager::new();
+        assert_eq!(manager.port_count(), 0);
+    }
+
+    #[test]
+    fn test_mock_midi_with_router() {
+        // Create a mock MIDI input for testing
+        let mock = MockMidiInputPort::new("Virtual Keyboard");
+
+        // Create a router
+        let router = MidiRouter::new();
+
+        // Inject messages into mock port (simulating user playing)
+        mock.inject_note_on(0, 64, 100, 0);    // E4 on channel 0 (guitar string 1)
+        mock.inject_note_on(6, 60, 80, 100);   // C4 on channel 7 (piano)
+        mock.inject_note_on(9, 36, 120, 200);  // Kick drum on channel 10
+
+        // Process mock messages through router
+        for msg in mock.drain() {
+            router.route(msg.message.clone(), msg.timestamp);
+        }
+
+        // Verify routed events
+        let events: Vec<_> = std::iter::from_fn(|| router.try_recv()).collect();
+        assert_eq!(events.len(), 3);
+
+        // First event should be guitar (string 1)
+        assert_eq!(events[0].target, SynthTarget::Guitar);
+        assert_eq!(events[0].string, Some(1));
+
+        // Second event should be piano
+        assert_eq!(events[1].target, SynthTarget::Piano);
+
+        // Third event should be drums
+        assert_eq!(events[2].target, SynthTarget::Drums);
+    }
+
+    #[test]
+    fn test_mock_midi_sequence() {
+        // Simulate a simple melody with timing
+        let mock = MockMidiInputPort::new("Test Sequencer");
+
+        // C major triad: C4, E4, G4
+        mock.inject_note_on(0, 60, 100, 0);     // C4
+        mock.inject_note_on(0, 64, 100, 0);     // E4
+        mock.inject_note_on(0, 67, 100, 0);     // G4
+
+        // Hold for "1 second" (1_000_000 microseconds)
+        mock.inject_note_off(0, 60, 0, 1_000_000);
+        mock.inject_note_off(0, 64, 0, 1_000_000);
+        mock.inject_note_off(0, 67, 0, 1_000_000);
+
+        let messages = mock.drain();
+        assert_eq!(messages.len(), 6);
+
+        // Verify timing
+        assert_eq!(messages[0].timestamp, 0);
+        assert_eq!(messages[3].timestamp, 1_000_000);
+    }
+}

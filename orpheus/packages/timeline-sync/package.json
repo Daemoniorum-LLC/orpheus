@@ -1,0 +1,27 @@
+{
+  "name": "@orpheus/timeline-sync",
+  "version": "0.1.0",
+  "description": "Timeline synchronization system for Orpheus - musical time ↔ absolute time",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "jest"
+  },
+  "keywords": [
+    "maestro",
+    "timeline",
+    "synchronization",
+    "time-mapping"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@orpheus/shared-types": "file:../shared-types"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.2"
+  }
+}

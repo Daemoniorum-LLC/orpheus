@@ -1,0 +1,25 @@
+{
+  "name": "@orpheus/music-theory",
+  "version": "0.1.0",
+  "description": "Music theory utilities for Orpheus - chords, scales, progressions",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "jest"
+  },
+  "keywords": [
+    "maestro",
+    "music-theory",
+    "chords",
+    "scales",
+    "guitar"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.2"
+  }
+}

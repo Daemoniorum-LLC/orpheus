@@ -1,0 +1,68 @@
+[package]
+name = "orpheus-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orpheus desktop application - main binary"
+
+[features]
+default = []
+# Enable real audio output via cpal (requires libasound2-dev on Linux)
+audio = ["orpheus-synth/audio-output"]
+
+[[bin]]
+name = "orpheus"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-ui = { workspace = true }
+orpheus-audio = { workspace = true }
+orpheus-synth = { workspace = true }
+orpheus-file = { workspace = true }
+orpheus-plugins = { workspace = true }
+orpheus-midi = { workspace = true }
+orpheus-export = { workspace = true }
+
+# Threading
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+# UI Framework
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_dock = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# File dialogs
+rfd = { workspace = true }
+
+# Image loading for icon
+image = { workspace = true }
+
+# Open files/folders in system
+open = { workspace = true }
+
+# Directory paths
+dirs = "5.0"

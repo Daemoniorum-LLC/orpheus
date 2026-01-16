@@ -1,0 +1,264 @@
+syntax = "proto3";
+
+package maestro.audio;
+
+option java_package = "ai.maestro.audio";
+option java_outer_classname = "AudioProto";
+
+// High-performance audio processing service
+// Core DSP implemented in Sigil for maximum performance
+service AudioProcessor {
+  // Process a single audio buffer through the effects chain
+  rpc ProcessAudio(AudioRequest) returns (AudioResponse);
+
+  // Bidirectional streaming for real-time audio processing
+  rpc StreamAudio(stream AudioBuffer) returns (stream AudioBuffer);
+
+  // Load a VST/AU plugin
+  rpc LoadPlugin(PluginRequest) returns (PluginResponse);
+
+  // Unload a plugin
+  rpc UnloadPlugin(UnloadPluginRequest) returns (UnloadPluginResponse);
+
+  // Update effect parameters in real-time
+  rpc UpdateEffect(EffectUpdate) returns (EffectResponse);
+
+  // Get current processing chain configuration
+  rpc GetChainConfig(ChainConfigRequest) returns (ChainConfig);
+
+  // Configure the processing chain
+  rpc SetChainConfig(ChainConfig) returns (ChainConfigResponse);
+
+  // Analyze audio (spectrum, loudness, etc.)
+  rpc AnalyzeAudio(AnalyzeRequest) returns (AnalyzeResponse);
+
+  // Get frequency for a specific tuning system
+  rpc GetTuning(TuningRequest) returns (TuningResponse);
+
+  // Generate a drone/reference tone
+  rpc GenerateDrone(DroneRequest) returns (DroneResponse);
+
+  // List available tuning systems and scales
+  rpc ListTunings(ListTuningsRequest) returns (ListTuningsResponse);
+}
+
+// Audio buffer for processing
+message AudioBuffer {
+  int32 sample_rate = 1;
+  int32 num_channels = 2;
+  int32 num_samples = 3;
+  bytes audio_data = 4;  // Interleaved float32 PCM
+  int64 timestamp_us = 5;
+  string track_id = 6;
+}
+
+message AudioRequest {
+  AudioBuffer buffer = 1;
+  string chain_id = 2;  // Which processing chain to use
+}
+
+message AudioResponse {
+  AudioBuffer buffer = 1;
+  ProcessingMetrics metrics = 2;
+}
+
+message ProcessingMetrics {
+  double processing_time_us = 1;
+  double peak_level_db = 2;
+  double rms_level_db = 3;
+  bool clipping_detected = 4;
+}
+
+// Plugin management
+message PluginRequest {
+  string plugin_path = 1;
+  string plugin_id = 2;
+  int32 sample_rate = 3;
+  int32 buffer_size = 4;
+}
+
+message PluginResponse {
+  bool success = 1;
+  string plugin_id = 2;
+  string error_message = 3;
+  repeated PluginParameter parameters = 4;
+}
+
+message PluginParameter {
+  string id = 1;
+  string name = 2;
+  float value = 3;
+  float min_value = 4;
+  float max_value = 5;
+  float default_value = 6;
+  string unit = 7;
+}
+
+message UnloadPluginRequest {
+  string plugin_id = 1;
+}
+
+message UnloadPluginResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// Effect control
+message EffectUpdate {
+  string chain_id = 1;
+  string effect_id = 2;
+  string parameter_id = 3;
+  float value = 4;
+}
+
+message EffectResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// Processing chain configuration
+message ChainConfigRequest {
+  string chain_id = 1;
+}
+
+message ChainConfig {
+  string chain_id = 1;
+  repeated EffectConfig effects = 2;
+}
+
+message ChainConfigResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message EffectConfig {
+  string effect_id = 1;
+  EffectType effect_type = 2;
+  bool enabled = 3;
+  repeated ParameterValue parameters = 4;
+}
+
+enum EffectType {
+  EFFECT_TYPE_UNSPECIFIED = 0;
+  EFFECT_TYPE_EQ = 1;
+  EFFECT_TYPE_COMPRESSOR = 2;
+  EFFECT_TYPE_REVERB = 3;
+  EFFECT_TYPE_DELAY = 4;
+  EFFECT_TYPE_LIMITER = 5;
+  EFFECT_TYPE_GATE = 6;
+  EFFECT_TYPE_CHORUS = 7;
+  EFFECT_TYPE_DISTORTION = 8;
+  EFFECT_TYPE_PLUGIN = 9;
+}
+
+message ParameterValue {
+  string parameter_id = 1;
+  float value = 2;
+}
+
+// Audio analysis
+message AnalyzeRequest {
+  AudioBuffer buffer = 1;
+  repeated AnalysisType analysis_types = 2;
+}
+
+enum AnalysisType {
+  ANALYSIS_TYPE_UNSPECIFIED = 0;
+  ANALYSIS_TYPE_SPECTRUM = 1;
+  ANALYSIS_TYPE_LOUDNESS = 2;
+  ANALYSIS_TYPE_PEAK = 3;
+  ANALYSIS_TYPE_RMS = 4;
+  ANALYSIS_TYPE_PHASE_CORRELATION = 5;
+  ANALYSIS_TYPE_DYNAMIC_RANGE = 6;
+}
+
+message AnalyzeResponse {
+  SpectrumAnalysis spectrum = 1;
+  LoudnessAnalysis loudness = 2;
+  double peak_db = 3;
+  double rms_db = 4;
+  double phase_correlation = 5;
+  double dynamic_range_db = 6;
+}
+
+message SpectrumAnalysis {
+  repeated float frequencies = 1;
+  repeated float magnitudes = 2;  // dB
+}
+
+message LoudnessAnalysis {
+  double integrated_lufs = 1;
+  double short_term_lufs = 2;
+  double momentary_lufs = 3;
+  double loudness_range_lu = 4;
+  double true_peak_dbtp = 5;
+}
+
+// ============================================================================
+// Polycultural Tuning Systems
+// ============================================================================
+
+// Tuning system types
+enum TuningType {
+  TUNING_TYPE_UNSPECIFIED = 0;
+  TUNING_TYPE_SACRED = 1;      // Sacred/healing frequencies (Om, Schumann, Solfeggio)
+  TUNING_TYPE_CHAKRA = 2;      // 7 chakra frequencies
+  TUNING_TYPE_SHRUTI = 3;      // Indian 22-shruti microtonal system
+  TUNING_TYPE_MAQAM = 4;       // Arabic maqam quarter-tone scales
+  TUNING_TYPE_PELOG = 5;       // Indonesian gamelan pelog (7-tone)
+  TUNING_TYPE_SLENDRO = 6;     // Indonesian gamelan slendro (5-tone)
+  TUNING_TYPE_MIDI = 7;        // MIDI note with temperament selection
+}
+
+// Temperament systems for MIDI tuning
+enum Temperament {
+  TEMPERAMENT_UNSPECIFIED = 0;
+  TEMPERAMENT_EQUAL = 1;       // Standard 12-TET (A=440)
+  TEMPERAMENT_JUST = 2;        // Just intonation
+  TEMPERAMENT_PYTHAGOREAN = 3; // Pure fifths
+  TEMPERAMENT_432 = 4;         // A=432 Hz tuning
+  TEMPERAMENT_VERDI = 5;       // Scientific pitch (C=256 Hz)
+}
+
+message TuningRequest {
+  TuningType type = 1;
+  string name = 2;             // For sacred/chakra/maqam: frequency or scale name
+  int32 index = 3;             // For shruti/pelog/slendro/midi: note index
+  double base_freq = 4;        // Base frequency (default 440.0)
+  Temperament temperament = 5; // For MIDI type only
+}
+
+message TuningResponse {
+  double frequency = 1;
+  string description = 2;
+  TuningType tuning_type = 3;
+}
+
+message DroneRequest {
+  TuningType type = 1;
+  string name = 2;             // Sacred/chakra name, or "custom"
+  double frequency = 3;        // For custom frequency
+  double duration_ms = 4;      // Duration in milliseconds (default 1000)
+  double amplitude = 5;        // 0.0-1.0 (default 0.3)
+}
+
+message DroneResponse {
+  bytes audio_data = 1;        // Float32 PCM samples
+  double frequency = 2;
+  double duration_ms = 3;
+  int32 sample_rate = 4;
+}
+
+message ListTuningsRequest {
+  // Empty - returns all available tunings
+}
+
+message ListTuningsResponse {
+  repeated string sacred_frequencies = 1;   // om, earth, love, etc.
+  repeated string chakra_names = 2;         // root, sacral, solar, etc.
+  repeated string maqam_scales = 3;         // rast, bayati, hijaz, etc.
+  repeated string temperaments = 4;         // equal, just, pythagorean, etc.
+  int32 shruti_count = 5;                   // 22
+  int32 pelog_notes = 6;                    // 7
+  int32 slendro_notes = 7;                  // 5
+}

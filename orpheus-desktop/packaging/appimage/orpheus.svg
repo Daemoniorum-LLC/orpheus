@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle with gradient -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7B2CBF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3A0CA3;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="noteGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F72585;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#B5179E;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="url(#bgGrad)"/>
+
+  <!-- Music note (stylized quarter note) -->
+  <ellipse cx="100" cy="175" rx="28" ry="22" fill="url(#noteGrad)" transform="rotate(-20 100 175)"/>
+  <rect x="122" y="55" width="8" height="125" fill="url(#noteGrad)" rx="4"/>
+
+  <!-- Sound wave accents -->
+  <path d="M150 100 Q165 85, 165 100 Q165 115, 150 100" stroke="white" stroke-width="4" fill="none" opacity="0.8"/>
+  <path d="M160 90 Q180 70, 180 100 Q180 130, 160 110" stroke="white" stroke-width="4" fill="none" opacity="0.6"/>
+  <path d="M170 80 Q195 55, 195 100 Q195 145, 170 120" stroke="white" stroke-width="4" fill="none" opacity="0.4"/>
+
+  <!-- Letter O hint (subtle) -->
+  <circle cx="128" cy="128" r="80" stroke="white" stroke-width="2" fill="none" opacity="0.2"/>
+</svg>

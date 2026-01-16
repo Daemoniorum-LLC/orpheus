@@ -1,0 +1,28 @@
+{
+  "name": "@orpheus/midi-utils",
+  "version": "0.1.0",
+  "description": "MIDI utilities for Orpheus - MIDI file I/O, playback, and manipulation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "jest"
+  },
+  "keywords": [
+    "maestro",
+    "midi",
+    "music",
+    "playback"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@orpheus/shared-types": "file:../shared-types",
+    "@orpheus/music-theory": "file:../music-theory"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.2"
+  }
+}

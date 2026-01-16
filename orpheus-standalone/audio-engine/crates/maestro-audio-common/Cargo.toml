@@ -1,0 +1,7 @@
+[package]
+name = "maestro-audio-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# No dependencies for now - pure utilities

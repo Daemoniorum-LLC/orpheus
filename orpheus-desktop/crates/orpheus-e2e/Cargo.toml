@@ -1,0 +1,42 @@
+[package]
+name = "orpheus-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "End-to-end testing framework for Orpheus"
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-ui = { workspace = true }
+
+# For screenshot comparison
+image = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization (for state snapshots)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+
+# UI framework types
+egui = { workspace = true }
+
+[dev-dependencies]
+# For running tests
+tokio-test = "0.4"

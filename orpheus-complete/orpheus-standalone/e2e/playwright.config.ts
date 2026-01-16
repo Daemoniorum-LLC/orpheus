@@ -1,0 +1,60 @@
+import { defineConfig, devices } from '@playwright/test';
+
+/**
+ * Maestro AI E2E Test Configuration
+ * Full-stack integration testing
+ */
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: [
+    ['html', { outputFolder: 'test-results/html' }],
+    ['json', { outputFile: 'test-results/results.json' }],
+    ['list']
+  ],
+
+  use: {
+    baseURL: 'http://localhost:5176',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+    },
+  ],
+
+  webServer: [
+    {
+      command: 'cd ../frontend && npm run dev',
+      url: 'http://localhost:5176',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120 * 1000,
+    },
+    {
+      command: 'cd ../backend && ./gradlew bootRun --no-daemon',
+      url: 'http://localhost:8080/actuator/health',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120 * 1000,
+    },
+  ],
+
+  timeout: 60 * 1000,
+  expect: {
+    timeout: 10 * 1000,
+  },
+});

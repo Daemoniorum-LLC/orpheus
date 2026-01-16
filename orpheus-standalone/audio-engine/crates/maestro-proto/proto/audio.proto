@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package maestro.audio;
+
+// Audio processing service
+service AudioProcessor {
+  // Process audio buffer with effects chain
+  rpc ProcessAudio(AudioBuffer) returns (AudioBuffer);
+
+  // Real-time streaming processing (bidirectional)
+  rpc StreamAudio(stream AudioBuffer) returns (stream AudioBuffer);
+
+  // Load VST plugin
+  rpc LoadPlugin(PluginRequest) returns (PluginResponse);
+
+  // Update effect parameters
+  rpc UpdateEffect(EffectUpdate) returns (EffectResponse);
+
+  // Get current latency info
+  rpc GetLatency(LatencyRequest) returns (LatencyResponse);
+}
+
+// Audio buffer (interleaved float32)
+message AudioBuffer {
+  int32 sample_rate = 1;
+  int32 num_channels = 2;
+  int32 num_samples = 3;
+  bytes audio_data = 4;  // Interleaved f32 samples as bytes
+  int64 timestamp_us = 5;
+}
+
+// Plugin management
+message PluginRequest {
+  string plugin_path = 1;
+  int32 sample_rate = 2;
+  int32 buffer_size = 3;
+}
+
+message PluginResponse {
+  bool success = 1;
+  optional string plugin_id = 2;
+  optional string error = 3;
+}
+
+// Effect parameter update
+message EffectUpdate {
+  string effect_id = 1;      // e.g. "eq", "compressor", "reverb"
+  string parameter_id = 2;   // e.g. "band0_gain", "threshold"
+  float value = 3;
+}
+
+message EffectResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+// Latency info
+message LatencyRequest {}
+
+message LatencyResponse {
+  int32 latency_samples = 1;
+  float latency_ms = 2;
+}
+
+// EQ settings
+message EQSettings {
+  repeated EQBand bands = 1;
+}
+
+message EQBand {
+  float frequency = 1;
+  float gain = 2;
+  float q = 3;
+}
+
+// Compressor settings
+message CompressorSettings {
+  float threshold = 1;
+  float ratio = 2;
+  float attack_ms = 3;
+  float release_ms = 4;
+  float knee = 5;
+  float makeup_gain = 6;
+}
+
+// Reverb settings
+message ReverbSettings {
+  float room_size = 1;
+  float decay = 2;
+  float pre_delay_ms = 3;
+  float wet_dry = 4;
+}
+
+// Delay settings
+message DelaySettings {
+  float time_ms = 1;
+  float feedback = 2;
+  float wet_dry = 3;
+  bool sync_to_tempo = 4;
+}
