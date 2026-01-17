@@ -100,55 +100,41 @@ interface ErrorFallbackUIProps {
 }
 
 function ErrorFallbackUI({ error, errorInfo, onReload, onReset, onClearData }: ErrorFallbackUIProps) {
-  // This is a function component but we can't use hooks here since it's called from a class component
-  // We'll use inline styles instead
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100vh',
-      padding: '40px',
-      textAlign: 'center',
-    }}>
-      <Bug24Regular style={{ fontSize: '64px', color: '#d13438', marginBottom: '24px' }} />
+    <div
+      className="flex flex-col items-center justify-center h-screen p-10 text-center bg-background"
+      role="alert"
+      aria-live="assertive"
+    >
+      <Bug24Regular className="text-6xl text-error mb-6" aria-hidden="true" />
 
-      <h1 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '16px' }}>
+      <h1 className="text-2xl font-semibold mb-4 text-foreground">
         Something went wrong
       </h1>
 
-      <p style={{ fontSize: '16px', color: '#666', marginBottom: '32px', maxWidth: '600px', lineHeight: 1.6 }}>
+      <p className="text-base text-foreground-secondary mb-8 max-w-[600px] leading-relaxed">
         We're sorry, but Orpheus encountered an unexpected error.
         Your work may have been auto-saved. Try reloading the page to continue.
       </p>
 
       {error && (
-        <div style={{
-          padding: '16px',
-          backgroundColor: '#f5f5f5',
-          borderRadius: '8px',
-          marginBottom: '32px',
-          maxWidth: '800px',
-          width: '100%',
-          textAlign: 'left',
-          fontFamily: 'monospace',
-          fontSize: '12px',
-          color: '#666',
-          overflow: 'auto',
-          maxHeight: '200px',
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: '8px' }}>Error Details:</div>
-          <div>{error.toString()}</div>
+        <div className="p-4 bg-background-secondary rounded-lg mb-8 max-w-[800px] w-full text-left font-mono text-xs text-foreground-muted overflow-auto max-h-[200px] border border-border">
+          <div className="font-semibold mb-2">Error Details:</div>
+          <div className="text-error">{error.toString()}</div>
           {errorInfo && (
-            <div style={{ marginTop: '8px', fontSize: '11px', color: '#999' }}>
-              {errorInfo.componentStack}
-            </div>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-foreground-muted hover:text-foreground">
+                Stack trace
+              </summary>
+              <pre className="mt-2 text-[11px] whitespace-pre-wrap">
+                {errorInfo.componentStack}
+              </pre>
+            </details>
           )}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '12px' }}>
+      <div className="flex gap-3">
         <Button
           appearance="primary"
           icon={<ArrowClockwise24Regular />}
@@ -170,8 +156,16 @@ function ErrorFallbackUI({ error, errorInfo, onReload, onReset, onClearData }: E
         </Button>
       </div>
 
-      <p style={{ fontSize: '12px', color: '#999', marginTop: '32px' }}>
-        If this problem persists, please report it on our GitHub issues page.
+      <p className="text-xs text-foreground-muted mt-8">
+        If this problem persists, please{' '}
+        <a
+          href="https://github.com/Daemoniorum-LLC/orpheus/issues"
+          className="text-accent hover:underline"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          report it on our GitHub issues page
+        </a>.
       </p>
     </div>
   );

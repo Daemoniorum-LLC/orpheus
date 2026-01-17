@@ -138,8 +138,11 @@ export function useKeyboardShortcuts() {
       // Help (Ctrl+/)
       if (event.ctrlKey && event.key === '/') {
         event.preventDefault();
-        console.log('[Shortcuts] Help requested (not yet implemented)');
-        // TODO: Show help overlay
+        console.log('[Shortcuts] Help requested');
+        // Dispatch custom event for help overlay
+        window.dispatchEvent(new CustomEvent('orpheus:show-help', {
+          detail: { shortcuts: getShortcuts() }
+        }));
         return;
       }
     };

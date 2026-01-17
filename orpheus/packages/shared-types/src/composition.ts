@@ -48,10 +48,30 @@ export interface Beat {
   duration: number;
   notes: Note[];
   rest?: boolean;
-  tuplet?: {
-    actual: number;
-    normal: number;
-  };
+  tuplet?: TupletInfo;
+}
+
+/**
+ * Tuplet information supporting nested tuplets (tuplets within tuplets)
+ * Example: A triplet containing another triplet would have parent/children
+ */
+export interface TupletInfo {
+  /** Number of notes in this tuplet (e.g., 3 for triplet) */
+  actual: number;
+  /** Number of normal notes this tuplet replaces (e.g., 2 for triplet) */
+  normal: number;
+  /** Tuplet bracket type */
+  bracket?: 'start' | 'stop' | 'continue' | 'none';
+  /** Whether to show the tuplet number */
+  showNumber?: boolean;
+  /** Whether to show the tuplet bracket */
+  showBracket?: boolean;
+  /** Nested tuplets (for tuplets within tuplets) */
+  nested?: TupletInfo;
+  /** Depth level for nested tuplets (0 = root, 1 = first level nested, etc.) */
+  depth?: number;
+  /** Unique ID for tuplet grouping */
+  groupId?: string;
 }
 
 export interface Note {

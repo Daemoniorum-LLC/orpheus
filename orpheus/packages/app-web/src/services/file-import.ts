@@ -5,6 +5,7 @@
 
 import { parseGuitarProFile, isGuitarProFile } from '@orpheus/guitar-pro-parser';
 import type { MaestroProject } from '@orpheus/shared-types';
+import { parseMusicXML, isMusicXMLFile } from './musicxml-service';
 
 export interface ImportResult {
   success: boolean;
@@ -46,6 +47,11 @@ export async function importFile(file: File, options?: ImportOptions): Promise<I
     // Guitar Pro file
     if (isGuitarProFile(fileName)) {
       return await importGuitarProFile(file, startTime, fileName, fileSize, onProgress);
+    }
+
+    // MusicXML file
+    if (isMusicXMLFile(fileName)) {
+      return await importMusicXMLFile(file, startTime, fileName, fileSize, onProgress);
     }
 
     // Unsupported format
@@ -160,6 +166,49 @@ async function importGuitarProFile(
 }
 
 /**
+ * Import a MusicXML file
+ */
+async function importMusicXMLFile(
+  file: File,
+  startTime: number,
+  fileName: string,
+  fileSize: number,
+  onProgress?: (progress: number, message: string) => void
+): Promise<ImportResult> {
+  try {
+    console.log(`[FileImport] Importing MusicXML file: ${fileName} (${(fileSize / 1024).toFixed(2)} KB)`);
+
+    onProgress?.(20, 'Reading MusicXML file...');
+    const text = await file.text();
+
+    onProgress?.(50, 'Parsing MusicXML notation...');
+    const project = parseMusicXML(text);
+
+    onProgress?.(90, 'Processing notation data...');
+    const importTime = performance.now() - startTime;
+
+    console.log(`[FileImport] MusicXML import successful in ${importTime.toFixed(2)}ms`);
+    console.log(`[FileImport] Title: ${project.project.metadata.title}`);
+    console.log(`[FileImport] Tracks: ${(project.project.composition.tracks || []).length}`);
+
+    onProgress?.(100, 'Import complete!');
+    return {
+      success: true,
+      project,
+      fileName,
+      fileSize,
+      importTime,
+    };
+  } catch (error) {
+    throw new Error(
+      `Failed to import MusicXML file: ${
+        error instanceof Error ? error.message : 'Parse error'
+      }`
+    );
+  }
+}
+
+/**
  * Validate file before import
  */
 export function validateFile(file: File): { valid: boolean; error?: string } {
@@ -174,7 +223,7 @@ export function validateFile(file: File): { valid: boolean; error?: string } {
 
   // Check file extension
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
-  const validExtensions = ['maestro', 'gp', 'gpx', 'gp5', 'gp4', 'gp3'];
+  const validExtensions = ['maestro', 'gp', 'gpx', 'gp5', 'gp4', 'gp3', 'xml', 'musicxml', 'mxl'];
 
   if (!validExtensions.includes(extension)) {
     return {
@@ -189,7 +238,7 @@ export function validateFile(file: File): { valid: boolean; error?: string } {
 /**
  * Get file type from filename
  */
-export function getFileType(fileName: string): 'maestro' | 'guitar-pro' | 'unknown' {
+export function getFileType(fileName: string): 'maestro' | 'guitar-pro' | 'musicxml' | 'unknown' {
   const extension = fileName.split('.').pop()?.toLowerCase() || '';
 
   if (extension === 'maestro') {
@@ -198,6 +247,10 @@ export function getFileType(fileName: string): 'maestro' | 'guitar-pro' | 'unkno
 
   if (isGuitarProFile(fileName)) {
     return 'guitar-pro';
+  }
+
+  if (isMusicXMLFile(fileName)) {
+    return 'musicxml';
   }
 
   return 'unknown';
@@ -220,7 +273,7 @@ export function formatFileSize(bytes: number): string {
  * Create a file input dialog
  */
 export function createFileInputDialog(
-  accept: string[] = ['.maestro', '.gp', '.gpx', '.gp5', '.gp4', '.gp3'],
+  accept: string[] = ['.maestro', '.gp', '.gpx', '.gp5', '.gp4', '.gp3', '.xml', '.musicxml', '.mxl'],
   onSelect: (file: File) => void
 ): void {
   const input = document.createElement('input');

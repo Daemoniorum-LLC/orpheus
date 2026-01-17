@@ -1,0 +1,49 @@
+[package]
+name = "orpheus-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Export functionality for Orpheus - WAV, MP3, FLAC, stems"
+
+[features]
+default = []
+# Enable MP3 export via LAME (requires libmp3lame)
+mp3 = ["mp3lame-encoder"]
+# Enable OGG Vorbis export (requires libvorbis)
+ogg = ["vorbis-encoder"]
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-audio = { workspace = true }
+orpheus-synth = { workspace = true }
+
+# Audio files
+hound = { workspace = true }
+flacenc = { workspace = true }
+
+# Lossy encoding (optional, requires C libraries)
+mp3lame-encoder = { version = "0.2", optional = true }
+vorbis-encoder = { version = "0.1", optional = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Compression (for .wav.zst, .flac.zst exports)
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { workspace = true }

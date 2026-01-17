@@ -22,6 +22,159 @@ import {
   type Bend,
 } from './types';
 
+/**
+ * GP5 Format Constants
+ * Bit flags and magic numbers used in the binary format
+ */
+const GP5 = {
+  // Version thresholds
+  VERSION_5_0: 500,
+  VERSION_5_10: 510,
+
+  // Master bar header flags
+  MASTER_BAR: {
+    TIME_SIGNATURE: 0x01,
+    REPEAT_START: 0x04,
+    REPEAT_END: 0x08,
+    ALTERNATE_ENDING: 0x10,
+    SECTION_MARKER: 0x20,
+    KEY_SIGNATURE: 0x40,
+    DOUBLE_BAR: 0x80,
+  },
+
+  // Track header flags
+  TRACK: {
+    IS_PERCUSSION: 0x01,
+    IS_12_STRING: 0x02,
+    IS_BANJO: 0x04,
+  },
+
+  // Beat header flags
+  BEAT: {
+    DOTTED: 0x01,
+    HAS_CHORD: 0x02,
+    HAS_TEXT: 0x04,
+    HAS_EFFECTS: 0x08,
+    HAS_MIX_TABLE: 0x10,
+    HAS_TUPLET: 0x20,
+    IS_REST: 0x40,
+  },
+
+  // Beat effect flags (first byte)
+  BEAT_EFFECT_1: {
+    VIBRATO: 0x04,
+    STACCATO: 0x20,
+    TAP_SLAP_POP: 0x20,
+    PICKSTROKE: 0x40,
+  },
+
+  // Beat effect flags (second byte)
+  BEAT_EFFECT_2: {
+    TREMOLO_BAR: 0x04,
+    TREMOLO_PICKING: 0x08,
+  },
+
+  // Note header flags
+  NOTE: {
+    HAS_DURATION: 0x01,
+    ACCENTUATED: 0x02,
+    GHOST_NOTE: 0x04,
+    HAS_EFFECTS: 0x08,
+    HAS_DYNAMIC: 0x10,
+    HAS_TYPE: 0x20,
+    LEFT_HAND_FINGER: 0x80,
+  },
+
+  // Note effect flags (first byte)
+  NOTE_EFFECT_1: {
+    HAS_BEND: 0x01,
+    HAS_GRACE: 0x02,
+    LET_RING: 0x08,
+    HAMMER_PULL: 0x10,
+    STACCATO: 0x20,
+  },
+
+  // Note effect flags (second byte)
+  NOTE_EFFECT_2: {
+    HAS_SLIDE: 0x04,
+    HAS_HARMONIC: 0x08,
+    HAS_TRILL: 0x10,
+    VIBRATO: 0x40,
+  },
+
+  // Note types
+  NOTE_TYPE: {
+    NORMAL: 1,
+    TIE: 2,
+    DEAD: 3,
+  },
+
+  // Triplet feel values
+  TRIPLET_FEEL: {
+    NONE: 0,
+    EIGHTH: 1,
+    SIXTEENTH: 2,
+  },
+
+  // Tap/slap/pop effect values
+  TAP_SLAP_POP: {
+    TAP: 1,
+    SLAP: 2,
+    POP: 3,
+  },
+
+  // Slide type values
+  SLIDE: {
+    SHIFT: 1,
+    LEGATO: 2,
+    OUT_DOWN: 4,
+    OUT_UP: 8,
+    IN_ABOVE: 16,
+    IN_BELOW: 32,
+  },
+
+  // Harmonic type values
+  HARMONIC: {
+    NATURAL: 1,
+    ARTIFICIAL: 2,
+    TAP: 3,
+    PINCH: 4,
+    SEMI: 5,
+  },
+
+  // Duration values (signed byte)
+  DURATION: {
+    WHOLE: -2,
+    HALF: -1,
+    QUARTER: 0,
+    EIGHTH: 1,
+    SIXTEENTH: 2,
+    THIRTY_SECOND: 3,
+    SIXTY_FOURTH: 4,
+  },
+
+  // MIDI channels count
+  MIDI_CHANNELS: 64,
+
+  // Maximum string count read from file
+  MAX_STRINGS: 7,
+
+  // Number of lyric lines in GP5
+  LYRIC_LINES: 5,
+
+  // Maximum alternate endings
+  MAX_ALTERNATE_ENDINGS: 8,
+
+  // Number of page setup strings
+  PAGE_SETUP_STRINGS: 11,
+
+  // Number of musical directions
+  MUSICAL_DIRECTIONS: 19,
+
+  // Number of EQ bands
+  EQ_BANDS: 4,
+} as const;
+
 export class GP5Parser {
   private reader!: BinaryReader;
   private version: string = '';
@@ -39,7 +192,7 @@ export class GP5Parser {
     this.versionNumber = this.parseVersionNumber(this.version);
     if (debug) console.log(`Version: ${this.version} (${this.versionNumber}), offset: ${this.reader.getOffset()}`);
 
-    if (this.versionNumber < 500) {
+    if (this.versionNumber < GP5.VERSION_5_0) {
       throw new Error(`Unsupported Guitar Pro version: ${this.version}`);
     }
 
@@ -53,7 +206,7 @@ export class GP5Parser {
     if (debug) console.log(`Lyrics track: ${lyricsTrack}, offset: ${this.reader.getOffset()}`);
 
     // GP5.10+: Master RSE Equalizer
-    if (this.versionNumber >= 510) {
+    if (this.versionNumber >= GP5.VERSION_5_10) {
       this.skipRSEEqualizer();
       if (debug) console.log(`After RSE EQ, offset: ${this.reader.getOffset()}`);
     }
@@ -68,7 +221,7 @@ export class GP5Parser {
 
     // GP5: Key and octave (8ve can affect display)
     this.reader.skip(1); // Key
-    if (this.versionNumber >= 500) {
+    if (this.versionNumber >= GP5.VERSION_5_0) {
       this.reader.skip(4); // Octave (int32)
     }
 
@@ -77,13 +230,13 @@ export class GP5Parser {
     if (debug) console.log(`After MIDI channels, offset: ${this.reader.getOffset()}`);
 
     // GP5.10+: Musical directions
-    if (this.versionNumber >= 510) {
+    if (this.versionNumber >= GP5.VERSION_5_10) {
       this.skipMusicalDirections();
       if (debug) console.log(`After musical directions, offset: ${this.reader.getOffset()}`);
     }
 
     // GP5.10+: Master reverb setting
-    if (this.versionNumber >= 510) {
+    if (this.versionNumber >= GP5.VERSION_5_10) {
       this.reader.skip(4); // Master reverb
     }
 
@@ -164,7 +317,7 @@ export class GP5Parser {
         bars[trackIndex].push(bar);
 
         // Skip line break (newer versions)
-        if (this.versionNumber >= 500) {
+        if (this.versionNumber >= GP5.VERSION_5_0) {
           this.reader.skip(1);
         }
       }
@@ -262,7 +415,7 @@ export class GP5Parser {
   private readLyrics(): { startBar: number; text: string }[] {
     const lines: { startBar: number; text: string }[] = [];
 
-    for (let i = 0; i < 5; i++) { // GP5 supports 5 lyric lines
+    for (let i = 0; i < GP5.LYRIC_LINES; i++) {
       const startBar = this.reader.readInt();
       const length = this.reader.readInt();
       const text = this.reader.readString(length);
@@ -287,9 +440,9 @@ export class GP5Parser {
    * Skips musical directions (GP5.10+)
    */
   private skipMusicalDirections(): void {
-    // 19 direction markers (coda, double coda, segno, etc.)
+    // Direction markers (coda, double coda, segno, etc.)
     // Each is an int16 indicating the measure number (-1 if not set)
-    this.reader.skip(19 * 2); // 19 directions, 2 bytes each
+    this.reader.skip(GP5.MUSICAL_DIRECTIONS * 2); // 2 bytes each
   }
 
   /**
@@ -308,9 +461,8 @@ export class GP5Parser {
     // Header/footer flags
     const headerFooter = this.reader.readShort();
 
-    // Page text fields (11 strings in GP5)
-    // Title, subtitle, artist, album, words, music, words&music, copyright, pageNumber, tabber, instructions
-    for (let i = 0; i < 11; i++) {
+    // Page text fields (Title, subtitle, artist, album, words, music, words&music, copyright, pageNumber, tabber, instructions)
+    for (let i = 0; i < GP5.PAGE_SETUP_STRINGS; i++) {
       this.skipPageSetupString();
     }
   }
@@ -330,7 +482,7 @@ export class GP5Parser {
    */
   private readMidiChannels(): void {
     // 64 MIDI channels with port/channel/effects data
-    for (let i = 0; i < 64; i++) {
+    for (let i = 0; i < GP5.MIDI_CHANNELS; i++) {
       this.reader.skip(4 * 2); // program, volume
       this.reader.skip(4 * 2); // balance, chorus
       this.reader.skip(4 * 2); // reverb, phaser
@@ -354,7 +506,7 @@ export class GP5Parser {
       if (debug && i < 5) console.log(`  MasterBar ${i}: header=0x${header.toString(16)}, offset=${this.reader.getOffset()}`);
 
       // Time signature change
-      if (header & 0x01) {
+      if (header & GP5.MASTER_BAR.TIME_SIGNATURE) {
         currentTime = {
           numerator: this.reader.readByte(),
           denominator: this.reader.readByte(),
@@ -363,24 +515,24 @@ export class GP5Parser {
       masterBar.time = { ...currentTime };
 
       // Repeat start
-      if (header & 0x04) {
+      if (header & GP5.MASTER_BAR.REPEAT_START) {
         masterBar.repeat = { start: true };
       }
 
       // Repeat end
-      if (header & 0x08) {
+      if (header & GP5.MASTER_BAR.REPEAT_END) {
         const repeatCount = this.reader.readByte();
         masterBar.repeat = { ...masterBar.repeat, end: true, count: repeatCount };
       }
 
       // Alternate ending
-      if (header & 0x10) {
+      if (header & GP5.MASTER_BAR.ALTERNATE_ENDING) {
         const endings = this.reader.readByte();
         masterBar.alternateEndings = this.parseAlternateEndings(endings);
       }
 
       // Section marker
-      if (header & 0x20) {
+      if (header & GP5.MASTER_BAR.SECTION_MARKER) {
         const text = this.readGP5String();
         const r = this.reader.readByte();
         const g = this.reader.readByte();
@@ -389,7 +541,7 @@ export class GP5Parser {
       }
 
       // Key signature change
-      if (header & 0x40) {
+      if (header & GP5.MASTER_BAR.KEY_SIGNATURE) {
         const accidentals = this.reader.readByte(); // Signed byte
         const minor = this.reader.readByte();
         currentKey = {
@@ -400,16 +552,16 @@ export class GP5Parser {
       masterBar.key = { ...currentKey };
 
       // Double bar line (marker only)
-      if (header & 0x80) {
+      if (header & GP5.MASTER_BAR.DOUBLE_BAR) {
         // Skip - just a display marker
       }
 
       // GP5: Triplet feel and beam groups
-      if (this.versionNumber >= 500) {
+      if (this.versionNumber >= GP5.VERSION_5_0) {
         // Triplet feel
         const tripletFeel = this.reader.readByte();
-        if (tripletFeel === 1) masterBar.tripletFeel = 'eighth';
-        else if (tripletFeel === 2) masterBar.tripletFeel = 'sixteenth';
+        if (tripletFeel === GP5.TRIPLET_FEEL.EIGHTH) masterBar.tripletFeel = 'eighth';
+        else if (tripletFeel === GP5.TRIPLET_FEEL.SIXTEENTH) masterBar.tripletFeel = 'sixteenth';
         else masterBar.tripletFeel = 'none';
 
         // Skip beam groups (4 bytes)
@@ -430,7 +582,7 @@ export class GP5Parser {
    */
   private parseAlternateEndings(bitmask: number): number[] {
     const endings: number[] = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < GP5.MAX_ALTERNATE_ENDINGS; i++) {
       if (bitmask & (1 << i)) {
         endings.push(i + 1);
       }
@@ -458,9 +610,9 @@ export class GP5Parser {
   private readTrack(trackIndex: number): Track {
     const header = this.reader.readByte();
 
-    const isPercussion = !!(header & 0x01);
-    const is12String = !!(header & 0x02);
-    const isBanjo = !!(header & 0x04);
+    const isPercussion = !!(header & GP5.TRACK.IS_PERCUSSION);
+    const is12String = !!(header & GP5.TRACK.IS_12_STRING);
+    const isBanjo = !!(header & GP5.TRACK.IS_BANJO);
 
     // Track name (40 bytes, null padded)
     const nameLength = this.reader.readByte();
@@ -470,7 +622,7 @@ export class GP5Parser {
     const stringCount = this.reader.readInt();
     const tuning: number[] = [];
 
-    for (let i = 0; i < 7; i++) { // Always 7 tuning values
+    for (let i = 0; i < GP5.MAX_STRINGS; i++) { // Always 7 tuning values
       const midi = this.reader.readInt();
       if (i < stringCount) {
         tuning.push(midi);
@@ -495,7 +647,7 @@ export class GP5Parser {
     this.reader.skip(1); // Alpha/padding
 
     // GP5 specific data
-    if (this.versionNumber >= 500) {
+    if (this.versionNumber >= GP5.VERSION_5_0) {
       // Skip RSE data
       this.skipRSEData();
     }
@@ -729,7 +881,7 @@ export class GP5Parser {
    */
   private readMixTableChange(): void {
     const instrument = this.reader.readByte();
-    const rse = this.versionNumber >= 500;
+    const rse = this.versionNumber >= GP5.VERSION_5_0;
 
     // RSE instrument info
     if (rse) {
@@ -757,13 +909,13 @@ export class GP5Parser {
     if (tremolo !== 0xFF) this.reader.skip(1);
     if (tempo > 0) {
       this.reader.skip(1);
-      if (this.versionNumber >= 510) {
+      if (this.versionNumber >= GP5.VERSION_5_10) {
         this.reader.skip(1); // Hide tempo flag
       }
     }
 
     // All tracks flag
-    if (this.versionNumber >= 500) {
+    if (this.versionNumber >= GP5.VERSION_5_0) {
       this.reader.skip(1);
     }
 
@@ -838,7 +990,7 @@ export class GP5Parser {
     }
 
     // GP5: Note duration percentage
-    if (this.versionNumber >= 500 && (header & 0x01)) {
+    if (this.versionNumber >= GP5.VERSION_5_0 && (header & GP5.NOTE.HAS_DURATION)) {
       this.reader.skip(4); // Note duration percentage
     }
 

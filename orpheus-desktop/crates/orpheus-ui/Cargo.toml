@@ -1,0 +1,38 @@
+[package]
+name = "orpheus-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "UI components and views for Orpheus desktop"
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-file = { workspace = true, features = ["dialogs"] }
+
+# Daemoniorum shared UI
+daemoniorum-egui = { workspace = true }
+
+# UI Framework
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+egui_dock = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dirs = "5.0"
+
+[dev-dependencies]

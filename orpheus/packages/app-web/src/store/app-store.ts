@@ -11,7 +11,77 @@ import type { MaestroProject } from '@orpheus/shared-types';
  */
 export type AppMode = 'compose' | 'record' | 'mix' | 'master' | 'practice' | 'distribute';
 
-const MAX_HISTORY_SIZE = 50;
+// Reduced history size to limit memory usage
+const MAX_HISTORY_SIZE = 20;
+
+// Debounce time for coalescing rapid updates (e.g., slider dragging)
+const HISTORY_DEBOUNCE_MS = 500;
+
+/**
+ * Represents a history entry with optional compressed representation
+ * Uses lazy serialization - only serializes when memory pressure requires it
+ */
+interface HistoryEntry {
+  // The actual project data (may be null if compressed)
+  project: MaestroProject | null;
+  // Compressed JSON string (used for older entries to save memory)
+  compressed: string | null;
+  // Timestamp for age-based compression
+  timestamp: number;
+}
+
+/**
+ * Compresses older history entries to save memory.
+ * Keeps recent entries as objects, older ones as JSON strings.
+ */
+function compressOldEntries(entries: HistoryEntry[], currentIndex: number): HistoryEntry[] {
+  const KEEP_UNCOMPRESSED = 5; // Keep last 5 entries uncompressed for fast undo
+
+  return entries.map((entry, index) => {
+    const distanceFromCurrent = Math.abs(index - currentIndex);
+
+    // Keep entries close to current position uncompressed
+    if (distanceFromCurrent <= KEEP_UNCOMPRESSED) {
+      // Decompress if needed
+      if (entry.compressed && !entry.project) {
+        return {
+          project: JSON.parse(entry.compressed),
+          compressed: null,
+          timestamp: entry.timestamp,
+        };
+      }
+      return entry;
+    }
+
+    // Compress older entries
+    if (entry.project && !entry.compressed) {
+      return {
+        project: null,
+        compressed: JSON.stringify(entry.project),
+        timestamp: entry.timestamp,
+      };
+    }
+
+    return entry;
+  });
+}
+
+/**
+ * Gets the project from a history entry, decompressing if necessary
+ */
+function getProjectFromEntry(entry: HistoryEntry): MaestroProject {
+  if (entry.project) {
+    return entry.project;
+  }
+  if (entry.compressed) {
+    return JSON.parse(entry.compressed);
+  }
+  throw new Error('Invalid history entry: no project data');
+}
+
+// Debounce timer for history updates
+let historyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingProject: MaestroProject | null = null;
 
 /**
  * Global application state
@@ -30,13 +100,16 @@ export interface AppState {
   rawFileBuffer: ArrayBuffer | null; // For alphaTab native rendering
   setRawFileBuffer: (buffer: ArrayBuffer | null) => void;
 
-  // Undo/Redo
-  history: MaestroProject[];
+  // Undo/Redo (uses HistoryEntry for memory efficiency)
+  history: HistoryEntry[];
   historyIndex: number;
   undo: () => void;
   redo: () => void;
   canUndo: () => boolean;
   canRedo: () => boolean;
+
+  // Immediate update without debouncing (for final state after interactions)
+  commitProject: (project: MaestroProject) => void;
 
   // Playback
   isPlaying: boolean;
@@ -81,40 +154,92 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Project
   project: null,
-  setProject: (project) =>
+  setProject: (project) => {
+    // Clear any pending debounced updates
+    if (historyDebounceTimer) {
+      clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = null;
+      pendingProject = null;
+    }
+
+    const entry: HistoryEntry | null = project ? {
+      project,
+      compressed: null,
+      timestamp: Date.now(),
+    } : null;
+
     set({
       project,
       projectModified: false,
-      history: project ? [project] : [],
-      historyIndex: project ? 0 : -1
-    }),
+      history: entry ? [entry] : [],
+      historyIndex: entry ? 0 : -1
+    });
+  },
+
+  /**
+   * Updates project with debouncing to coalesce rapid changes.
+   * This prevents creating many history entries when dragging sliders, etc.
+   */
   updateProject: (project) => {
+    // Update current project immediately for responsive UI
+    set({ project, projectModified: true });
+
+    // Store the latest project for debounced history commit
+    pendingProject = project;
+
+    // Clear existing timer
+    if (historyDebounceTimer) {
+      clearTimeout(historyDebounceTimer);
+    }
+
+    // Schedule history commit after debounce period
+    historyDebounceTimer = setTimeout(() => {
+      if (pendingProject) {
+        get().commitProject(pendingProject);
+        pendingProject = null;
+      }
+      historyDebounceTimer = null;
+    }, HISTORY_DEBOUNCE_MS);
+  },
+
+  /**
+   * Immediately commits a project state to history (no debouncing).
+   * Use this for discrete actions like "delete track", "add note", etc.
+   */
+  commitProject: (project) => {
     const state = get();
 
-    // Create new history by removing everything after current index
-    const newHistory = state.history.slice(0, state.historyIndex + 1);
+    // Clear debounce timer since we're committing now
+    if (historyDebounceTimer) {
+      clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = null;
+      pendingProject = null;
+    }
 
-    // Add new state
-    newHistory.push(project);
+    // Create new history by removing everything after current index
+    let newHistory = state.history.slice(0, state.historyIndex + 1);
+
+    // Add new entry
+    const newEntry: HistoryEntry = {
+      project,
+      compressed: null,
+      timestamp: Date.now(),
+    };
+    newHistory.push(newEntry);
 
     // Limit history size
     if (newHistory.length > MAX_HISTORY_SIZE) {
       newHistory.shift();
-    } else {
-      // Increment index only if we didn't remove the first item
-      set({
-        project,
-        history: newHistory,
-        historyIndex: newHistory.length - 1,
-        projectModified: true
-      });
-      return;
     }
+
+    // Compress older entries to save memory
+    const newIndex = newHistory.length - 1;
+    newHistory = compressOldEntries(newHistory, newIndex);
 
     set({
       project,
       history: newHistory,
-      historyIndex: newHistory.length - 1,
+      historyIndex: newIndex,
       projectModified: true
     });
   },
@@ -128,26 +253,52 @@ export const useAppStore = create<AppState>((set, get) => ({
   historyIndex: -1,
   undo: () => {
     const state = get();
+
+    // Cancel any pending debounced update first
+    if (historyDebounceTimer) {
+      clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = null;
+      pendingProject = null;
+    }
+
     if (state.historyIndex > 0) {
       const newIndex = state.historyIndex - 1;
+      const project = getProjectFromEntry(state.history[newIndex]);
+
+      // Recompress entries based on new position
+      const updatedHistory = compressOldEntries(state.history, newIndex);
+
       set({
-        project: state.history[newIndex],
+        project,
+        history: updatedHistory,
         historyIndex: newIndex,
         projectModified: true
       });
-      console.log('[Undo] Undid to index:', newIndex);
     }
   },
   redo: () => {
     const state = get();
+
+    // Cancel any pending debounced update first
+    if (historyDebounceTimer) {
+      clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = null;
+      pendingProject = null;
+    }
+
     if (state.historyIndex < state.history.length - 1) {
       const newIndex = state.historyIndex + 1;
+      const project = getProjectFromEntry(state.history[newIndex]);
+
+      // Recompress entries based on new position
+      const updatedHistory = compressOldEntries(state.history, newIndex);
+
       set({
-        project: state.history[newIndex],
+        project,
+        history: updatedHistory,
         historyIndex: newIndex,
         projectModified: true
       });
-      console.log('[Redo] Redid to index:', newIndex);
     }
   },
   canUndo: () => {

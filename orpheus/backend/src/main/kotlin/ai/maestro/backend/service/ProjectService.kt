@@ -1,6 +1,7 @@
 package ai.maestro.backend.service
 
 import ai.maestro.backend.dto.*
+import ai.maestro.backend.model.CollaboratorRole
 import ai.maestro.backend.model.Project
 import ai.maestro.backend.model.User
 import ai.maestro.backend.repository.ProjectRepository
@@ -96,9 +97,9 @@ class ProjectService(
         // Owner always has write access
         if (project.user.id == userId) return true
 
-        // Check if user is an editor
+        // Check if user is an owner or editor collaborator
         return project.collaborators.any {
-            it.user.id == userId && it.role.name in listOf("OWNER", "EDITOR")
+            it.user.id == userId && it.role in listOf(CollaboratorRole.OWNER, CollaboratorRole.EDITOR)
         }
     }
 }

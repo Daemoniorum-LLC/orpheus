@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Orpheus
+GenericName=Music Production
+Comment=Professional music production platform
+Exec=orpheus %F
+Icon=orpheus
+Terminal=false
+Categories=AudioVideo;Audio;Music;Sequencer;
+MimeType=audio/midi;audio/x-midi;application/x-guitar-pro;audio/wav;audio/x-wav;audio/flac;
+Keywords=music;audio;daw;guitar;tab;midi;production;synth;
+StartupNotify=true
+StartupWMClass=orpheus

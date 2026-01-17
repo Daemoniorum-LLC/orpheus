@@ -1,0 +1,49 @@
+[package]
+name = "orpheus-synth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Audio synthesis engine with guitar, orchestral, and AI-generated audio"
+
+[features]
+default = []
+audio-output = ["cpal"]
+# Simulation mode: runs full audio engine pipeline but discards output (for CI testing)
+simulation = []
+dantalion = ["serde", "serde_json"]
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-file = { workspace = true }
+
+# Random number generation
+rand = { workspace = true }
+
+# Audio output (optional - requires platform audio libraries)
+cpal = { workspace = true, optional = true }
+
+# Threading
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization (optional - for Dantalion integration)
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+libc = "0.2"
+criterion = "0.5"
+
+[[bench]]
+name = "synth_benchmarks"
+harness = false

@@ -53,14 +53,12 @@ function App() {
     // Create skip to content link
     createSkipLink('main-content', 'Skip to main content');
 
-    // Log accessibility preferences
+    // Check accessibility preferences
     const reducedMotion = prefersReducedMotion();
     if (reducedMotion) {
-      console.log('[Accessibility] Reduced motion preference detected');
-      // Future: Disable animations based on this preference
+      // Reduced motion CSS is handled in index.css via @media query
+      document.documentElement.dataset.reducedMotion = 'true';
     }
-
-    console.log('[Accessibility] Features initialized');
   }, []);
 
   // Check for first-run and show onboarding
@@ -113,7 +111,6 @@ function App() {
         if (recover) {
           setProject(autoSave.project);
           showInfo('Auto-save recovered successfully', 3000);
-          console.log('[App] Auto-save recovered');
         } else {
           clearAutoSave();
         }
@@ -133,7 +130,6 @@ function App() {
       // Start/update auto-save
       if (!autoSaveManager.enabled()) {
         autoSaveManager.start(project, 30000); // 30 seconds
-        console.log('[App] Auto-save started');
       } else {
         autoSaveManager.updateProject(project);
       }
@@ -141,7 +137,6 @@ function App() {
       // Stop auto-save when no project
       if (autoSaveManager.enabled()) {
         autoSaveManager.stop();
-        console.log('[App] Auto-save stopped');
       }
     }
   }, [project]);
@@ -156,10 +151,8 @@ function App() {
       setMode(sessionState.mode);
       setSidebarOpen(sessionState.sidebarOpen);
       setZoomLevel(sessionState.zoomLevel);
-
-      console.log('[App] Session state restored');
-    } catch (error) {
-      console.error('[App] Failed to restore session state:', error);
+    } catch {
+      // Session state restore failed - use defaults
       showError('Failed to restore previous session', 3000);
     }
   }, []);
@@ -198,7 +191,7 @@ function App() {
   return (
     <ErrorBoundary>
       <ThemeProvider>
-        <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#1e1e1e] text-white">
+        <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
           <Toolbar />
           <ModeSelector />
 
@@ -244,78 +237,73 @@ function App() {
 function SplashScreen() {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6">
-      <h1 className="text-5xl font-bold bg-gradient-to-br from-[#667eea] to-[#764ba2] bg-clip-text text-transparent">
+      <h1 className="text-5xl font-bold bg-gradient-to-br from-accent to-accent-secondary bg-clip-text text-transparent">
         🎸 Orpheus
       </h1>
-      <p className="text-xl text-[#999] text-center max-w-[600px]">
+      <p className="text-xl text-foreground-secondary text-center max-w-[600px]">
         The world's first unified music production platform.
         <br />
         From first chord to final master - one application, infinite possibilities.
       </p>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(250px,1fr))] gap-4 mt-8 max-w-[1000px]">
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🎼 Compose Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            Professional tablature editing with Guitar Pro import.
-            <br />
-            100+ chords, 20+ scales, AI composition assistance.
-          </div>
-        </div>
+        <FeatureCard icon="🎼" title="Compose Mode">
+          Professional tablature editing with Guitar Pro import.
+          <br />
+          100+ chords, 20+ scales, AI composition assistance.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🎙️ Record Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            Multi-track audio recording with real-time monitoring.
-            <br />
-            VST/AU/AAX plugin hosting, MIDI recording.
-          </div>
-        </div>
+        <FeatureCard icon="🎙️" title="Record Mode">
+          Multi-track audio recording with real-time monitoring.
+          <br />
+          VST/AU/AAX plugin hosting, MIDI recording.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🎚️ Mix Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            Professional mixing console with AI suggestions.
-            <br />
-            EQ, compression, reverb, automation.
-          </div>
-        </div>
+        <FeatureCard icon="🎚️" title="Mix Mode">
+          Professional mixing console with AI suggestions.
+          <br />
+          EQ, compression, reverb, automation.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">✨ Master Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            AI-powered mastering with platform-specific targets.
-            <br />
-            LUFS metering, multi-format export.
-          </div>
-        </div>
+        <FeatureCard icon="✨" title="Master Mode">
+          AI-powered mastering with platform-specific targets.
+          <br />
+          LUFS metering, multi-format export.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🎸 Practice Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            Speed trainer with AI performance analysis.
-            <br />
-            Loop sections, track progress, improve technique.
-          </div>
-        </div>
+        <FeatureCard icon="🎸" title="Practice Mode">
+          Speed trainer with AI performance analysis.
+          <br />
+          Loop sections, track progress, improve technique.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🌍 Distribute Mode</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            Upload to Spotify, Apple Music, and all streaming platforms.
-            <br />
-            DistroKid integration, release management, analytics.
-          </div>
-        </div>
+        <FeatureCard icon="🌍" title="Distribute Mode">
+          Upload to Spotify, Apple Music, and all streaming platforms.
+          <br />
+          DistroKid integration, release management, analytics.
+        </FeatureCard>
 
-        <div className="p-5 bg-[#2a2a2a] rounded-lg border border-[#3a3a3a]">
-          <div className="text-lg font-semibold mb-2">🤖 AI Assistance</div>
-          <div className="text-sm text-[#999] leading-relaxed">
-            7 specialized AI personas guide you through production.
-            <br />
-            Music theory, composition, mixing, mastering, learning.
-          </div>
-        </div>
+        <FeatureCard icon="🤖" title="AI Assistance">
+          7 specialized AI personas guide you through production.
+          <br />
+          Music theory, composition, mixing, mastering, learning.
+        </FeatureCard>
+      </div>
+    </div>
+  );
+}
+
+/** Feature card component for splash screen */
+function FeatureCard({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+  return (
+    <div
+      className="p-5 bg-background-card rounded-lg border border-border hover:border-accent transition-colors duration-fast"
+      role="article"
+      aria-label={`${title} feature`}
+    >
+      <div className="text-lg font-semibold mb-2">{icon} {title}</div>
+      <div className="text-sm text-foreground-secondary leading-relaxed">
+        {children}
       </div>
     </div>
   );

@@ -1,0 +1,45 @@
+[package]
+name = "orpheus-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AI integration for Orpheus - Leviathan persona client"
+
+[dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# Daemoniorum Agent SDK
+daemoniorum-agent-sdk = { workspace = true, features = ["full"] }
+
+# HTTP client (for Leviathan GraphQL API)
+reqwest = { workspace = true }
+
+# gRPC (for future Leviathan gRPC connection)
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tracing-subscriber = { workspace = true }

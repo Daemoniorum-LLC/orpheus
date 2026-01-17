@@ -3,8 +3,8 @@
  * Enhanced channel strip with EQ, Compressor, and Effects
  */
 
-import { makeStyles, shorthands, Button, Dialog, DialogTrigger, DialogSurface, DialogTitle, DialogBody, DialogContent, DialogActions } from '@fluentui/react-components';
-import { Settings24Regular } from '@fluentui/react-icons';
+import { makeStyles, shorthands, Button, Dialog, DialogTrigger, DialogSurface, DialogTitle, DialogBody, DialogContent, DialogActions, Tooltip } from '@fluentui/react-components';
+import { Settings24Regular, Eye24Regular, EyeOff24Regular } from '@fluentui/react-icons';
 import { useState, useEffect } from 'react';
 import { ChannelStrip, type ChannelStripProps } from './ChannelStrip';
 import { ParametricEQ, type EQBand } from './ParametricEQ';
@@ -39,6 +39,8 @@ export interface ChannelProcessors {
 export interface ChannelStripWithProcessorsProps extends ChannelStripProps {
   processors?: ChannelProcessors;
   onProcessorsChange?: (processors: ChannelProcessors) => void;
+  onFocusToggle?: () => void;
+  isFocused?: boolean;
 }
 
 const DEFAULT_PROCESSORS: ChannelProcessors = {
@@ -78,6 +80,8 @@ const DEFAULT_PROCESSORS: ChannelProcessors = {
 export function ChannelStripWithProcessors({
   processors = DEFAULT_PROCESSORS,
   onProcessorsChange,
+  onFocusToggle,
+  isFocused = false,
   ...channelProps
 }: ChannelStripWithProcessorsProps) {
   const styles = useStyles();
@@ -120,18 +124,32 @@ export function ChannelStripWithProcessors({
       {/* Channel Strip */}
       <ChannelStrip {...channelProps} />
 
-      {/* Processor Settings Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={(_, data) => setDialogOpen(data.open)}>
-        <DialogTrigger disableButtonEnhancement>
-          <Button
-            icon={<Settings24Regular />}
-            appearance="subtle"
-            size="small"
-            className={styles.settingsButton}
-          >
-            FX
-          </Button>
-        </DialogTrigger>
+      {/* Focus and FX Buttons */}
+      <div style={{ display: 'flex', gap: '4px' }}>
+        {onFocusToggle && (
+          <Tooltip content={isFocused ? "Exit Focus Mode" : "Focus on this track"} relationship="label">
+            <Button
+              icon={isFocused ? <EyeOff24Regular /> : <Eye24Regular />}
+              appearance={isFocused ? "primary" : "subtle"}
+              size="small"
+              onClick={onFocusToggle}
+              style={{ flex: 1 }}
+            />
+          </Tooltip>
+        )}
+
+        {/* Processor Settings Dialog */}
+        <Dialog open={dialogOpen} onOpenChange={(_, data) => setDialogOpen(data.open)}>
+          <DialogTrigger disableButtonEnhancement>
+            <Button
+              icon={<Settings24Regular />}
+              appearance="subtle"
+              size="small"
+              style={{ flex: 1 }}
+            >
+              FX
+            </Button>
+          </DialogTrigger>
         <DialogSurface>
           <DialogBody>
             <DialogTitle>
@@ -158,7 +176,8 @@ export function ChannelStripWithProcessors({
             </DialogActions>
           </DialogBody>
         </DialogSurface>
-      </Dialog>
+        </Dialog>
+      </div>
     </div>
   );
 }

@@ -20,6 +20,7 @@ export class MIDIPlayer {
   private currentTick: number = 0;
   private startTime: number = 0;
   private midiOutput: any = null; // WebMIDI Output
+  private scheduledTimeouts: ReturnType<typeof setTimeout>[] = [];
 
   constructor(options: MIDIPlayerOptions = {}) {
     this.options = {
@@ -27,6 +28,16 @@ export class MIDIPlayer {
       loop: false,
       ...options,
     };
+  }
+
+  /**
+   * Clears all scheduled timeouts to prevent memory leaks
+   */
+  private clearScheduledTimeouts(): void {
+    for (const timeout of this.scheduledTimeouts) {
+      clearTimeout(timeout);
+    }
+    this.scheduledTimeouts = [];
   }
 
   /**
@@ -63,6 +74,8 @@ export class MIDIPlayer {
   pause(): void {
     this.playing = false;
     this.paused = true;
+    this.clearScheduledTimeouts();
+    this.allNotesOff();
   }
 
   /**
@@ -72,6 +85,7 @@ export class MIDIPlayer {
     this.playing = false;
     this.paused = false;
     this.currentTick = 0;
+    this.clearScheduledTimeouts();
     this.allNotesOff();
   }
 
@@ -79,6 +93,10 @@ export class MIDIPlayer {
    * Seeks to a specific position (in ticks)
    */
   seek(tick: number): void {
+    // Clear existing scheduled events before rescheduling
+    this.clearScheduledTimeouts();
+    this.allNotesOff();
+
     this.currentTick = tick;
     if (this.playing) {
       this.startTime = performance.now();
@@ -110,6 +128,9 @@ export class MIDIPlayer {
   private scheduleEvents(): void {
     if (!this.file || !this.playing) return;
 
+    // Clear any existing timeouts before scheduling new ones
+    this.clearScheduledTimeouts();
+
     const track = this.file.tracks[0]; // Simplified: play first track only
     const division = this.file.header.division;
     const ticksPerSecond = (this.options.tempo! / 60) * division;
@@ -123,13 +144,22 @@ export class MIDIPlayer {
       const delay = timeMs - (performance.now() - this.startTime);
 
       if (delay > 0) {
-        setTimeout(() => this.handleEvent(event), delay);
+        const timeoutId = setTimeout(() => {
+          // Only handle event if still playing
+          if (this.playing) {
+            this.handleEvent(event);
+          }
+        }, delay);
+        this.scheduledTimeouts.push(timeoutId);
       }
     }
 
     // Schedule end
     const totalTime = (tick / ticksPerSecond) * 1000;
-    setTimeout(() => {
+    const endTimeoutId = setTimeout(() => {
+      // Only handle end if still playing
+      if (!this.playing) return;
+
       if (this.options.loop) {
         this.currentTick = 0;
         this.play();
@@ -138,6 +168,7 @@ export class MIDIPlayer {
         this.options.onEnd?.();
       }
     }, totalTime);
+    this.scheduledTimeouts.push(endTimeoutId);
   }
 
   private handleEvent(event: MIDIEvent): void {

@@ -1,0 +1,595 @@
+//! Drum kit notation
+//!
+//! Complete drum notation for blast beats, polyrhythms, and extreme metal drumming.
+
+use serde::{Deserialize, Serialize};
+
+/// Drum kit configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrumKit {
+    /// Kit name/preset
+    pub name: String,
+    /// Number of rack toms
+    pub rack_toms: u8,
+    /// Number of floor toms
+    pub floor_toms: u8,
+    /// Number of crashes
+    pub crashes: u8,
+    /// Has china cymbal
+    pub china: bool,
+    /// Has splash cymbals
+    pub splashes: u8,
+    /// Has double bass
+    pub double_bass: bool,
+    /// Number of hi-hat stacks (typically 1)
+    pub hi_hats: u8,
+    /// Custom MIDI mappings
+    pub midi_map: DrumMidiMap,
+}
+
+impl DrumKit {
+    /// Standard 5-piece kit
+    pub fn standard() -> Self {
+        Self {
+            name: "Standard Kit".to_string(),
+            rack_toms: 2,
+            floor_toms: 1,
+            crashes: 2,
+            china: false,
+            splashes: 1,
+            double_bass: false,
+            hi_hats: 1,
+            midi_map: DrumMidiMap::general_midi(),
+        }
+    }
+
+    /// Metal/death metal kit
+    pub fn metal() -> Self {
+        Self {
+            name: "Metal Kit".to_string(),
+            rack_toms: 3,
+            floor_toms: 2,
+            crashes: 3,
+            china: true,
+            splashes: 2,
+            double_bass: true,
+            hi_hats: 1,
+            midi_map: DrumMidiMap::general_midi(),
+        }
+    }
+
+    /// Extended kit for progressive/tech death
+    pub fn extended() -> Self {
+        Self {
+            name: "Extended Kit".to_string(),
+            rack_toms: 4,
+            floor_toms: 2,
+            crashes: 4,
+            china: true,
+            splashes: 3,
+            double_bass: true,
+            hi_hats: 2, // X-hat
+            midi_map: DrumMidiMap::general_midi(),
+        }
+    }
+}
+
+/// MIDI note mappings for drum kit
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrumMidiMap {
+    // Kick drums
+    pub kick: u8,
+    pub kick2: u8,
+
+    // Snare
+    pub snare: u8,
+    pub snare_rimshot: u8,
+    pub snare_sidestick: u8,
+
+    // Hi-hat
+    pub hihat_closed: u8,
+    pub hihat_pedal: u8,
+    pub hihat_open: u8,
+    pub hihat_half: u8,
+
+    // Toms
+    pub tom_high: u8,
+    pub tom_mid_high: u8,
+    pub tom_mid: u8,
+    pub tom_mid_low: u8,
+    pub tom_low: u8,
+    pub tom_floor: u8,
+
+    // Cymbals
+    pub crash1: u8,
+    pub crash2: u8,
+    pub crash3: u8,
+    pub ride: u8,
+    pub ride_bell: u8,
+    pub china: u8,
+    pub splash1: u8,
+    pub splash2: u8,
+    pub stack: u8,
+}
+
+impl Default for DrumMidiMap {
+    fn default() -> Self {
+        Self::general_midi()
+    }
+}
+
+impl DrumMidiMap {
+    /// General MIDI standard mapping
+    pub fn general_midi() -> Self {
+        Self {
+            kick: 36,        // C1
+            kick2: 35,       // B0
+            snare: 38,       // D1
+            snare_rimshot: 40, // E1
+            snare_sidestick: 37, // C#1
+            hihat_closed: 42, // F#1
+            hihat_pedal: 44,  // G#1
+            hihat_open: 46,   // A#1
+            hihat_half: 43,   // G1 (sometimes used)
+            tom_high: 50,     // D2
+            tom_mid_high: 48, // C2
+            tom_mid: 47,      // B1
+            tom_mid_low: 45,  // A1
+            tom_low: 43,      // G1
+            tom_floor: 41,    // F1
+            crash1: 49,       // C#2
+            crash2: 57,       // A2
+            crash3: 55,       // G2
+            ride: 51,         // D#2
+            ride_bell: 53,    // F2
+            china: 52,        // E2
+            splash1: 55,      // G2
+            splash2: 59,      // B2
+            stack: 54,        // F#2
+        }
+    }
+
+    /// Superior Drummer / EZDrummer mapping
+    pub fn superior_drummer() -> Self {
+        // Similar to GM but with extensions
+        Self::general_midi()
+    }
+}
+
+/// A drum hit
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrumHit {
+    /// Which drum piece
+    pub piece: DrumPiece,
+    /// Articulation
+    pub articulation: DrumArticulation,
+    /// Velocity (0-127)
+    pub velocity: u8,
+    /// Is this a ghost note?
+    pub ghost: bool,
+    /// Is this accented?
+    pub accent: bool,
+    /// Is this a flam?
+    pub flam: Option<FlamData>,
+    /// Is this a drag/ruff?
+    pub drag: Option<DragData>,
+    /// Is this a buzz/roll?
+    pub buzz: bool,
+}
+
+impl DrumHit {
+    pub fn new(piece: DrumPiece) -> Self {
+        Self {
+            piece,
+            articulation: piece.default_articulation(),
+            velocity: 100,
+            ghost: false,
+            accent: false,
+            flam: None,
+            drag: None,
+            buzz: false,
+        }
+    }
+
+    pub fn ghost(mut self) -> Self {
+        self.ghost = true;
+        self.velocity = 50;
+        self
+    }
+
+    pub fn accent(mut self) -> Self {
+        self.accent = true;
+        self.velocity = 127;
+        self
+    }
+
+    pub fn with_articulation(mut self, art: DrumArticulation) -> Self {
+        self.articulation = art;
+        self
+    }
+
+    pub fn with_velocity(mut self, vel: u8) -> Self {
+        self.velocity = vel;
+        self
+    }
+}
+
+/// Drum piece types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrumPiece {
+    // Kick
+    Kick,
+    Kick2,  // For double bass
+
+    // Snare
+    Snare,
+
+    // Hi-hat
+    HiHat,
+    HiHatPedal,
+
+    // Toms
+    TomHigh,
+    TomMidHigh,
+    TomMid,
+    TomMidLow,
+    TomLow,
+    TomFloor,
+
+    // Cymbals
+    Crash1,
+    Crash2,
+    Crash3,
+    Ride,
+    RideBell,
+    China,
+    Splash1,
+    Splash2,
+    Stack,
+}
+
+impl DrumPiece {
+    /// Get default articulation for this piece
+    pub fn default_articulation(&self) -> DrumArticulation {
+        match self {
+            Self::Snare => DrumArticulation::SnareCenter,
+            Self::HiHat => DrumArticulation::HiHatClosed,
+            Self::Ride => DrumArticulation::RideEdge,
+            _ => DrumArticulation::Normal,
+        }
+    }
+
+    /// Get MIDI note for this piece
+    pub fn midi_note(&self, map: &DrumMidiMap) -> u8 {
+        match self {
+            Self::Kick => map.kick,
+            Self::Kick2 => map.kick2,
+            Self::Snare => map.snare,
+            Self::HiHat => map.hihat_closed,
+            Self::HiHatPedal => map.hihat_pedal,
+            Self::TomHigh => map.tom_high,
+            Self::TomMidHigh => map.tom_mid_high,
+            Self::TomMid => map.tom_mid,
+            Self::TomMidLow => map.tom_mid_low,
+            Self::TomLow => map.tom_low,
+            Self::TomFloor => map.tom_floor,
+            Self::Crash1 => map.crash1,
+            Self::Crash2 => map.crash2,
+            Self::Crash3 => map.crash3,
+            Self::Ride => map.ride,
+            Self::RideBell => map.ride_bell,
+            Self::China => map.china,
+            Self::Splash1 => map.splash1,
+            Self::Splash2 => map.splash2,
+            Self::Stack => map.stack,
+        }
+    }
+
+    /// Display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Kick => "Kick",
+            Self::Kick2 => "Kick 2",
+            Self::Snare => "Snare",
+            Self::HiHat => "Hi-Hat",
+            Self::HiHatPedal => "HH Pedal",
+            Self::TomHigh => "High Tom",
+            Self::TomMidHigh => "Mid-High Tom",
+            Self::TomMid => "Mid Tom",
+            Self::TomMidLow => "Mid-Low Tom",
+            Self::TomLow => "Low Tom",
+            Self::TomFloor => "Floor Tom",
+            Self::Crash1 => "Crash 1",
+            Self::Crash2 => "Crash 2",
+            Self::Crash3 => "Crash 3",
+            Self::Ride => "Ride",
+            Self::RideBell => "Ride Bell",
+            Self::China => "China",
+            Self::Splash1 => "Splash 1",
+            Self::Splash2 => "Splash 2",
+            Self::Stack => "Stack",
+        }
+    }
+
+    /// Standard notation line (from bottom)
+    pub fn staff_line(&self) -> i8 {
+        match self {
+            Self::Kick | Self::Kick2 => 0,
+            Self::Snare => 2,
+            Self::TomFloor => 1,
+            Self::TomLow => 2,
+            Self::TomMidLow => 3,
+            Self::TomMid => 3,
+            Self::TomMidHigh => 4,
+            Self::TomHigh => 4,
+            Self::HiHat | Self::HiHatPedal => 5,
+            Self::Crash1 | Self::Crash2 | Self::Crash3 => 6,
+            Self::China | Self::Splash1 | Self::Splash2 | Self::Stack => 6,
+            Self::Ride | Self::RideBell => 5,
+        }
+    }
+}
+
+/// Drum articulations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrumArticulation {
+    /// Normal/default hit
+    Normal,
+
+    // Snare articulations
+    /// Center of head
+    SnareCenter,
+    /// Edge of head (thinner)
+    SnareEdge,
+    /// Rimshot (stick hits rim and head)
+    Rimshot,
+    /// Cross-stick / side stick
+    CrossStick,
+    /// Rim only (woodblock sound)
+    RimOnly,
+    /// Brush sweep
+    BrushSweep,
+    /// Brush tap
+    BrushTap,
+
+    // Hi-hat articulations
+    /// Fully closed
+    HiHatClosed,
+    /// Slightly open
+    HiHatLoose,
+    /// Half open
+    HiHatHalf,
+    /// Open
+    HiHatOpen,
+    /// Pedal chick (foot only)
+    HiHatPedal,
+    /// Foot splash
+    HiHatSplash,
+    /// Shank (stick shaft on edge)
+    HiHatShank,
+
+    // Cymbal articulations
+    /// Edge hit
+    CymbalEdge,
+    /// Bell hit
+    CymbalBell,
+    /// Bow (middle)
+    CymbalBow,
+    /// Choke (grab after hit)
+    CymbalChoke,
+    /// Muted/damped
+    CymbalMuted,
+
+    // Ride specific
+    /// Ride edge (crashy)
+    RideEdge,
+    /// Ride bell
+    RideBell,
+    /// Ride bow
+    RideBow,
+
+    // Tom articulations
+    /// Center hit
+    TomCenter,
+    /// Rimshot
+    TomRimshot,
+    /// Cross-stick
+    TomCrossStick,
+}
+
+impl DrumArticulation {
+    /// Symbol for notation display
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::Normal => "●",
+            Self::SnareCenter => "●",
+            Self::SnareEdge => "○",
+            Self::Rimshot => "⊗",
+            Self::CrossStick => "×",
+            Self::RimOnly => "□",
+            Self::BrushSweep => "~",
+            Self::BrushTap => "·",
+            Self::HiHatClosed => "×",
+            Self::HiHatLoose => "+",
+            Self::HiHatHalf => "÷",
+            Self::HiHatOpen => "○",
+            Self::HiHatPedal => "×",
+            Self::HiHatSplash => "◎",
+            Self::HiHatShank => "—",
+            Self::CymbalEdge => "●",
+            Self::CymbalBell => "△",
+            Self::CymbalBow => "○",
+            Self::CymbalChoke => "⊘",
+            Self::CymbalMuted => "□",
+            Self::RideEdge => "●",
+            Self::RideBell => "△",
+            Self::RideBow => "○",
+            Self::TomCenter => "●",
+            Self::TomRimshot => "⊗",
+            Self::TomCrossStick => "×",
+        }
+    }
+}
+
+/// Flam data (grace note before main hit)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FlamData {
+    /// Which stick leads (left = true)
+    pub left_lead: bool,
+    /// Grace note velocity relative to main (0.0 - 1.0)
+    pub grace_velocity: f32,
+}
+
+impl Default for FlamData {
+    fn default() -> Self {
+        Self {
+            left_lead: true,
+            grace_velocity: 0.5,
+        }
+    }
+}
+
+/// Drag/ruff data (two grace notes)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DragData {
+    /// Drag type
+    pub drag_type: DragType,
+    /// Speed
+    pub speed: DragSpeed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DragType {
+    /// Single drag (2 grace notes)
+    Single,
+    /// Double drag (4 grace notes)
+    Double,
+    /// Drag tap
+    DragTap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DragSpeed {
+    Normal,
+    Fast,
+    Slow,
+}
+
+// ===== DRUM PATTERNS =====
+
+/// Common drum pattern types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrumPattern {
+    // Metal patterns
+    /// Standard blast beat
+    BlastBeat,
+    /// Cannibal Corpse / traditional blast
+    TraditionalBlast,
+    /// Hammer blast (snare on every kick)
+    HammerBlast,
+    /// Bomb blast
+    BombBlast,
+    /// Gravity blast (one-handed roll)
+    GravityBlast,
+    /// Hyperblast
+    Hyperblast,
+
+    // Double bass patterns
+    /// Alternating double kick
+    DoubleBassAlternating,
+    /// Gallop pattern
+    Gallop,
+    /// Triplet double bass
+    TripletDoubleBass,
+
+    // Grooves
+    /// Standard rock beat
+    RockBeat,
+    /// Half-time groove
+    HalfTime,
+    /// Breakdown pattern
+    Breakdown,
+    /// D-beat (punk/crust)
+    DBeat,
+    /// Skank beat (thrash)
+    SkankBeat,
+}
+
+impl DrumPattern {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::BlastBeat => "Blast Beat",
+            Self::TraditionalBlast => "Traditional Blast",
+            Self::HammerBlast => "Hammer Blast",
+            Self::BombBlast => "Bomb Blast",
+            Self::GravityBlast => "Gravity Blast",
+            Self::Hyperblast => "Hyperblast",
+            Self::DoubleBassAlternating => "Double Bass",
+            Self::Gallop => "Gallop",
+            Self::TripletDoubleBass => "Triplet Double Bass",
+            Self::RockBeat => "Rock Beat",
+            Self::HalfTime => "Half-Time",
+            Self::Breakdown => "Breakdown",
+            Self::DBeat => "D-Beat",
+            Self::SkankBeat => "Skank Beat",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::BlastBeat => "Alternating kick/snare with constant hi-hat/ride",
+            Self::TraditionalBlast => "Snare on every beat, alternating feet",
+            Self::HammerBlast => "Kick and snare hit together",
+            Self::BombBlast => "Snare and kick on same beat, often 16ths",
+            Self::GravityBlast => "One-handed snare roll with feet",
+            Self::Hyperblast => "Extremely fast blast with minimal movement",
+            Self::DoubleBassAlternating => "Alternating right-left kick pattern",
+            Self::Gallop => "Triplet or dotted pattern on kick",
+            Self::TripletDoubleBass => "Triplet feel on double kick",
+            Self::RockBeat => "Standard 4/4 rock pattern",
+            Self::HalfTime => "Snare on beat 3 only",
+            Self::Breakdown => "Half-time with heavy accents",
+            Self::DBeat => "Punk/crust single pedal pattern",
+            Self::SkankBeat => "Thrash metal upbeat pattern",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_drum_kit_creation() {
+        let metal = DrumKit::metal();
+        assert!(metal.double_bass);
+        assert!(metal.china);
+        assert_eq!(metal.crashes, 3);
+    }
+
+    #[test]
+    fn test_drum_hit() {
+        let snare = DrumHit::new(DrumPiece::Snare)
+            .with_articulation(DrumArticulation::Rimshot)
+            .accent();
+
+        assert!(snare.accent);
+        assert_eq!(snare.velocity, 127);
+        assert_eq!(snare.articulation, DrumArticulation::Rimshot);
+    }
+
+    #[test]
+    fn test_midi_mapping() {
+        let map = DrumMidiMap::general_midi();
+        assert_eq!(DrumPiece::Kick.midi_note(&map), 36);
+        assert_eq!(DrumPiece::Snare.midi_note(&map), 38);
+        assert_eq!(DrumPiece::HiHat.midi_note(&map), 42);
+    }
+
+    #[test]
+    fn test_ghost_note() {
+        let ghost = DrumHit::new(DrumPiece::Snare).ghost();
+        assert!(ghost.ghost);
+        assert_eq!(ghost.velocity, 50);
+    }
+}

@@ -1,0 +1,33 @@
+[package]
+name = "orpheus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core types, state management, and event system for Orpheus"
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Compression
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
