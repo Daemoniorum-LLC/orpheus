@@ -2,7 +2,7 @@
  * Record Mode - Multi-track audio recording (Nexus DAW)
  */
 
-import { makeStyles, shorthands, tokens, Button, Input, Card, Dropdown, Option } from '@fluentui/react-components';
+import { makeStyles, shorthands, tokens, Button, Input, Card, Dropdown, Option, ProgressBar, Menu, MenuTrigger, MenuPopover, MenuList, MenuItem, Spinner } from '@fluentui/react-components';
 import {
   Record24Regular,
   Stop24Regular,
@@ -11,13 +11,19 @@ import {
   Delete24Regular,
   ArrowDownload24Regular,
   Mic24Regular,
+  ChevronDown16Regular,
 } from '@fluentui/react-icons';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import * as Tone from 'tone';
 import { WaveformVisualizer } from '../components/WaveformVisualizer';
 import { Metronome } from '../components/Metronome';
 import { InputLevelMeter } from '../components/InputLevelMeter';
+import { TrackWaveform } from '../components/TrackWaveform';
 import { getAudioRecorder, type RecordingTrack, type RecorderState, type AudioDevice } from '../services/audio-recorder';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { AudioExporter } from '../services/audio-export';
+
+type ExportFormat = 'webm' | 'wav-16' | 'wav-24';
 
 const useStyles = makeStyles({
   container: {
@@ -89,6 +95,9 @@ const useStyles = makeStyles({
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: 'var(--color-charcoal-800)',
+    ...shorthands.border('1px', 'solid', 'var(--color-charcoal-600)'),
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.02)',
   },
   trackInfo: {
     display: 'flex',
@@ -182,6 +191,15 @@ export function RecordMode() {
     trackId: '',
     trackName: '',
   });
+
+  // Playback state
+  const [playingTrackId, setPlayingTrackId] = useState<string | null>(null);
+  const [playbackProgress, setPlaybackProgress] = useState<Record<string, number>>({});
+  const playerRef = useRef<Tone.Player | null>(null);
+  const playbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Export state
+  const [exportingTrackId, setExportingTrackId] = useState<string | null>(null);
 
   const recorder = getAudioRecorder();
 
@@ -278,19 +296,150 @@ export function RecordMode() {
     recorder.deleteTrack(deleteConfirm.trackId);
   };
 
-  const handleExportTrack = async (track: RecordingTrack) => {
+  const handleExportTrack = async (track: RecordingTrack, format: ExportFormat = 'webm') => {
+    if (!track.blob) {
+      setError('No audio data available for export');
+      return;
+    }
+
+    setExportingTrackId(track.id);
+    let audioContext: AudioContext | null = null;
+
     try {
-      const blob = await recorder.exportTrack(track.id);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = track.name + '.webm';
-      a.click();
-      URL.revokeObjectURL(url);
+      if (format === 'webm') {
+        // Export as original WebM
+        const blob = await recorder.exportTrack(track.id);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = track.name + '.webm';
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log(`[RecordMode] Exported ${track.name} as WebM`);
+      } else {
+        // Convert to WAV
+        audioContext = new AudioContext();
+        const arrayBuffer = await track.blob.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        const bitDepth = format === 'wav-24' ? 24 : 16;
+        const result = await AudioExporter.exportToWAV(audioBuffer, {
+          sampleRate: audioBuffer.sampleRate as 44100 | 48000,
+          bitDepth,
+          channels: audioBuffer.numberOfChannels as 1 | 2,
+        });
+
+        // Download the WAV file
+        const safeName = track.name.replace(/[^a-zA-Z0-9-_]/g, '_');
+        AudioExporter.downloadBlob(result.blob, `${safeName}.wav`);
+
+        console.log(`[RecordMode] Exported ${track.name} as WAV (${bitDepth}-bit), size: ${AudioExporter.formatFileSize(result.fileSize)}`);
+      }
     } catch (err) {
+      console.error('[RecordMode] Export error:', err);
       setError(err instanceof Error ? err.message : 'Failed to export track');
+    } finally {
+      // Always close AudioContext to prevent resource leak
+      if (audioContext) {
+        try {
+          await audioContext.close();
+        } catch (closeErr) {
+          // Ignore close errors
+        }
+      }
+      setExportingTrackId(null);
     }
   };
+
+  // Play a recorded track
+  const handlePlayTrack = async (track: RecordingTrack) => {
+    try {
+      // Stop any currently playing track
+      await handleStopPlayback();
+
+      // Start Tone.js if not started
+      await Tone.start();
+
+      if (!track.blob) {
+        setError('No audio data available for this track');
+        return;
+      }
+
+      // Create URL from blob
+      const url = URL.createObjectURL(track.blob);
+
+      // Create player
+      const player = new Tone.Player(url);
+      player.toDestination();
+
+      // Wait for player to load
+      await new Promise<void>((resolve, reject) => {
+        player.buffer.onload = () => resolve();
+        player.buffer.onerror = reject;
+        // Also resolve after a timeout if already loaded
+        if (player.buffer.loaded) {
+          resolve();
+        }
+      });
+
+      playerRef.current = player;
+      setPlayingTrackId(track.id);
+
+      // Start playback
+      player.start();
+
+      // Track progress
+      const startTime = Tone.now();
+      playbackIntervalRef.current = setInterval(() => {
+        const elapsed = Tone.now() - startTime;
+        const progress = Math.min(elapsed / track.duration, 1);
+        setPlaybackProgress((prev) => ({ ...prev, [track.id]: progress }));
+
+        if (progress >= 1) {
+          handleStopPlayback();
+        }
+      }, 100);
+
+      // Handle playback end
+      player.onstop = () => {
+        handleStopPlayback();
+      };
+
+      console.log(`[RecordMode] Playing track: ${track.name}`);
+    } catch (err) {
+      console.error('[RecordMode] Playback error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to play track');
+      handleStopPlayback();
+    }
+  };
+
+  // Stop playback
+  const handleStopPlayback = async () => {
+    if (playbackIntervalRef.current) {
+      clearInterval(playbackIntervalRef.current);
+      playbackIntervalRef.current = null;
+    }
+
+    if (playerRef.current) {
+      try {
+        playerRef.current.stop();
+        playerRef.current.dispose();
+      } catch {
+        // Ignore errors when stopping
+      }
+      playerRef.current = null;
+    }
+
+    setPlayingTrackId(null);
+    setPlaybackProgress({});
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      handleStopPlayback();
+    };
+  }, []);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -303,11 +452,11 @@ export function RecordMode() {
     return (
       <div className={styles.container}>
         <div className={styles.header}>
-          <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+          <div className={styles.title}>Record - Nexus DAW</div>
         </div>
         <div className={styles.content}>
           <div className={styles.emptyState}>
-            <h3 style={{ color: tokens.colorPaletteRedForeground1 }}>⚠️ Error</h3>
+            <h3 style={{ color: tokens.colorPaletteRedForeground1 }}>Error</h3>
             <p>{error}</p>
             <p style={{ marginTop: '16px', fontSize: '12px' }}>
               Make sure you have granted microphone permission and are using HTTPS.
@@ -322,7 +471,7 @@ export function RecordMode() {
     return (
       <div className={styles.container}>
         <div className={styles.header}>
-          <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+          <div className={styles.title}>Record - Nexus DAW</div>
         </div>
         <div className={styles.content}>
           <div className={styles.emptyState}>
@@ -347,7 +496,7 @@ export function RecordMode() {
       )}
 
       <div className={styles.header}>
-        <div className={styles.title}>🎙️ Record - Nexus DAW</div>
+        <div className={styles.title}>Record - Nexus DAW</div>
         <div className={styles.controls}>
           {recorderState.isRecording && (
             <div className={styles.recordingTime}>{formatTime(recorderState.currentTime)}</div>
@@ -443,33 +592,122 @@ export function RecordMode() {
               </p>
             </div>
           ) : (
-            recorderState.tracks.map((track) => (
-              <Card key={track.id} className={styles.trackCard}>
-                <div className={styles.trackInfo}>
-                  <div className={styles.trackName}>{track.name}</div>
-                  <div className={styles.trackMeta}>
-                    Duration: {formatTime(track.duration)} • ID: {track.id.slice(-8)}
+            recorderState.tracks.map((track) => {
+              const isPlaying = playingTrackId === track.id;
+              const isExporting = exportingTrackId === track.id;
+              const progress = playbackProgress[track.id] || 0;
+
+              return (
+                <Card key={track.id} className={styles.trackCard}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div className={styles.trackInfo}>
+                        <div className={styles.trackName}>{track.name}</div>
+                        <div className={styles.trackMeta}>
+                          Duration: {formatTime(track.duration)} • ID: {track.id.slice(-8)}
+                        </div>
+                      </div>
+                      <div className={styles.trackActions}>
+                        <Button
+                          icon={isPlaying ? <Stop24Regular /> : <Play24Regular />}
+                          size="small"
+                          appearance={isPlaying ? 'primary' : 'secondary'}
+                          onClick={() => isPlaying ? handleStopPlayback() : handlePlayTrack(track)}
+                          disabled={recorderState.isRecording}
+                        >
+                          {isPlaying ? 'Stop' : 'Play'}
+                        </Button>
+
+                        {/* Export Format Menu */}
+                        <Menu>
+                          <MenuTrigger disableButtonEnhancement>
+                            <Button
+                              icon={isExporting ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
+                              size="small"
+                              disabled={isExporting}
+                            >
+                              Export
+                              <ChevronDown16Regular />
+                            </Button>
+                          </MenuTrigger>
+                          <MenuPopover>
+                            <MenuList>
+                              <MenuItem onClick={() => handleExportTrack(track, 'wav-24')}>
+                                WAV (24-bit) - Highest Quality
+                              </MenuItem>
+                              <MenuItem onClick={() => handleExportTrack(track, 'wav-16')}>
+                                WAV (16-bit) - CD Quality
+                              </MenuItem>
+                              <MenuItem onClick={() => handleExportTrack(track, 'webm')}>
+                                WebM (Original)
+                              </MenuItem>
+                            </MenuList>
+                          </MenuPopover>
+                        </Menu>
+
+                        <Button
+                          icon={<Delete24Regular />}
+                          size="small"
+                          appearance="subtle"
+                          onClick={() => handleDeleteClick(track)}
+                          disabled={isPlaying || isExporting}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Waveform display */}
+                    {track.blob && (
+                      <div style={{ marginTop: '12px' }}>
+                        <TrackWaveform
+                          audioBlob={track.blob}
+                          duration={track.duration}
+                          progress={progress}
+                          isPlaying={isPlaying}
+                          color="#667eea"
+                          height={50}
+                          onSeek={(pos) => {
+                            // Seek within the track if playing
+                            if (isPlaying && playerRef.current) {
+                              const seekTime = pos * track.duration;
+                              playerRef.current.seek(seekTime);
+                              setPlaybackProgress((prev) => ({ ...prev, [track.id]: pos }));
+                            }
+                          }}
+                          onPlayFrom={async (pos) => {
+                            // Start playback from clicked position
+                            if (!isPlaying && !recorderState.isRecording) {
+                              setPlaybackProgress((prev) => ({ ...prev, [track.id]: pos }));
+                              await handlePlayTrack(track);
+                              // Seek after playback starts
+                              setTimeout(() => {
+                                if (playerRef.current) {
+                                  const seekTime = pos * track.duration;
+                                  playerRef.current.seek(seekTime);
+                                }
+                              }, 100);
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {/* Playback progress when playing */}
+                    {isPlaying && (
+                      <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground2 }}>
+                          {formatTime(progress * track.duration)}
+                        </span>
+                        <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground2 }}>
+                          {formatTime(track.duration)}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                </div>
-                <div className={styles.trackActions}>
-                  <Button
-                    icon={<ArrowDownload24Regular />}
-                    size="small"
-                    onClick={() => handleExportTrack(track)}
-                  >
-                    Export
-                  </Button>
-                  <Button
-                    icon={<Delete24Regular />}
-                    size="small"
-                    appearance="subtle"
-                    onClick={() => handleDeleteClick(track)}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </Card>
-            ))
+                </Card>
+              );
+            })
           )}
         </div>
       </div>

@@ -106,6 +106,9 @@ export function useAlphaTab(
     };
   }, [rawFileBuffer, options.enablePlayer, options.zoom, options.layoutMode]);
 
+  // Track if project has been edited (hash changed after initial load)
+  const hasBeenEditedRef = useRef(false);
+
   // Update alphaTab when project changes (e.g., after editing)
   useEffect(() => {
     if (!project || !apiRef.current || !initializedRef.current) return;
@@ -115,13 +118,20 @@ export function useAlphaTab(
       console.log('[alphaTab] Project changed, refreshing view');
       setProjectHash(newHash);
 
-      // Only refresh if we're not using raw file buffer (i.e., we're using TEX conversion)
-      if (!rawFileBuffer) {
+      // Mark as edited once hash changes (not first load)
+      if (projectHash !== '') {
+        hasBeenEditedRef.current = true;
+      }
+
+      // Refresh from TEX if:
+      // 1. No raw file buffer (always use TEX), OR
+      // 2. Project has been edited (edits override raw file)
+      if (!rawFileBuffer || hasBeenEditedRef.current) {
         try {
           const score = convertMaestroToAlphaTabTEX(project);
           if (score) {
             apiRef.current.tex(score);
-            console.log('[alphaTab] View refreshed with updated notation');
+            console.log('[alphaTab] View refreshed with updated notation from TEX');
           }
         } catch (error) {
           console.error('[alphaTab] Error refreshing view:', error);

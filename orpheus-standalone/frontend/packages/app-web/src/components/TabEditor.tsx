@@ -18,11 +18,14 @@ import {
   Add24Regular,
   Delete24Regular,
   Library24Regular,
+  ArrowUndo24Regular,
+  ArrowRedo24Regular,
 } from '@fluentui/react-icons';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Fretboard, type Note as FretboardNote } from './Fretboard';
 import { TechniquePicker } from './TechniquePicker';
 import { ChordLibraryDialog } from './ChordLibraryDialog';
+import { useUndoRedo, useUndoRedoKeyboard } from '../hooks/useUndoRedo';
 import type { MaestroProject } from '@maestro-ai/shared-types';
 
 const useStyles = makeStyles({
@@ -144,6 +147,35 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
   const [chordLibraryOpen, setChordLibraryOpen] = useState(false);
   const [notes, setNotes] = useState<FretboardNote[]>([]);
 
+  // Undo/Redo support
+  const [undoState, undoActions] = useUndoRedo<FretboardNote[]>([], {
+    maxHistorySize: 100,
+    debounceMs: 300, // Debounce rapid changes
+  });
+
+  // Handle undo
+  const handleUndo = useCallback(() => {
+    const previousNotes = undoActions.undo();
+    if (previousNotes !== null) {
+      setNotes(previousNotes);
+      updateProjectNotesInternal(previousNotes);
+      setSelectedNoteIndex(null);
+    }
+  }, [undoActions]);
+
+  // Handle redo
+  const handleRedo = useCallback(() => {
+    const nextNotes = undoActions.redo();
+    if (nextNotes !== null) {
+      setNotes(nextNotes);
+      updateProjectNotesInternal(nextNotes);
+      setSelectedNoteIndex(null);
+    }
+  }, [undoActions]);
+
+  // Enable keyboard shortcuts
+  useUndoRedoKeyboard(handleUndo, handleRedo, undoState.canUndo, undoState.canRedo);
+
   // Extract current measure/track data
   const tracks = project.project.composition.tracks || [];
   const track = tracks[currentTrack];
@@ -153,6 +185,7 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
   useEffect(() => {
     if (!measure || !track) {
       setNotes([]);
+      undoActions.reset([]);
       return;
     }
 
@@ -160,6 +193,7 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
     const voice = measure.voices?.[0];
     if (!voice) {
       setNotes([]);
+      undoActions.reset([]);
       return;
     }
 
@@ -179,7 +213,9 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
 
     setNotes(allNotes);
     setSelectedNoteIndex(null);
-  }, [currentMeasure, currentTrack, measure, track]);
+    // Reset undo history when switching measures/tracks
+    undoActions.reset(allNotes);
+  }, [currentMeasure, currentTrack, measure, track, undoActions]);
 
   const handleFretClick = (string: number, fret: number) => {
     // Add new note
@@ -243,7 +279,8 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
     updateProjectNotes(updatedNotes);
   };
 
-  const updateProjectNotes = (updatedNotes: FretboardNote[]) => {
+  // Internal function to update project without pushing to undo stack
+  const updateProjectNotesInternal = useCallback((updatedNotes: FretboardNote[]) => {
     if (!track) return;
 
     // Convert fretboard notes to project format (simplified - single beat per note)
@@ -258,7 +295,7 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
       }],
     }));
 
-    // Update project
+    // Update project with new timestamp for change detection
     const updatedProject = { ...project };
     const updatedTracks = [...(updatedProject.project.composition.tracks || [])];
     const trackIndex = updatedTracks.findIndex((t) => t.id === track.id);
@@ -281,8 +318,20 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
     updatedTracks[trackIndex] = updatedTrack;
     updatedProject.project.composition.tracks = updatedTracks;
 
+    // Update modified timestamp to trigger alphaTab refresh
+    updatedProject.project.metadata = {
+      ...updatedProject.project.metadata,
+      modified: new Date().toISOString(),
+    };
+
     onProjectChange(updatedProject);
-  };
+  }, [track, project, currentMeasure, onProjectChange]);
+
+  // Update project notes and push to undo stack
+  const updateProjectNotes = useCallback((updatedNotes: FretboardNote[]) => {
+    undoActions.push(updatedNotes);
+    updateProjectNotesInternal(updatedNotes);
+  }, [undoActions, updateProjectNotesInternal]);
 
   const selectedNote = selectedNoteIndex !== null ? notes[selectedNoteIndex] : null;
 
@@ -290,7 +339,28 @@ export function TabEditor({ project, onProjectChange }: TabEditorProps) {
     <div className={styles.container}>
       {/* Header with measure navigation */}
       <div className={styles.header}>
-        <div className={styles.title}>🎼 Tab Editor</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <div className={styles.title}>🎼 Tab Editor</div>
+          {/* Undo/Redo buttons */}
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <Button
+              icon={<ArrowUndo24Regular />}
+              appearance="subtle"
+              size="small"
+              onClick={handleUndo}
+              disabled={!undoState.canUndo}
+              title={`Undo (Ctrl+Z) - ${undoState.undoCount} actions`}
+            />
+            <Button
+              icon={<ArrowRedo24Regular />}
+              appearance="subtle"
+              size="small"
+              onClick={handleRedo}
+              disabled={!undoState.canRedo}
+              title={`Redo (Ctrl+Shift+Z) - ${undoState.redoCount} actions`}
+            />
+          </div>
+        </div>
         <div className={styles.measureNav}>
           <Button
             icon={<ChevronLeft24Regular />}

@@ -219,7 +219,7 @@ export function Fretboard({
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <div className={styles.title}>🎸 Fretboard</div>
+        <div className={styles.title}>Fretboard</div>
         <div className={styles.tuningInfo}>
           Tuning: {tuning.slice().reverse().join('-')}
         </div>

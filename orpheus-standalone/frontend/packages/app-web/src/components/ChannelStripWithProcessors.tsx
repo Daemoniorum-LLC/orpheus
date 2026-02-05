@@ -36,9 +36,11 @@ export interface ChannelProcessors {
   effects: EffectsSettings;
 }
 
-export interface ChannelStripWithProcessorsProps extends ChannelStripProps {
+export interface ChannelStripWithProcessorsProps extends Omit<ChannelStripProps, 'onSoloToggle'> {
   processors?: ChannelProcessors;
   onProcessorsChange?: (processors: ChannelProcessors) => void;
+  /** Solo toggle - receives mouse event for exclusive mode (Ctrl+click) */
+  onSoloToggle?: (event?: React.MouseEvent) => void;
 }
 
 const DEFAULT_PROCESSORS: ChannelProcessors = {
@@ -78,6 +80,7 @@ const DEFAULT_PROCESSORS: ChannelProcessors = {
 export function ChannelStripWithProcessors({
   processors = DEFAULT_PROCESSORS,
   onProcessorsChange,
+  onSoloToggle,
   ...channelProps
 }: ChannelStripWithProcessorsProps) {
   const styles = useStyles();
@@ -118,7 +121,7 @@ export function ChannelStripWithProcessors({
   return (
     <div className={styles.container}>
       {/* Channel Strip */}
-      <ChannelStrip {...channelProps} />
+      <ChannelStrip {...channelProps} onSoloToggle={onSoloToggle} />
 
       {/* Processor Settings Dialog */}
       <Dialog open={dialogOpen} onOpenChange={(_, data) => setDialogOpen(data.open)}>

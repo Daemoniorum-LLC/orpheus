@@ -149,8 +149,8 @@ function getSmartSuggestions(mode: AppMode, projectState: any): SmartSuggestion 
       // This will be enhanced when we have LUFS data
       // For now, suggest loudness targets
       return {
-        title: '✨ Mastering Guidance',
-        message: 'Getting your master ready for release? I can help you hit the right LUFS targets for different platforms!',
+        title: 'Mastering Guidance',
+        message: 'Getting your master ready for release? I can help you hit the right LUFS targets for different platforms.',
         actions: [
           {
             id: 'check-lufs',
@@ -165,8 +165,8 @@ function getSmartSuggestions(mode: AppMode, projectState: any): SmartSuggestion 
     case 'practice':
       // Suggest practice routine
       return {
-        title: '🎸 Practice Smart',
-        message: 'Effective practice is key to improvement. I can help you create a structured practice routine!',
+        title: 'Practice Smart',
+        message: 'Effective practice is key to improvement. I can help you create a structured practice routine.',
         actions: [
           {
             id: 'build-routine',
@@ -181,8 +181,8 @@ function getSmartSuggestions(mode: AppMode, projectState: any): SmartSuggestion 
     case 'distribute':
       // Suggest release preparation
       return {
-        title: '🌍 Release Preparation',
-        message: 'Ready to release your music? I can guide you through the distribution process!',
+        title: 'Release Preparation',
+        message: 'Ready to release your music? I can guide you through the distribution process.',
         actions: [
           {
             id: 'release-prep',
@@ -419,7 +419,7 @@ export function AIQuickActions({ onActionClick }: AIQuickActionsProps) {
 
       {/* Quick Actions */}
       <div className={styles.sectionTitle}>
-        {smartSuggestion ? '💡 Suggested Actions' : '✨ Quick Actions'}
+        {smartSuggestion ? 'Suggested Actions' : 'Quick Actions'}
       </div>
       <div className={styles.quickActions}>
         {displayActions.map((action) => (

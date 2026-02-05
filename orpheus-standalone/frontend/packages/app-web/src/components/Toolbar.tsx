@@ -41,10 +41,12 @@ const useStyles = makeStyles({
     ...shorthands.gap('8px'),
   },
   logo: {
-    fontSize: '20px',
+    fontSize: '18px',
     fontWeight: 700,
     marginRight: '16px',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    fontFamily: 'var(--font-display)',
+    letterSpacing: '-0.02em',
+    background: 'linear-gradient(135deg, var(--color-phthalo-highlight) 0%, var(--color-phthalo-bright) 100%)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     backgroundClip: 'text',
@@ -193,7 +195,7 @@ export function Toolbar() {
 
   return (
     <div className={styles.toolbar}>
-      <div className={styles.logo}>🎸 Maestro AI</div>
+      <div className={styles.logo}>ORPHEUS</div>
 
       <Tooltip content="Open project or Guitar Pro file" relationship="label">
         <ToolbarButton

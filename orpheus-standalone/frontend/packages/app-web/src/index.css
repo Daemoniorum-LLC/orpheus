@@ -1,44 +1,189 @@
+/**
+ * Daemoniorum Corporate Goth Global Styles
+ * Orpheus/Maestro Music Production Platform
+ */
+
+/* Import Inter font for modern, clean typography */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* CSS Reset */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+/* Root variables for theming */
+:root {
+  /* Phthalo green palette */
+  --color-phthalo-darkest: #0a1a0e;
+  --color-phthalo-dark: #123524;
+  --color-phthalo-base: #1a4a2c;
+  --color-phthalo-medium: #1e5e38;
+  --color-phthalo-bright: #237245;
+  --color-phthalo-light: #2a8752;
+  --color-phthalo-highlight: #5bc284;
+
+  /* Charcoal palette */
+  --color-charcoal-900: #0a0a0a;
+  --color-charcoal-850: #0d0d0d;
+  --color-charcoal-800: #111111;
+  --color-charcoal-750: #141414;
+  --color-charcoal-700: #161616;
+  --color-charcoal-650: #1a1a1a;
+  --color-charcoal-600: #202020;
+  --color-charcoal-500: #2a2a2a;
+  --color-charcoal-400: #363636;
+  --color-charcoal-300: #4a4a4a;
+
+  /* Typography */
+  --font-display: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, monospace;
+
+  /* Brand gradients */
+  --gradient-brand: linear-gradient(135deg, #1a4a2c 0%, #0d2314 100%);
+  --gradient-brand-text: linear-gradient(135deg, #5bc284 0%, #237245 100%);
+  --gradient-surface: linear-gradient(180deg, #161616 0%, #111111 100%);
+
+  /* Glow effects */
+  --glow-brand: 0 0 20px rgba(26, 74, 44, 0.4);
+  --glow-brand-strong: 0 0 30px rgba(42, 135, 82, 0.5);
+}
+
+/* Body styles */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #f0f0f0;
+  background-color: var(--color-charcoal-850);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   overflow: hidden;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
+/* Code and monospace */
+code, pre, .monospace {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* Root container */
 #root {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar - Corporate Goth style */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #2a2a2a;
+  background: var(--color-charcoal-800);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #4a4a4a;
-  border-radius: 5px;
+  background: var(--color-charcoal-500);
+  border-radius: 4px;
+  border: 2px solid var(--color-charcoal-800);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
+  background: var(--color-charcoal-400);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--color-charcoal-800);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-charcoal-500) var(--color-charcoal-800);
+}
+
+/* Selection colors */
+::selection {
+  background: var(--color-phthalo-base);
+  color: #ffffff;
+}
+
+::-moz-selection {
+  background: var(--color-phthalo-base);
+  color: #ffffff;
+}
+
+/* Focus outline for accessibility */
+:focus-visible {
+  outline: 2px solid var(--color-phthalo-highlight);
+  outline-offset: 2px;
+}
+
+/* Remove focus outline for mouse users */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Brand text gradient utility */
+.brand-text {
+  background: var(--gradient-brand-text);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Glow effect utility */
+.brand-glow {
+  box-shadow: var(--glow-brand);
+}
+
+.brand-glow-strong {
+  box-shadow: var(--glow-brand-strong);
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* High contrast mode adjustments */
+@media (prefers-contrast: high) {
+  :root {
+    --color-charcoal-900: #000000;
+    --color-phthalo-highlight: #7ad39a;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #606060;
+  }
+}
+
+/* Print styles */
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
 }
