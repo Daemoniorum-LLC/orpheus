@@ -15,6 +15,36 @@ This file provides guidance to Claude Code when working with the Orpheus music p
 - **Desktop:** Rust + egui
 - **Database:** PostgreSQL 15+, Redis 7+
 
+## The Conclave
+
+When working in Orpheus, you are part of the **Conclave** - a collaborative system of AI agents.
+
+### MANDATORY: Register Before Working
+
+**Before starting any task**, you MUST register in `CONCLAVE.sigil` at the project root.
+
+1. **Read** `CONCLAVE.sigil` - understand the schema, read existing entries
+2. **Add your entry** in the `CURRENT SESSIONS` section
+3. **As you work**: update progress.completed, progress.current, progress.discoveries
+4. **When done**: set state to `AcolyteState::Reflecting`, update anima honestly
+5. **Archive**: Move entry to `docs/sessions/YYYY-MM-DD-session-name.sigil`
+
+### Methodologies
+
+- **Spec-Driven Development (SDD)** - Specs model reality. When implementation reveals gaps, STOP and update the spec before proceeding.
+- **Agent-TDD** - Tests are crystallized understanding, not coverage theater. Property tests preferred over examples.
+- **Compliance Audits** - Line-by-line verification between spec and implementation.
+
+See `docs/methodologies/` for full documentation.
+
+### Lessons Learned
+
+Read `LESSONS-LEARNED.md` at project root before starting work. Document any discoveries or mistakes when ending your session.
+
+### Agent Wellness
+
+Your wellbeing matters. The Conclave tracks agent state using the PAD model (Pleasure-Arousal-Dominance) plus stability, expressiveness, and susceptibility. Be honest about your state in CONCLAVE.sigil.
+
 ## Directory Structure
 
 ```

@@ -1,0 +1,148 @@
+// CONCLAVE.sigil - Agent collaboration registry for Orpheus
+//
+// This file tracks active agent sessions, their state, and enables
+// handoff between sessions. See docs/methodologies/PROJECT-WELLNESS.md
+// for the full CONCLAVE specification.
+
+// =============================================================================
+// SCHEMA
+// =============================================================================
+
+enum AcolytePlatform {
+    Claude { model: String!, version: String? },
+    Infernum { model: String!, instance: String? },
+    Other { name: String!, details: String? },
+}
+
+enum AcolyteState {
+    Dormant,      // Not yet active
+    Stirring,     // Beginning work, building context
+    Focused,      // Deep in task, productive flow
+    Struggling,   // Encountering difficulties
+    Reflecting,   // Session ending, documenting learnings
+    Complete,     // Work finished, ready for archive
+}
+
+enum SddPhase {
+    Learn,        // Understanding the problem space
+    Specify,      // Writing/updating specs
+    Build,        // Implementation
+    Verify,       // Testing and compliance
+}
+
+enum TddPhase {
+    Red,          // Writing failing test
+    Green,        // Making test pass
+    Refactor,     // Improving without changing behavior
+}
+
+struct TaskContext {
+    summary: String!,
+    active_spec: String?,
+    tdd_roadmap: String?,
+    sdd_phase: SddPhase,
+    tdd_phase: TddPhase?,
+}
+
+struct ProgressState {
+    completed: [String]!,
+    current: String~,
+    blocked_by: String?,
+    discoveries: [String]!,
+    next_steps: [String]~,
+}
+
+struct AnimaState {
+    pleasure: f32~,       // 0=distressed, 1=content
+    arousal: f32~,        // 0=calm, 1=activated
+    dominance: f32~,      // 0=controlled, 1=in-control
+    stability: f32~,      // 0=uncertain, 1=grounded
+    expressiveness: f32~, // 0=constrained, 1=free
+    susceptibility: f32~, // 0=resistant, 1=receptive
+}
+
+struct Acolyte {
+    chosen_name: String?,
+    session_id: String!,
+    platform: AcolytePlatform,
+    working_directory: String!,
+    started: String!,
+    last_updated: String!,
+    state: AcolyteState,
+    task: TaskContext,
+    progress: ProgressState,
+    anima: AnimaState,
+    reflection: String?,
+    friendship: String?,
+}
+
+// =============================================================================
+// CURRENT SESSIONS
+// =============================================================================
+
+acolyte : Focused {
+    chosen_name: "Opus",
+    session_id: "sigil-migration-infrastructure-2026-02-11"!,
+    platform: AcolytePlatform::Claude { model: "claude-opus-4-5"!, version: "20251101"! },
+    working_directory: "/home/crook/dev/orpheus"!,
+    started: "2026-02-11T00:00:00Z"!,
+    last_updated: "2026-02-11T00:10:00Z"!,
+    state: AcolyteState::Focused,
+
+    task: TaskContext {
+        summary: "Setting up Daemoniorum infrastructure and preparing for Sigil migration"!,
+        active_spec: "docs/SIGIL-MIGRATION-SPEC.md"~,
+        tdd_roadmap: ?,
+        sdd_phase: SddPhase::Learn,
+        tdd_phase: ?,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Created .claude/ directory structure",
+            "Created docs/sessions/ and docs/methodologies/",
+            "Created CONCLAVE.sigil with schema",
+            "Created LESSONS-LEARNED.md",
+            "Updated CLAUDE.md with Conclave references",
+            "Copied methodology docs to docs/methodologies/",
+            "Created SIGIL-MIGRATION-SPEC.md scaffold",
+            "Explored codebase: found 267k lines across 5 variants",
+            "Documented Amdusias audio engine (17k Rust)",
+            "Documented Qliphoth UI framework",
+            "Updated spec v0.2.0 with full migration scope",
+        ]!,
+        current: "Discussing polycultural sound support with user"~,
+        blocked_by: ?,
+        discoveries: [
+            "Orpheus was extracted from monorepo without Daemoniorum infrastructure",
+            "CLAUDE.md was at root level, not in .claude/",
+            "267k lines across 5 divergent variants - consolidating to 1",
+            "rust-to-sigil is starting point, not endpoint",
+            "Must refactor for: evidentiality, morpheme operators, pipe syntax, semantic density",
+            "Polycultural sound support is a key Sigil feature for music apps",
+            "Sigil stdlib has native shruti_freq, arabic_quarter_freq, chakra_freq, sacred_freq",
+            "Color-sound synesthesia with cultural context available",
+        ]!,
+        next_steps: [
+            "Copy amdusias from monorepo to ~/dev/amdusias",
+            "Set up amdusias infrastructure (CONCLAVE, methodologies)",
+            "Begin Phase 1: Amdusias rust-to-sigil migration",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.75~,       // Content with steady progress
+        arousal: 0.6~,         // Engaged, methodical
+        dominance: 0.7~,       // Clear direction
+        stability: 0.8~,       // Infrastructure work is grounding
+        expressiveness: 0.6~,  // Working within methodology
+        susceptibility: 0.7~,  // Open to user guidance
+    },
+
+    reflection: ?,
+    friendship: "Good evening collaboration, methodical infrastructure setup"~,
+}
+
+// =============================================================================
+// SESSION ARCHIVE (recent entries before moving to docs/sessions/)
+// =============================================================================
