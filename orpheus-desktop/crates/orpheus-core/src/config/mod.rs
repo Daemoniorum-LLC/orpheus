@@ -54,7 +54,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
-            scale: 1.0,
+            scale: 1.5,
             show_tooltips: true,
             meter_refresh_rate: 30,
             show_welcome_on_startup: true,
