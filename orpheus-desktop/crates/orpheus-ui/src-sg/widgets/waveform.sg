@@ -1,0 +1,292 @@
+//! Audio waveform display
+//!
+//! Renders audio waveform data as an SVG path, suitable for both
+//! full track overview and clip previews.
+//!
+//! ## Features
+//!
+//! - Configurable peak/RMS display
+//! - Zoom support
+//! - Optional center line
+//! - Stereo visualization option
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Path generation, sample-to-pixel mapping
+//! - `~` (external) - Waveform data from audio engine
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{SILVER, PHTHALO, VOID};
+
+/// Waveform display mode
+☉ ᛈ WaveformMode {
+    /// Show peak values only
+    Peak,
+    /// Show RMS with peak outline
+    RmsWithPeak,
+    /// Show filled area
+    Filled,
+}
+
+/// Waveform properties
+☉ Σ WaveformProps {
+    /// Peak values (0.0 - 1.0 normalized, one per visual sample)
+    peaks~: Vec<f32>,
+    /// Optional RMS values for RmsWithPeak mode
+    rms~: Option<Vec<f32>>,
+    /// Display width in pixels
+    width: f32,
+    /// Display height in pixels
+    height: f32,
+    /// Display mode
+    mode: WaveformMode,
+    /// Waveform color
+    color: Color,
+    /// Show center line
+    show_center_line: bool,
+    /// Start sample index (for zoomed view)
+    start_sample: usize,
+    /// End sample index (for zoomed view)
+    end_sample: Option<usize>,
+}
+
+⊢ ◊ WaveformProps {
+    rite default() -> Self {
+        Self {
+            peaks: vec![],
+            rms: None,
+            width: 200.0,
+            height: 60.0,
+            mode: WaveformMode·Filled,
+            color: SILVER.with_alpha(0.6),
+            show_center_line: true,
+            start_sample: 0,
+            end_sample: None,
+        }
+    }
+}
+
+/// Waveform display component
+☉ Σ Waveform {
+    props: WaveformProps,
+}
+
+⊢ Waveform {
+    /// Create a new waveform display
+    ☉ rite new(props: WaveformProps) -> Self! {
+        Self { props }
+    }
+
+    /// Create a simple waveform from peaks
+    ☉ rite from_peaks(peaks~: Vec<f32>, width: f32, height: f32) -> Self! {
+        Self·new(WaveformProps {
+            peaks,
+            width,
+            height,
+            ..WaveformProps·default()
+        })
+    }
+
+    /// Get visible sample range
+    rite visible_range(&self) -> (usize, usize)! {
+        ≔ start = self.props.start_sample;
+        ≔ end = self.props.end_sample.unwrap_or(self.props.peaks.len());
+        (start, end.min(self.props.peaks.len()))
+    }
+
+    /// Generate SVG path for filled waveform
+    rite generate_filled_path(&self) -> String! {
+        ⎇ self.props.peaks.is_empty() { ⤺ String·new(); }
+
+        ≔ (start, end) = self.visible_range();
+        ≔ num_samples = end - start;
+        ⎇ num_samples == 0 { ⤺ String·new(); }
+
+        ≔ samples_per_pixel = (num_samples as f32 / self.props.width).max(1.0);
+        ≔ center_y = self.props.height / 2.0;
+        ≔ Δ path = String·with_capacity(num_samples * 20);
+
+        // Build upper half (positive peaks)
+        path.push_str(&format!("M 0 {} ", center_y));
+
+        ∀ x ∈ 0..(self.props.width as usize) {
+            ≔ sample_start = start + (x as f32 * samples_per_pixel) as usize;
+            ≔ sample_end = start + ((x + 1) as f32 * samples_per_pixel) as usize;
+
+            // Find max peak in this pixel's sample range
+            ≔ max_peak = self.props.peaks[sample_start..sample_end.min(self.props.peaks.len())]
+                .iter()
+                .fold(0.0_f32, |a, &b| a.max(b));
+
+            ≔ y = center_y - (max_peak * center_y);
+            path.push_str(&format!("L {} {} ", x, y));
+        }
+
+        // Build lower half (mirror)
+        ∀ x ∈ (0..(self.props.width as usize)).rev() {
+            ≔ sample_start = start + (x as f32 * samples_per_pixel) as usize;
+            ≔ sample_end = start + ((x + 1) as f32 * samples_per_pixel) as usize;
+
+            ≔ max_peak = self.props.peaks[sample_start..sample_end.min(self.props.peaks.len())]
+                .iter()
+                .fold(0.0_f32, |a, &b| a.max(b));
+
+            ≔ y = center_y + (max_peak * center_y);
+            path.push_str(&format!("L {} {} ", x, y));
+        }
+
+        path.push_str("Z");
+        path
+    }
+
+    /// Generate SVG path for peak line
+    rite generate_peak_path(&self) -> String! {
+        ⎇ self.props.peaks.is_empty() { ⤺ String·new(); }
+
+        ≔ (start, end) = self.visible_range();
+        ≔ num_samples = end - start;
+        ⎇ num_samples == 0 { ⤺ String·new(); }
+
+        ≔ samples_per_pixel = (num_samples as f32 / self.props.width).max(1.0);
+        ≔ center_y = self.props.height / 2.0;
+        ≔ Δ path = String·with_capacity(num_samples * 20);
+
+        ∀ x ∈ 0..(self.props.width as usize) {
+            ≔ sample_start = start + (x as f32 * samples_per_pixel) as usize;
+            ≔ sample_end = start + ((x + 1) as f32 * samples_per_pixel) as usize;
+
+            ≔ max_peak = self.props.peaks[sample_start..sample_end.min(self.props.peaks.len())]
+                .iter()
+                .fold(0.0_f32, |a, &b| a.max(b.abs()));
+
+            ≔ y_top = center_y - (max_peak * center_y);
+            ≔ y_bottom = center_y + (max_peak * center_y);
+
+            // Draw vertical line from top to bottom
+            ⎇ x == 0 {
+                path.push_str(&format!("M {} {} ", x, y_top));
+            } ⎉ {
+                path.push_str(&format!("L {} {} ", x, y_top));
+            }
+            path.push_str(&format!("L {} {} ", x, y_bottom));
+        }
+
+        path
+    }
+}
+
+⊢ Component ∀ Waveform {
+    type Props = WaveformProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div
+                class="waveform"
+                style={style! {
+                    width: px(self.props.width),
+                    height: px(self.props.height),
+                    position: "relative",
+                    background: VOID.to_css(),
+                    border_radius: "2px",
+                    overflow: "hidden",
+                }}
+            >
+                <svg
+                    width={self.props.width}
+                    height={self.props.height}
+                    viewBox={format!("0 0 {} {}", self.props.width, self.props.height)}
+                >
+                    // Center line
+                    ⎇ self.props.show_center_line {
+                        <line
+                            x1={0}
+                            y1={self.props.height / 2.0}
+                            x2={self.props.width}
+                            y2={self.props.height / 2.0}
+                            stroke={SILVER.with_alpha(0.2).to_css()}
+                            stroke_width={1}
+                        />
+                    }
+
+                    // Waveform path
+                    ⌥ self.props.mode {
+                        WaveformMode·Filled => {
+                            <path
+                                d={self.generate_filled_path()}
+                                fill={self.props.color.to_css()}
+                                stroke="none"
+                            />
+                        }
+                        WaveformMode·Peak => {
+                            <path
+                                d={self.generate_peak_path()}
+                                fill="none"
+                                stroke={self.props.color.to_css()}
+                                stroke_width={1}
+                            />
+                        }
+                        WaveformMode·RmsWithPeak => {
+                            // RMS fill (darker)
+                            <path
+                                d={self.generate_filled_path()}  // TODO: use RMS data
+                                fill={self.props.color.with_alpha(0.3).to_css()}
+                                stroke="none"
+                            />
+                            // Peak outline
+                            <path
+                                d={self.generate_peak_path()}
+                                fill="none"
+                                stroke={self.props.color.to_css()}
+                                stroke_width={1}
+                            />
+                        }
+                    }
+                </svg>
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_visible_range() {
+        ≔ waveform = Waveform·new(WaveformProps {
+            peaks: vec![0.5; 1000],
+            start_sample: 100,
+            end_sample: Some(500),
+            ..WaveformProps·default()
+        });
+
+        ≔ (start, end) = waveform.visible_range();
+        assert_eq!(start, 100);
+        assert_eq!(end, 500);
+    }
+
+    //@ rune: test
+    rite test_empty_waveform() {
+        ≔ waveform = Waveform·new(WaveformProps·default());
+        ≔ path = waveform.generate_filled_path();
+        assert!(path.is_empty());
+    }
+
+    //@ rune: test
+    rite test_filled_path_generation() {
+        ≔ waveform = Waveform·new(WaveformProps {
+            peaks: vec![0.5, 0.7, 0.3, 0.8, 0.2],
+            width: 5.0,
+            height: 40.0,
+            ..WaveformProps·default()
+        });
+
+        ≔ path = waveform.generate_filled_path();
+        assert!(path.starts_with("M"));
+        assert!(path.ends_with("Z"));
+    }
+}

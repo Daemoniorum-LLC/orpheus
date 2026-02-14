@@ -1,0 +1,18 @@
+//! Content editors
+//!
+//! This module provides the main content editing views:
+//!
+//! - `TabEditor` - Guitar tablature editing
+//! - `PianoRollEditor` - MIDI note editing
+//! - `ArrangementEditor` - Timeline clip/region editing
+//! - `WaveformEditor` - Audio waveform editing
+//! - `AutomationEditor` - Parameter automation lanes
+
+☉ scroll tab_editor;
+☉ scroll piano_roll;
+☉ scroll arrangement;
+
+// Re-exports
+☉ invoke crate·editors·tab_editor·{TabEditor, TabEditorProps};
+☉ invoke crate·editors·piano_roll·{PianoRollEditor, PianoRollEditorProps};
+☉ invoke crate·editors·arrangement·{ArrangementEditor, ArrangementEditorProps};

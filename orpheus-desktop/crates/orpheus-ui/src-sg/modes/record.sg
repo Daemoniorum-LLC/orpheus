@@ -1,0 +1,889 @@
+//! Record mode - input monitoring and recording session view
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Layout calculations, time formatting
+//! - `~` (external) - Input levels, recording state
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·widgets·{LevelMeter, TransportBar, Knob};
+invoke crate·panels·{ChannelStrip, Channel};
+
+/// Recording mode properties
+☉ Σ RecordModeProps {
+    /// Transport state
+    transport~: RecordTransportState,
+    /// Input channels
+    inputs~: Vec<InputChannel>,
+    /// Record-armed tracks
+    armed_tracks~: Vec<ArmedTrack>,
+    /// Recording session info
+    session~: RecordingSession,
+    /// Metronome enabled
+    metronome_enabled: bool,
+    /// Count-in bars
+    count_in_bars: u8,
+    /// Punch in/out enabled
+    punch_enabled: bool,
+    /// Punch in point (beats)
+    punch_in: f64,
+    /// Punch out point (beats)
+    punch_out: f64,
+    /// Callbacks
+    on_play: Box<dyn Fn()>,
+    on_stop: Box<dyn Fn()>,
+    on_record: Box<dyn Fn()>,
+    on_arm_track: Box<dyn Fn(u32)>,
+    on_disarm_track: Box<dyn Fn(u32)>,
+    on_input_gain: Box<dyn Fn(usize, f32)>,
+    on_input_select: Box<dyn Fn(u32, usize)>,
+    on_metronome_toggle: Box<dyn Fn()>,
+    on_count_in_change: Box<dyn Fn(u8)>,
+    on_punch_toggle: Box<dyn Fn()>,
+    on_punch_set: Box<dyn Fn(f64, f64)>,
+}
+
+/// Transport state for recording
+☉ Σ RecordTransportState {
+    playing: bool,
+    recording: bool,
+    position: f64,
+    tempo: f64,
+    time_sig_num: u8,
+    time_sig_denom: u8,
+    loop_enabled: bool,
+    count_in_active: bool,
+    count_in_beat: u8,
+}
+
+/// Input channel state
+☉ Σ InputChannel {
+    id: usize,
+    name: String,
+    level_db~: f32,
+    peak_db~: f32,
+    level_db_right~: Option<f32>,
+    peak_db_right~: Option<f32>,
+    gain: f32,
+    muted: bool,
+    stereo: bool,
+    clipping~: bool,
+}
+
+/// Armed track info
+☉ Σ ArmedTrack {
+    track_id: u32,
+    track_name: String,
+    track_type: TrackType,
+    input_id: Option<usize>,
+    monitoring: bool,
+    recorded_duration~: f64,
+    level_db~: f32,
+    peak_db~: f32,
+}
+
+/// Track type enum
+☉ ᛈ TrackType {
+    Audio,
+    Midi,
+    Instrument,
+}
+
+⊢ TrackType {
+    rite color(&self) -> Color! {
+        ⌥ self {
+            Self·Audio => AUDIO_TRACK,
+            Self·Midi => MIDI_TRACK,
+            Self·Instrument => MIDI_TRACK,
+        }
+    }
+}
+
+/// Recording session info
+☉ Σ RecordingSession {
+    name: String,
+    take_number: u32,
+    total_takes: u32,
+    duration~: f64,
+    disk_space_remaining~: f64,
+    sample_rate: u32,
+    bit_depth: u8,
+}
+
+/// Record mode view
+☉ Σ RecordMode {
+    props: RecordModeProps,
+    show_inputs: bool,
+    show_waveform: bool,
+    selected_input: Option<usize>,
+}
+
+⊢ RecordMode {
+    ☉ rite new(props: RecordModeProps) -> Self! {
+        Self {
+            props,
+            show_inputs: true,
+            show_waveform: true,
+            selected_input: None,
+        }
+    }
+
+    /// Format time as HH:MM:SS
+    rite format_time(&self, beats: f64) -> String! {
+        ≔ seconds = beats * 60.0 / self.props.transport.tempo;
+        ≔ hours = (seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ secs = seconds % 60.0;
+        format!("{:02}:{:02}:{:05.2}", hours, minutes, secs)
+    }
+
+    /// Format position as bars:beats:ticks
+    rite format_position(&self, beats: f64) -> String! {
+        ≔ beats_per_bar = self.props.transport.time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        format!("{:03}:{:02}:{:03}", bars, beat, ticks)
+    }
+
+    /// Render input panel
+    rite render_inputs(&self) -> Element! {
+        element! {
+            <div class="input-panel" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                width: "280px",
+                background: ABYSS.to_css(),
+                border_right: format!("1px solid {}", GRID_LINE.to_css()),
+            }}>
+                // Header
+                <div style={style! {
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                    display: "flex",
+                    justify_content: "space-between",
+                    align_items: "center",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Audio Inputs"}
+                    </span>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.6).to_css(),
+                    }}>
+                        {format!("{} active", self.props.inputs.iter().filter(|i| !i.muted).count())}
+                    </span>
+                </div>
+
+                // Input channels
+                <div style={style! {
+                    flex: 1,
+                    overflow_y: "auto",
+                    padding: "8px",
+                }}>
+                    ∀ input ∈ &self.props.inputs {
+                        ≔ is_selected = self.selected_input == Some(input.id);
+                        ≔ is_clipping = input.clipping;
+
+                        <div
+                            class="input-channel"
+                            style={style! {
+                                display: "flex",
+                                align_items: "center",
+                                gap: "12px",
+                                padding: "12px",
+                                margin_bottom: "4px",
+                                background: ⎇ is_selected { PHTHALO.with_alpha(0.1) } ⎉ { VOID }.to_css(),
+                                border_radius: "6px",
+                                border: ⎇ is_clipping {
+                                    format!("1px solid {}", METER_RED.to_css())
+                                } ⎉ {
+                                    format!("1px solid {}", ⎇ is_selected { PHTHALO.with_alpha(0.3) } ⎉ { "transparent" }.to_css())
+                                },
+                                cursor: "pointer",
+                            }}
+                            on_click={|_| self.selected_input = Some(input.id)}
+                        >
+                            // Input meter
+                            <div style={style! {
+                                display: "flex",
+                                gap: "2px",
+                            }}>
+                                <LevelMeter
+                                    level_db={input.level_db}
+                                    peak_db={input.peak_db}
+                                    level_db_right={input.level_db_right}
+                                    peak_db_right={input.peak_db_right}
+                                    stereo={input.stereo}
+                                    width={⎇ input.stereo { 16.0 } ⎉ { 8.0 }}
+                                    height={60.0}
+                                    show_scale={false}
+                                />
+                            </div>
+
+                            // Input info
+                            <div style={style! {
+                                flex: 1,
+                            }}>
+                                <div style={style! {
+                                    font_size: px(TEXT_SM),
+                                    color: SILVER.to_css(),
+                                    margin_bottom: "4px",
+                                }}>
+                                    {&input.name}
+                                </div>
+                                <div style={style! {
+                                    font_size: px(TEXT_XS),
+                                    font_family: FONT_MONO,
+                                    color: ⎇ is_clipping { METER_RED } ⎉ { SILVER.with_alpha(0.6) }.to_css(),
+                                }}>
+                                    {format!("{:.1} dB", input.level_db)}
+                                </div>
+                            </div>
+
+                            // Gain knob
+                            <Knob
+                                value={(input.gain + 24.0) / 48.0}
+                                min={-24.0}
+                                max={24.0}
+                                size={KnobSize·Small}
+                                bipolar={true}
+                                show_value={false}
+                                on_change={Box·new(move |v| {
+                                    ≔ gain = v * 48.0 - 24.0;
+                                    (self.props.on_input_gain)(input.id, gain);
+                                })}
+                            />
+                        </div>
+                    }
+                </div>
+
+                // Input details (when selected)
+                ⎇ ≔ Some(input_id) = self.selected_input {
+                    ⎇ ≔ Some(input) = self.props.inputs.iter().find(|i| i.id == input_id) {
+                        <div style={style! {
+                            padding: "12px 16px",
+                            border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                            background: VOID.to_css(),
+                        }}>
+                            <div style={style! {
+                                font_size: px(TEXT_SM),
+                                color: SILVER.to_css(),
+                                margin_bottom: "8px",
+                            }}>
+                                {&input.name}
+                            </div>
+                            <div style={style! {
+                                display: "flex",
+                                gap: "12px",
+                            }}>
+                                <div>
+                                    <span style={style! {
+                                        font_size: px(TEXT_XS),
+                                        color: SILVER.with_alpha(0.6).to_css(),
+                                    }}>
+                                        {"Gain"}
+                                    </span>
+                                    <div style={style! {
+                                        font_size: px(TEXT_SM),
+                                        font_family: FONT_MONO,
+                                        color: PHTHALO.to_css(),
+                                    }}>
+                                        {format!("{:+.1} dB", input.gain)}
+                                    </div>
+                                </div>
+                                <div>
+                                    <span style={style! {
+                                        font_size: px(TEXT_XS),
+                                        color: SILVER.with_alpha(0.6).to_css(),
+                                    }}>
+                                        {"Peak"}
+                                    </span>
+                                    <div style={style! {
+                                        font_size: px(TEXT_SM),
+                                        font_family: FONT_MONO,
+                                        color: ⎇ input.peak_db > -1.0 { METER_RED } ⎉ { SILVER }.to_css(),
+                                    }}>
+                                        {format!("{:.1} dB", input.peak_db)}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        }
+    }
+
+    /// Render armed tracks panel
+    rite render_armed_tracks(&self) -> Element! {
+        element! {
+            <div class="armed-tracks" style={style! {
+                flex: 1,
+                display: "flex",
+                flex_direction: "column",
+                background: VOID.to_css(),
+            }}>
+                // Header
+                <div style={style! {
+                    padding: "12px 16px",
+                    background: ABYSS.to_css(),
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                    display: "flex",
+                    justify_content: "space-between",
+                    align_items: "center",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Record Armed Tracks"}
+                    </span>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: METER_RED.to_css(),
+                    }}>
+                        {format!("{} armed", self.props.armed_tracks.len())}
+                    </span>
+                </div>
+
+                // Armed track list
+                ⎇ self.props.armed_tracks.is_empty() {
+                    <div style={style! {
+                        flex: 1,
+                        display: "flex",
+                        flex_direction: "column",
+                        align_items: "center",
+                        justify_content: "center",
+                        color: SILVER.with_alpha(0.5).to_css(),
+                    }}>
+                        <div style={style! {
+                            font_size: "48px",
+                            margin_bottom: "16px",
+                        }}>
+                            {"⏺"}
+                        </div>
+                        <div style={style! { font_size: px(TEXT_SM) }}>
+                            {"No tracks armed for recording"}
+                        </div>
+                        <div style={style! {
+                            font_size: px(TEXT_XS),
+                            margin_top: "8px",
+                        }}>
+                            {"Click the R button on a track to arm it"}
+                        </div>
+                    </div>
+                } ⎉ {
+                    <div style={style! {
+                        flex: 1,
+                        overflow_y: "auto",
+                        padding: "16px",
+                    }}>
+                        ∀ track ∈ &self.props.armed_tracks {
+                            ≔ is_recording = self.props.transport.recording;
+
+                            <div
+                                class="armed-track"
+                                style={style! {
+                                    display: "flex",
+                                    align_items: "center",
+                                    gap: "16px",
+                                    padding: "16px",
+                                    margin_bottom: "8px",
+                                    background: ABYSS.to_css(),
+                                    border_radius: "8px",
+                                    border_left: format!("4px solid {}", track.track_type.color().to_css()),
+                                }}
+                            >
+                                // Record indicator
+                                <div style={style! {
+                                    width: "32px",
+                                    height: "32px",
+                                    border_radius: "50%",
+                                    background: ⎇ is_recording { METER_RED } ⎉ { METER_RED.with_alpha(0.3) }.to_css(),
+                                    display: "flex",
+                                    align_items: "center",
+                                    justify_content: "center",
+                                    animation: ⎇ is_recording { "pulse 1s infinite" } ⎉ { "none" },
+                                }}>
+                                    <div style={style! {
+                                        width: "12px",
+                                        height: "12px",
+                                        border_radius: "50%",
+                                        background: ⎇ is_recording { VOID } ⎉ { METER_RED }.to_css(),
+                                    }} />
+                                </div>
+
+                                // Track info
+                                <div style={style! { flex: 1 }}>
+                                    <div style={style! {
+                                        font_size: px(TEXT_SM),
+                                        font_weight: "600",
+                                        color: SILVER.to_css(),
+                                        margin_bottom: "4px",
+                                    }}>
+                                        {&track.track_name}
+                                    </div>
+                                    <div style={style! {
+                                        font_size: px(TEXT_XS),
+                                        color: SILVER.with_alpha(0.6).to_css(),
+                                    }}>
+                                        {⎇ ≔ Some(input_id) = track.input_id {
+                                            ≔ input_name = self.props.inputs
+                                                .iter()
+                                                .find(|i| i.id == input_id)
+                                                .map(|i| i.name.as_str())
+                                                .unwrap_or("Unknown");
+                                            format!("Input: {}", input_name)
+                                        } ⎉ {
+                                            "No input assigned".to_string()
+                                        }}
+                                    </div>
+                                </div>
+
+                                // Level meter
+                                <LevelMeter
+                                    level_db={track.level_db}
+                                    peak_db={track.peak_db}
+                                    stereo={false}
+                                    width={8.0}
+                                    height={40.0}
+                                    show_scale={false}
+                                />
+
+                                // Recording duration
+                                ⎇ is_recording && track.recorded_duration > 0.0 {
+                                    <div style={style! {
+                                        font_family: FONT_MONO,
+                                        font_size: px(TEXT_SM),
+                                        color: METER_RED.to_css(),
+                                    }}>
+                                        {self.format_time(track.recorded_duration)}
+                                    </div>
+                                }
+
+                                // Monitoring toggle
+                                <button style={style! {
+                                    padding: "4px 8px",
+                                    background: ⎇ track.monitoring { PHTHALO.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                                    border: format!("1px solid {}", ⎇ track.monitoring { PHTHALO } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                                    border_radius: "4px",
+                                    color: ⎇ track.monitoring { PHTHALO } ⎉ { SILVER }.to_css(),
+                                    font_size: px(TEXT_XS),
+                                    cursor: "pointer",
+                                }}>
+                                    {"Monitor"}
+                                </button>
+
+                                // Disarm button
+                                <button style={style! {
+                                    padding: "4px 8px",
+                                    background: "transparent".to_string(),
+                                    border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                                    border_radius: "4px",
+                                    color: SILVER.to_css(),
+                                    font_size: px(TEXT_XS),
+                                    cursor: "pointer",
+                                }}
+                                on_click={|_| (self.props.on_disarm_track)(track.track_id)}>
+                                    {"Disarm"}
+                                </button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    /// Render session info panel
+    rite render_session_info(&self) -> Element! {
+        ≔ session = &self.props.session;
+
+        element! {
+            <div class="session-info" style={style! {
+                width: "240px",
+                background: ABYSS.to_css(),
+                border_left: format!("1px solid {}", GRID_LINE.to_css()),
+                display: "flex",
+                flex_direction: "column",
+            }}>
+                // Header
+                <div style={style! {
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Session"}
+                    </span>
+                </div>
+
+                // Session details
+                <div style={style! {
+                    padding: "16px",
+                    flex: 1,
+                }}>
+                    // Session name
+                    <div style={style! { margin_bottom: "16px" }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Session Name"}
+                        </span>
+                        <div style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {&session.name}
+                        </div>
+                    </div>
+
+                    // Take info
+                    <div style={style! { margin_bottom: "16px" }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Take"}
+                        </span>
+                        <div style={style! {
+                            font_size: px(TEXT_LG),
+                            font_family: FONT_MONO,
+                            color: PHTHALO.to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {format!("{} / {}", session.take_number, session.total_takes)}
+                        </div>
+                    </div>
+
+                    // Duration
+                    <div style={style! { margin_bottom: "16px" }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Duration"}
+                        </span>
+                        <div style={style! {
+                            font_size: px(TEXT_SM),
+                            font_family: FONT_MONO,
+                            color: SILVER.to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {self.format_time(session.duration)}
+                        </div>
+                    </div>
+
+                    // Format info
+                    <div style={style! { margin_bottom: "16px" }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Format"}
+                        </span>
+                        <div style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {format!("{} kHz / {}-bit", session.sample_rate / 1000, session.bit_depth)}
+                        </div>
+                    </div>
+
+                    // Disk space
+                    <div>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Disk Space"}
+                        </span>
+                        <div style={style! {
+                            font_size: px(TEXT_SM),
+                            color: ⎇ session.disk_space_remaining < 1.0 { METER_RED } ⎉ { SILVER }.to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {format!("{:.1} GB remaining", session.disk_space_remaining)}
+                        </div>
+                        // Progress bar
+                        <div style={style! {
+                            width: "100%",
+                            height: "4px",
+                            background: VOID.to_css(),
+                            border_radius: "2px",
+                            margin_top: "8px",
+                            overflow: "hidden",
+                        }}>
+                            ≔ used_pct = (1.0 - session.disk_space_remaining / 100.0).clamp(0.0, 1.0) * 100.0;
+                            <div style={style! {
+                                width: pct(used_pct),
+                                height: "100%",
+                                background: ⎇ used_pct > 90.0 { METER_RED } ⎉ ⎇ used_pct > 75.0 { METER_YELLOW } ⎉ { PHTHALO }.to_css(),
+                            }} />
+                        </div>
+                    </div>
+                </div>
+
+                // Recording options
+                <div style={style! {
+                    padding: "16px",
+                    border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        font_weight: "600",
+                        color: SILVER.to_css(),
+                        display: "block",
+                        margin_bottom: "12px",
+                    }}>
+                        {"Recording Options"}
+                    </span>
+
+                    // Metronome
+                    <label style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "8px",
+                        margin_bottom: "8px",
+                        cursor: "pointer",
+                    }}
+                    on_click={|_| (self.props.on_metronome_toggle)()}>
+                        <input type="checkbox" checked={self.props.metronome_enabled} />
+                        <span style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                        }}>
+                            {"Metronome"}
+                        </span>
+                    </label>
+
+                    // Count-in
+                    <div style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "8px",
+                        margin_bottom: "8px",
+                    }}>
+                        <span style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                        }}>
+                            {"Count-in:"}
+                        </span>
+                        <select style={style! {
+                            background: VOID.to_css(),
+                            border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                            border_radius: "4px",
+                            color: SILVER.to_css(),
+                            padding: "2px 8px",
+                            font_size: px(TEXT_SM),
+                        }}>
+                            <option value="0">{"Off"}</option>
+                            <option value="1">{"1 bar"}</option>
+                            <option value="2" selected={self.props.count_in_bars == 2}>{"2 bars"}</option>
+                            <option value="4">{"4 bars"}</option>
+                        </select>
+                    </div>
+
+                    // Punch in/out
+                    <label style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "8px",
+                        cursor: "pointer",
+                    }}
+                    on_click={|_| (self.props.on_punch_toggle)()}>
+                        <input type="checkbox" checked={self.props.punch_enabled} />
+                        <span style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                        }}>
+                            {"Punch In/Out"}
+                        </span>
+                    </label>
+                </div>
+            </div>
+        }
+    }
+
+    /// Render record button area
+    rite render_record_controls(&self) -> Element! {
+        ≔ is_recording = self.props.transport.recording;
+        ≔ is_playing = self.props.transport.playing;
+        ≔ count_in_active = self.props.transport.count_in_active;
+
+        element! {
+            <div class="record-controls" style={style! {
+                padding: "16px",
+                background: ABYSS.to_css(),
+                border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                display: "flex",
+                align_items: "center",
+                justify_content: "center",
+                gap: "24px",
+            }}>
+                // Position display
+                <div style={style! {
+                    text_align: "center",
+                }}>
+                    <div style={style! {
+                        font_size: px(TEXT_XL),
+                        font_family: FONT_MONO,
+                        color: PHTHALO.to_css(),
+                    }}>
+                        {self.format_position(self.props.transport.position)}
+                    </div>
+                    <div style={style! {
+                        font_size: px(TEXT_SM),
+                        font_family: FONT_MONO,
+                        color: SILVER.with_alpha(0.6).to_css(),
+                    }}>
+                        {self.format_time(self.props.transport.position)}
+                    </div>
+                </div>
+
+                // Main transport buttons
+                <div style={style! {
+                    display: "flex",
+                    gap: "8px",
+                }}>
+                    // Stop
+                    <button style={style! {
+                        width: "48px",
+                        height: "48px",
+                        border_radius: "50%",
+                        background: VOID.to_css(),
+                        border: format!("2px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        color: SILVER.to_css(),
+                        font_size: "20px",
+                        cursor: "pointer",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                    }}
+                    on_click={|_| (self.props.on_stop)()}>
+                        {"⏹"}
+                    </button>
+
+                    // Play
+                    <button style={style! {
+                        width: "48px",
+                        height: "48px",
+                        border_radius: "50%",
+                        background: ⎇ is_playing && !is_recording { METER_GREEN.with_alpha(0.3) } ⎉ { VOID }.to_css(),
+                        border: format!("2px solid {}", ⎇ is_playing { METER_GREEN } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                        color: ⎇ is_playing { METER_GREEN } ⎉ { SILVER }.to_css(),
+                        font_size: "20px",
+                        cursor: "pointer",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                    }}
+                    on_click={|_| (self.props.on_play)()}>
+                        {⎇ is_playing && !is_recording { "⏸" } ⎉ { "▶" }}
+                    </button>
+
+                    // Record (big button)
+                    <button style={style! {
+                        width: "64px",
+                        height: "64px",
+                        border_radius: "50%",
+                        background: ⎇ is_recording { METER_RED } ⎉ { METER_RED.with_alpha(0.2) }.to_css(),
+                        border: format!("3px solid {}", METER_RED.to_css()),
+                        color: ⎇ is_recording { VOID } ⎉ { METER_RED }.to_css(),
+                        font_size: "28px",
+                        cursor: "pointer",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                        animation: ⎇ is_recording { "pulse-red 1s infinite" } ⎉ { "none" },
+                    }}
+                    on_click={|_| (self.props.on_record)()}>
+                        {"⏺"}
+                    </button>
+                </div>
+
+                // Count-in indicator
+                ⎇ count_in_active {
+                    <div style={style! {
+                        font_size: "48px",
+                        font_family: FONT_MONO,
+                        font_weight: "bold",
+                        color: PHTHALO.to_css(),
+                        animation: "beat 0.5s infinite",
+                    }}>
+                        {self.props.transport.count_in_beat.to_string()}
+                    </div>
+                }
+
+                // Tempo display
+                <div style={style! {
+                    text_align: "center",
+                }}>
+                    <div style={style! {
+                        font_size: px(TEXT_LG),
+                        font_family: FONT_MONO,
+                        color: SILVER.to_css(),
+                    }}>
+                        {format!("{:.1}", self.props.transport.tempo)}
+                    </div>
+                    <div style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.6).to_css(),
+                    }}>
+                        {"BPM"}
+                    </div>
+                </div>
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ RecordMode {
+    type Props = RecordModeProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="record-mode" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: VOID.to_css(),
+            }}>
+                // Main content area
+                <div style={style! {
+                    flex: 1,
+                    display: "flex",
+                    overflow: "hidden",
+                }}>
+                    // Left - Input panel
+                    ⎇ self.show_inputs {
+                        {self.render_inputs()}
+                    }
+
+                    // Center - Armed tracks
+                    {self.render_armed_tracks()}
+
+                    // Right - Session info
+                    {self.render_session_info()}
+                </div>
+
+                // Bottom - Record controls
+                {self.render_record_controls()}
+            </div>
+        }
+    }
+}

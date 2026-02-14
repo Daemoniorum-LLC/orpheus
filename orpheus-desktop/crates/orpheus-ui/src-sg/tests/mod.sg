@@ -1,0 +1,132 @@
+//! Test infrastructure for orpheus-ui
+//!
+//! This module provides the foundation for three-tier testing:
+//!
+//! - **Unit tests**: In-file tests for individual components (scroll tests { })
+//! - **Integration tests**: Cross-component interaction tests
+//! - **E2E tests**: Full workflow tests with friction metrics
+//!
+//! ## Usage
+//!
+//! ```sigil
+//! invoke crate·tests·{TestApp, WorkflowMetrics, TaskComplexity};
+//! invoke crate·tests·fixtures·test_multitrack_project;
+//! invoke crate·tests·assertions·assert_db_eq;
+//! ```
+//!
+//! ## Modules
+//!
+//! - `test_harness` - TestApp simulation and WorkflowMetrics
+//! - `test_fixtures` - Pre-configured projects for various scenarios
+//! - `assertions` - Domain-specific assertion helpers
+//! - `audio_controls_integration` - Integration tests for audio widgets
+//! - `audio_controls_e2e` - E2E workflow tests with friction metrics
+//! - `mixer_integration` - Integration tests for mixer components
+//! - `mixer_e2e` - E2E workflow tests for mixing workflows
+
+☉ scroll test_harness;
+☉ scroll test_fixtures;
+☉ scroll assertions;
+☉ scroll audio_controls_integration;
+☉ scroll audio_controls_e2e;
+☉ scroll mixer_integration;
+☉ scroll mixer_e2e;
+
+// Re-export commonly used items
+☉ invoke self·test_harness·{
+    TestApp,
+    WorkflowMetrics,
+    TaskComplexity,
+    Action,
+    Key,
+    Modifiers,
+    Point,
+    OrpheusMode,
+    TransportState,
+    TrackType,
+    FrictionVerdict,
+    FrictionReport,
+    AppState,
+    ChannelState,
+    TrackState,
+    ClipState,
+    TestProject,
+    MAX_STEPS_SIMPLE,
+    MAX_STEPS_MEDIUM,
+    MAX_STEPS_COMPLEX,
+};
+
+☉ invoke self·test_fixtures·{
+    // Project fixtures
+    test_empty_project,
+    test_guitar_project,
+    test_tab_project,
+    test_recording_project,
+    test_multitrack_project,
+    test_song_project,
+    test_mixing_session,
+    test_finished_project,
+    test_premastered_project,
+    test_hot_master,
+    test_large_project,
+    test_16_track_band,
+    test_32_track_mix,
+    test_long_project,
+    test_midi_project,
+    test_bus_routing_project,
+    // Tab fixtures
+    TabNote,
+    test_power_chord_riff,
+    test_chromatic_exercise,
+    STANDARD_TUNING,
+    // Audio fixtures
+    AudioLevels,
+    test_quiet_levels,
+    test_nominal_levels,
+    test_hot_levels,
+    test_clipping_levels,
+    test_dynamic_levels_sequence,
+};
+
+☉ invoke self·assertions·{
+    // Audio assertions
+    assert_db_eq,
+    assert_db_eq_with_tolerance,
+    assert_level_safe,
+    assert_true_peak_compliant,
+    assert_streaming_compliant,
+    assert_lufs_in_range,
+    assert_lufs_in_range_with_tolerance,
+    assert_level_in_warning_range,
+    DB_TOLERANCE,
+    LUFS_TOLERANCE,
+    // Timeline assertions
+    assert_beat_eq,
+    assert_beat_eq_with_tolerance,
+    assert_on_bar,
+    assert_on_beat,
+    assert_valid_clip_duration,
+    assert_playhead_in_bounds,
+    BEAT_TOLERANCE,
+    // Mixer assertions
+    assert_channel_audible,
+    assert_gain_staged,
+    assert_pan_valid,
+    assert_volume_valid,
+    // UI assertions
+    assert_mode_transition_preserved,
+    assert_visible,
+    assert_hidden,
+    assert_mode,
+    // Friction assertions
+    assert_steps_acceptable,
+    assert_no_errors,
+    assert_minimal_undo,
+    assert_workflow_acceptable,
+    assert_not_over_engineered,
+    // Tab assertions
+    assert_fret_valid,
+    assert_string_valid,
+    assert_midi_valid,
+    assert_note_playable,
+};

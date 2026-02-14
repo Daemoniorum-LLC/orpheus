@@ -1,0 +1,120 @@
+//! File/sample/preset browser panel
+//!
+//! A tree-based browser for navigating:
+//! - Project files
+//! - Sample libraries
+//! - Plugin presets
+//! - Recent files
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Tree structure, filtering
+//! - `~` (external) - File system access
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Browser panel properties
+☉ Σ BrowserPanelProps {
+    /// Root paths to browse
+    roots: Vec<BrowserRoot>,
+    /// Current selection
+    selected_path: Option<String>,
+    /// Search filter
+    filter: String,
+    /// Callbacks
+    on_select: Box<dyn Fn(&str)>,
+    on_preview: Box<dyn Fn(&str)>,
+}
+
+/// Browser root entry
+☉ Σ BrowserRoot {
+    name: String,
+    path: String,
+    icon: BrowserIcon,
+}
+
+/// Browser icon types
+☉ ᛈ BrowserIcon {
+    Folder,
+    Audio,
+    Midi,
+    Preset,
+    Project,
+}
+
+/// Browser panel component
+☉ Σ BrowserPanel {
+    props: BrowserPanelProps,
+}
+
+⊢ BrowserPanel {
+    ☉ rite new(props: BrowserPanelProps) -> Self! {
+        Self { props }
+    }
+}
+
+⊢ Component ∀ BrowserPanel {
+    type Props = BrowserPanelProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="browser-panel" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: ABYSS.to_css(),
+            }}>
+                // Search bar
+                <div class="browser-search" style={style! {
+                    padding: "8px",
+                    border_bottom: format!("1px solid {}", SILVER.with_alpha(0.1).to_css()),
+                }}>
+                    <input
+                        type="text"
+                        placeholder="Search..."
+                        value={&self.props.filter}
+                        style={style! {
+                            width: "100%",
+                            padding: "6px 8px",
+                            background: VOID.to_css(),
+                            border: format!("1px solid {}", SILVER.with_alpha(0.2).to_css()),
+                            border_radius: "4px",
+                            color: SILVER.to_css(),
+                            font_size: px(TEXT_SM),
+                        }}
+                    />
+                </div>
+
+                // Tree view
+                <div class="browser-tree" style={style! {
+                    flex: 1,
+                    overflow_y: "auto",
+                    padding: "8px",
+                }}>
+                    ∀ root ∈ &self.props.roots {
+                        <div class="browser-root" style={style! {
+                            margin_bottom: "8px",
+                        }}>
+                            <div style={style! {
+                                display: "flex",
+                                align_items: "center",
+                                gap: "8px",
+                                padding: "4px",
+                                cursor: "pointer",
+                            }}>
+                                <span style={style! {
+                                    font_size: px(TEXT_SM),
+                                    font_weight: "bold",
+                                    color: SILVER.to_css(),
+                                }}>
+                                    {&root.name}
+                                </span>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    }
+}

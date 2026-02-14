@@ -1,0 +1,494 @@
+//! Linear fader control
+//!
+//! A vertical or horizontal fader widget for volume and parameter control,
+//! typically used in mixer channel strips.
+//!
+//! ## Features
+//!
+//! - Configurable orientation (vertical/horizontal)
+//! - Unity gain marker
+//! - dB scale markings
+//! - Double-click to reset to unity
+//! - Keyboard support
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Position calculations, dB conversion
+//! - `~` (external) - User drag input
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{ABYSS, SILVER, PHTHALO, VOID};
+invoke crate·tokens·{TEXT_XS, FONT_MONO};
+
+/// Fader orientation
+☉ ᛈ FaderOrientation {
+    Vertical,
+    Horizontal,
+}
+
+/// Fader properties
+☉ Σ FaderProps {
+    /// Current value (0.0 - 1.0 normalized, where ~0.79 = unity for typical -∞ to +6dB range)
+    value~: f32,
+    /// Minimum dB value
+    min_db: f32,
+    /// Maximum dB value
+    max_db: f32,
+    /// Unity dB (typically 0.0)
+    unity_db: f32,
+    /// Fader orientation
+    orientation: FaderOrientation,
+    /// Width in pixels
+    width: f32,
+    /// Height in pixels
+    height: f32,
+    /// Show dB scale
+    show_scale: bool,
+    /// Show unity marker
+    show_unity: bool,
+    /// Value change callback
+    on_change: Option<Box<dyn Fn(f32)>>,
+    /// Disabled state
+    disabled: bool,
+}
+
+⊢ ◊ FaderProps {
+    rite default() -> Self {
+        Self {
+            value: 0.79,  // Unity (0 dB) in typical -∞ to +6dB range
+            min_db: -70.0,  // Effectively -infinity
+            max_db: 6.0,
+            unity_db: 0.0,
+            orientation: FaderOrientation·Vertical,
+            width: 40.0,
+            height: 120.0,
+            show_scale: true,
+            show_unity: true,
+            on_change: None,
+            disabled: false,
+        }
+    }
+}
+
+/// Linear fader component
+☉ Σ Fader {
+    props: FaderProps,
+    /// Is being dragged
+    dragging: bool,
+    /// Drag start position
+    drag_start_pos: f32,
+    /// Value at drag start
+    drag_start_value: f32,
+}
+
+⊢ Fader {
+    /// Create a new fader
+    ☉ rite new(props: FaderProps) -> Self! {
+        Self {
+            props,
+            dragging: false,
+            drag_start_pos: 0.0,
+            drag_start_value: 0.0,
+        }
+    }
+
+    /// Create a simple volume fader
+    ☉ rite volume(value~: f32, on_change: impl Fn(f32) + 'static) -> Self! {
+        Self·new(FaderProps {
+            value,
+            on_change: Some(Box·new(on_change)),
+            ..FaderProps·default()
+        })
+    }
+
+    /// Convert normalized value to dB
+    rite value_to_db(&self, value: f32) -> f32! {
+        ⎇ value <= 0.0001 {
+            self.props.min_db  // Effectively -infinity
+        } ⎉ {
+            // Logarithmic scaling for natural volume feel
+            ≔ range = self.props.max_db - self.props.min_db;
+            self.props.min_db + value.powf(0.25) * range
+        }
+    }
+
+    /// Convert dB to normalized value
+    rite db_to_value(&self, db: f32) -> f32! {
+        ⎇ db <= self.props.min_db {
+            0.0
+        } ⎉ {
+            ≔ range = self.props.max_db - self.props.min_db;
+            ((db - self.props.min_db) / range).powf(4.0)
+        }
+    }
+
+    /// Get unity position (0.0-1.0)
+    rite unity_position(&self) -> f32! {
+        self.db_to_value(self.props.unity_db)
+    }
+
+    /// Format dB value for display
+    rite format_db(&self, db: f32) -> String! {
+        ⎇ db <= self.props.min_db + 1.0 {
+            "-∞".into()
+        } ⎉ {
+            format!("{:.1}", db)
+        }
+    }
+
+    /// Start dragging
+    rite start_drag(&Δ self, pos: f32) {
+        ⎇ self.props.disabled { ⤺; }
+        self.dragging = true;
+        self.drag_start_pos = pos;
+        self.drag_start_value = self.props.value;
+    }
+
+    /// Handle drag
+    rite handle_drag(&Δ self, pos: f32) {
+        ⎇ !self.dragging || self.props.disabled { ⤺; }
+
+        ≔ track_length = ⌥ self.props.orientation {
+            FaderOrientation·Vertical => self.props.height,
+            FaderOrientation·Horizontal => self.props.width,
+        };
+
+        ≔ delta = ⌥ self.props.orientation {
+            FaderOrientation·Vertical => self.drag_start_pos - pos,  // Inverted for vertical
+            FaderOrientation·Horizontal => pos - self.drag_start_pos,
+        };
+
+        ≔ value_delta = delta / track_length;
+        ≔ new_value = (self.drag_start_value + value_delta).clamp(0.0, 1.0)!;
+
+        ⎇ ≔ Some(ref on_change) = self.props.on_change {
+            on_change(new_value);
+        }
+        self.props.value = new_value;
+    }
+
+    /// End dragging
+    rite end_drag(&Δ self) {
+        self.dragging = false;
+    }
+
+    /// Reset to unity
+    rite reset_to_unity(&Δ self) {
+        ⎇ self.props.disabled { ⤺; }
+        ≔ unity = self.unity_position();
+        ⎇ ≔ Some(ref on_change) = self.props.on_change {
+            on_change(unity);
+        }
+        self.props.value = unity;
+    }
+}
+
+⊢ Component ∀ Fader {
+    type Props = FaderProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ is_vertical = self.props.orientation == FaderOrientation·Vertical;
+        ≔ track_length = ⎇ is_vertical { self.props.height } ⎉ { self.props.width };
+        ≔ thumb_size = 16.0;
+        ≔ thumb_pos = self.props.value * (track_length - thumb_size);
+        ≔ current_db = self.value_to_db(self.props.value);
+
+        element! {
+            <div
+                class="fader"
+                style={style! {
+                    display: "flex",
+                    flex_direction: ⎇ is_vertical { "column" } ⎉ { "row" },
+                    align_items: "center",
+                    gap: "4px",
+                    cursor: ⎇ self.props.disabled { "not-allowed" } ⎉ { "pointer" },
+                    opacity: ⎇ self.props.disabled { 0.5 } ⎉ { 1.0 },
+                }}
+                on_double_click={|_| self.reset_to_unity()}
+            >
+                // dB value display
+                <span style={style! {
+                    font_size: px(TEXT_XS),
+                    font_family: FONT_MONO,
+                    color: PHTHALO.to_css(),
+                    min_width: "32px",
+                    text_align: "center",
+                }}>
+                    {self.format_db(current_db)} {" dB"}
+                </span>
+
+                // Fader track
+                <div
+                    class="fader-track"
+                    style={style! {
+                        position: "relative",
+                        width: ⎇ is_vertical { "8px" } ⎉ { px(self.props.width) },
+                        height: ⎇ is_vertical { px(self.props.height) } ⎉ { "8px" },
+                        background: VOID.to_css(),
+                        border_radius: "4px",
+                        border: format!("1px solid {}", SILVER.with_alpha(0.2).to_css()),
+                    }}
+                    on_mouse_down={|e| self.start_drag(⎇ is_vertical { e.y } ⎉ { e.x })}
+                    on_mouse_move={|e| self.handle_drag(⎇ is_vertical { e.y } ⎉ { e.x })}
+                    on_mouse_up={|_| self.end_drag()}
+                    on_mouse_leave={|_| self.end_drag()}
+                >
+                    // Unity marker
+                    ⎇ self.props.show_unity {
+                        ≔ unity_pos = self.unity_position() * (track_length - thumb_size) + thumb_size / 2.0;
+                        <div style={style! {
+                            position: "absolute",
+                            left: ⎇ is_vertical { "0" } ⎉ { px(unity_pos) },
+                            bottom: ⎇ is_vertical { px(unity_pos) } ⎉ { "0" },
+                            width: ⎇ is_vertical { "100%" } ⎉ { "2px" },
+                            height: ⎇ is_vertical { "2px" } ⎉ { "100%" },
+                            background: SILVER.with_alpha(0.5).to_css(),
+                        }} />
+                    }
+
+                    // Fill up to thumb
+                    <div style={style! {
+                        position: "absolute",
+                        left: 0,
+                        bottom: 0,
+                        width: ⎇ is_vertical { "100%" } ⎉ { px(thumb_pos + thumb_size / 2.0) },
+                        height: ⎇ is_vertical { px(thumb_pos + thumb_size / 2.0) } ⎉ { "100%" },
+                        background: PHTHALO.with_alpha(0.3).to_css(),
+                        border_radius: "4px",
+                    }} />
+
+                    // Thumb/cap
+                    <div
+                        class="fader-thumb"
+                        style={style! {
+                            position: "absolute",
+                            left: ⎇ is_vertical { "50%" } ⎉ { px(thumb_pos) },
+                            bottom: ⎇ is_vertical { px(thumb_pos) } ⎉ { "50%" },
+                            transform: ⎇ is_vertical { "translateX(-50%)" } ⎉ { "translateY(50%)" },
+                            width: ⎇ is_vertical { "20px" } ⎉ { px(thumb_size) },
+                            height: ⎇ is_vertical { px(thumb_size) } ⎉ { "20px" },
+                            background: ABYSS.to_css(),
+                            border: format!("2px solid {}", SILVER.to_css()),
+                            border_radius: "2px",
+                            cursor: "grab",
+                        }}
+                    />
+                </div>
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_db_conversion() {
+        ≔ fader = Fader·new(FaderProps·default());
+
+        // Unity (0 dB) should be around 0.79
+        ≔ unity = fader.db_to_value(0.0);
+        assert!(unity > 0.7 && unity < 0.9);
+
+        // Value at 0 should give min_db
+        ≔ db = fader.value_to_db(0.0);
+        assert!((db - fader.props.min_db).abs() < 0.1);
+    }
+
+    //@ rune: test
+    rite test_unity_position() {
+        ≔ fader = Fader·new(FaderProps {
+            unity_db: 0.0,
+            min_db: -70.0,
+            max_db: 6.0,
+            ..FaderProps·default()
+        });
+
+        ≔ unity = fader.unity_position();
+        assert!(unity > 0.7 && unity < 0.9);
+    }
+
+    // === Additional tests per TDD roadmap ===
+
+    //@ rune: test
+    rite test_value_bounds() {
+        // P2: 0.0 <= value <= 1.0 (normalized fader position)
+        ≔ fader = Fader·new(FaderProps { value: 0.5, ..FaderProps·default() });
+        assert!(fader.props.value >= 0.0 && fader.props.value <= 1.0);
+    }
+
+    //@ rune: test
+    rite test_disabled_ignores_drag() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.5,
+            disabled: true,
+            ..FaderProps·default()
+        });
+
+        // Try to drag
+        fader.start_drag(60.0);
+        assert!(!fader.dragging);
+
+        // Force dragging state
+        fader.dragging = true;
+        fader.drag_start_pos = 60.0;
+        fader.drag_start_value = 0.5;
+        fader.handle_drag(0.0);
+
+        // Value should remain unchanged
+        assert!((fader.props.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_reset_to_unity() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.3,
+            ..FaderProps·default()
+        });
+
+        fader.reset_to_unity();
+
+        // Should be at unity position (~0.79)
+        assert!(fader.props.value > 0.7 && fader.props.value < 0.9);
+    }
+
+    //@ rune: test
+    rite test_reset_ignored_when_disabled() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.3,
+            disabled: true,
+            ..FaderProps·default()
+        });
+
+        fader.reset_to_unity();
+
+        // Should remain at 0.3
+        assert!((fader.props.value - 0.3).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_format_db_infinity() {
+        ≔ fader = Fader·new(FaderProps {
+            min_db: -70.0,
+            ..FaderProps·default()
+        });
+
+        // Values at or near min should format as -∞
+        assert_eq!(fader.format_db(-70.0), "-∞");
+        assert_eq!(fader.format_db(-69.5), "-∞");  // Within 1 dB of min
+
+        // Values above threshold should format normally
+        assert!(fader.format_db(-60.0).contains("-60"));
+    }
+
+    //@ rune: test
+    rite test_db_to_value_roundtrip() {
+        ≔ fader = Fader·new(FaderProps·default());
+
+        // Test roundtrip: value -> dB -> value
+        ∀ test_value ∈ [0.2, 0.5, 0.79, 0.9] {
+            ≔ db = fader.value_to_db(test_value);
+            ≔ back = fader.db_to_value(db);
+            assert!((back - test_value).abs() < 0.05, "Roundtrip failed for value {}", test_value);
+        }
+    }
+
+    //@ rune: test
+    rite test_value_to_db_boundaries() {
+        ≔ fader = Fader·new(FaderProps {
+            min_db: -70.0,
+            max_db: 6.0,
+            ..FaderProps·default()
+        });
+
+        // Value 0.0 should give effectively -infinity (min_db)
+        ≔ db_zero = fader.value_to_db(0.0);
+        assert!((db_zero - fader.props.min_db).abs() < 0.1);
+
+        // Value 1.0 should give max_db
+        ≔ db_one = fader.value_to_db(1.0);
+        assert!((db_one - fader.props.max_db).abs() < 0.5);
+    }
+
+    //@ rune: test
+    rite test_vertical_drag_direction() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.5,
+            orientation: FaderOrientation·Vertical,
+            height: 120.0,
+            ..FaderProps·default()
+        });
+
+        fader.start_drag(60.0);  // Middle of track
+
+        // Drag upward (lower Y) should increase value
+        fader.handle_drag(30.0);
+        assert!(fader.props.value > 0.5);
+    }
+
+    //@ rune: test
+    rite test_horizontal_drag_direction() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.5,
+            orientation: FaderOrientation·Horizontal,
+            width: 120.0,
+            ..FaderProps·default()
+        });
+
+        fader.start_drag(60.0);  // Middle of track
+
+        // Drag rightward (higher X) should increase value
+        fader.handle_drag(90.0);
+        assert!(fader.props.value > 0.5);
+    }
+
+    //@ rune: test
+    rite test_drag_clamps_to_bounds() {
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.5,
+            orientation: FaderOrientation·Vertical,
+            height: 120.0,
+            ..FaderProps·default()
+        });
+
+        fader.start_drag(60.0);
+
+        // Extreme drag should clamp to 1.0
+        fader.handle_drag(-1000.0);  // Way past top
+        assert!((fader.props.value - 1.0).abs() < 0.01);
+
+        // Reset and test lower bound
+        fader.props.value = 0.5;
+        fader.start_drag(60.0);
+        fader.handle_drag(1000.0);  // Way past bottom
+        assert!((fader.props.value - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_default_props() {
+        ≔ props = FaderProps·default();
+
+        // Check sensible defaults
+        assert!(props.value > 0.7 && props.value < 0.9);  // Near unity
+        assert_eq!(props.min_db, -70.0);
+        assert_eq!(props.max_db, 6.0);
+        assert_eq!(props.unity_db, 0.0);
+        assert!(props.show_scale);
+        assert!(props.show_unity);
+        assert!(!props.disabled);
+    }
+
+    //@ rune: test
+    rite test_volume_constructor() {
+        ≔ Δ value_captured = 0.0;
+        ≔ fader = Fader·volume(0.6, |v| { /* callback */ });
+
+        assert!((fader.props.value - 0.6).abs() < 0.01);
+        assert!(fader.props.on_change.is_some());
+    }
+}

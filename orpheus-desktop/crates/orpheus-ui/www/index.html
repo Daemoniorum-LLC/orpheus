@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orpheus - Qliphoth Edition</title>
+    <style>
+        /* Corporate Goth Design Tokens */
+        :root {
+            --void: #0a0a0f;
+            --abyss: #12121a;
+            --phthalo: #00e5b8;
+            --silver: #a8a8b8;
+            --meter-green: #008844;
+            --meter-yellow: #ccaa00;
+            --meter-red: #cc2222;
+            --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--void);
+            color: var(--silver);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #app {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .orpheus-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            background: linear-gradient(180deg, var(--abyss) 0%, var(--void) 100%);
+            border-bottom: 1px solid rgba(168, 168, 184, 0.1);
+        }
+
+        .orpheus-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--phthalo), #00b894);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 3px;
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: rgba(168, 168, 184, 0.6);
+            font-style: italic;
+        }
+
+        /* Mode Selector */
+        .mode-selector {
+            display: flex;
+            gap: 2px;
+            padding: 8px 20px;
+            background: var(--abyss);
+            border-bottom: 1px solid rgba(168, 168, 184, 0.1);
+        }
+
+        .mode-btn {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: rgba(168, 168, 184, 0.7);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .mode-btn:hover {
+            background: rgba(0, 229, 184, 0.1);
+            color: var(--silver);
+        }
+
+        .mode-btn.active {
+            background: rgba(0, 229, 184, 0.2);
+            color: var(--phthalo);
+            box-shadow: inset 0 -2px 0 var(--phthalo);
+        }
+
+        /* Transport Bar */
+        .transport-bar {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            padding: 12px 20px;
+            background: var(--void);
+            border-bottom: 1px solid rgba(168, 168, 184, 0.15);
+        }
+
+        .time-display {
+            font-family: var(--font-mono);
+            font-size: 24px;
+            color: var(--phthalo);
+            min-width: 150px;
+        }
+
+        .transport-buttons {
+            display: flex;
+            gap: 4px;
+        }
+
+        .transport-btn {
+            width: 40px;
+            height: 40px;
+            border: 1px solid rgba(168, 168, 184, 0.2);
+            background: var(--abyss);
+            color: var(--silver);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .transport-btn:hover {
+            border-color: var(--phthalo);
+            background: rgba(0, 229, 184, 0.1);
+        }
+
+        .transport-btn.active {
+            background: var(--phthalo);
+            color: var(--void);
+            border-color: var(--phthalo);
+        }
+
+        .transport-btn.recording {
+            background: var(--meter-red);
+            color: white;
+            border-color: var(--meter-red);
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .tempo-display {
+            font-family: var(--font-mono);
+            font-size: 16px;
+            color: var(--silver);
+            padding: 8px 16px;
+            background: var(--abyss);
+            border-radius: 6px;
+            border: 1px solid rgba(168, 168, 184, 0.1);
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .mode-view {
+            flex: 1;
+            padding: 20px;
+            overflow: auto;
+        }
+
+        .mode-view h2 {
+            font-size: 20px;
+            color: var(--phthalo);
+            margin-bottom: 16px;
+        }
+
+        .placeholder {
+            padding: 40px;
+            text-align: center;
+            color: rgba(168, 168, 184, 0.5);
+            background: var(--abyss);
+            border-radius: 12px;
+            border: 1px dashed rgba(168, 168, 184, 0.2);
+        }
+
+        /* Mixer View */
+        .mixer-view {
+            background: var(--abyss);
+            border-top: 1px solid rgba(168, 168, 184, 0.15);
+            padding: 16px 20px;
+        }
+
+        .mixer-view h2 {
+            font-size: 14px;
+            color: var(--silver);
+            margin-bottom: 12px;
+        }
+
+        .channel-strips {
+            display: flex;
+            gap: 8px;
+        }
+
+        .channel-strip {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: var(--void);
+            border-radius: 8px;
+            border: 1px solid rgba(168, 168, 184, 0.1);
+            min-width: 80px;
+        }
+
+        .channel-num {
+            font-size: 12px;
+            font-family: var(--font-mono);
+            color: var(--silver);
+        }
+
+        .channel-btn {
+            width: 28px;
+            height: 28px;
+            border: 1px solid rgba(168, 168, 184, 0.2);
+            background: transparent;
+            color: var(--silver);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+
+        .channel-btn:hover {
+            border-color: var(--silver);
+        }
+
+        .channel-btn.muted {
+            background: var(--meter-yellow);
+            color: var(--void);
+            border-color: var(--meter-yellow);
+        }
+
+        .channel-btn.soloed {
+            background: var(--meter-green);
+            color: white;
+            border-color: var(--meter-green);
+        }
+
+        .channel-btn.armed {
+            background: var(--meter-red);
+            color: white;
+            border-color: var(--meter-red);
+        }
+
+        /* Status Bar */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 20px;
+            background: var(--abyss);
+            border-top: 1px solid rgba(168, 168, 184, 0.1);
+            font-size: 12px;
+            color: rgba(168, 168, 184, 0.6);
+        }
+
+        .status-bar .version {
+            font-family: var(--font-mono);
+        }
+
+        /* Console */
+        .console {
+            margin-top: 16px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .console-line {
+            color: rgba(168, 168, 184, 0.7);
+            margin: 2px 0;
+            white-space: pre-wrap;
+        }
+
+        .console-line.info {
+            color: var(--phthalo);
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--void);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(168, 168, 184, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(168, 168, 184, 0.5);
+        }
+
+        /* Loading state */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-size: 18px;
+            color: var(--phthalo);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="loading">Loading Orpheus WASM...</div>
+    </div>
+    <div id="console" class="console" style="position: fixed; bottom: 20px; left: 20px; right: 20px; max-height: 200px;"></div>
+
+    <script type="module">
+        // String table for WASM string handling
+        const strings = new Map();
+        let stringCounter = 0x30000;
+        let wasmMemory = null;
+
+        function allocString(str) {
+            const id = ++stringCounter;
+            strings.set(id, str);
+            return id;
+        }
+
+        // Read a length-prefixed string from WASM memory (4-byte length + UTF-8 bytes)
+        function readWasmString(ptr) {
+            if (!wasmMemory) return null;
+            const p = Number(ptr);
+            if (p < 0 || p > wasmMemory.buffer.byteLength - 4) return null;
+
+            const view = new DataView(wasmMemory.buffer);
+            const len = view.getUint32(p, true); // little-endian
+
+            // Validate length - must be positive and reasonable
+            if (len === 0 || len > 10000 || p + 4 + len > wasmMemory.buffer.byteLength) return null;
+
+            const bytes = new Uint8Array(wasmMemory.buffer, p + 4, len);
+            try {
+                return new TextDecoder().decode(bytes);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Get string - try cache first, then read from memory
+        function getString(ptr) {
+            // Handle BigInt from WASM i64
+            const p = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr);
+            if (p === 0) return null;
+            if (strings.has(p)) return strings.get(p);
+            const str = readWasmString(p);
+            if (str !== null) {
+                strings.set(p, str); // cache it
+                return str;
+            }
+            return null;
+        }
+
+        // Load strings from WASM memory data section (pre-cache common strings)
+        // Strings start at HEAP_START (0x4000) with format: 4-byte length + UTF-8 bytes
+        const HEAP_START = 0x4000;
+        function loadDataStrings(memory) {
+            wasmMemory = memory;
+            const view = new Uint8Array(memory.buffer);
+            const dataView = new DataView(memory.buffer);
+
+            // Scan from heap start, looking for aligned string entries
+            let i = HEAP_START;
+            while (i < Math.min(view.length - 4, 0x20000)) {
+                const len = dataView.getUint32(i, true);
+
+                // Valid string: reasonable length, fits in buffer
+                if (len > 0 && len < 500 && i + 4 + len <= view.length) {
+                    const bytes = view.slice(i + 4, i + 4 + len);
+                    let valid = true;
+                    for (const b of bytes) {
+                        // Accept printable ASCII plus tabs/newlines, or UTF-8 continuation bytes
+                        if (b !== 0x09 && b !== 0x0A && b !== 0x0D &&
+                            !((b >= 0x20 && b <= 0x7E) || b >= 0x80)) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if (valid) {
+                        try {
+                            strings.set(i, new TextDecoder().decode(bytes));
+                            // Skip to next aligned offset
+                            i += 4 + len;
+                            i = (i + 7) & ~7; // align to 8 bytes
+                            continue;
+                        } catch (e) {
+                            // Invalid UTF-8, skip
+                        }
+                    }
+                }
+                i++;
+            }
+        }
+
+        // Console logging
+        const consoleEl = document.getElementById('console');
+        function log(msg) {
+            const line = document.createElement('div');
+            line.className = 'console-line';
+            line.textContent = msg;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+            console.log('[WASM]', msg);
+        }
+
+        // VDOM state
+        let vnodeCounter = 1;
+        const vnodes = new Map();
+
+        // WASM imports
+        const imports = {
+            console: {
+                log_i64: (val) => log(`[i64] ${val}`),
+                log_f64: (val) => log(`[f64] ${val}`),
+                log_str: (ptr) => log(getString(ptr) || `[ptr:${ptr}]`),
+                print: (val) => {
+                    const str = getString(val);
+                    if (str !== null) {
+                        log(str);
+                    } else {
+                        // Debug: show what we're trying to read
+                        const p = Number(val);
+                        if (wasmMemory && p > 0 && p < wasmMemory.buffer.byteLength - 4) {
+                            const view = new DataView(wasmMemory.buffer);
+                            const len = view.getUint32(p, true);
+                            log(`[ptr:${p} len:${len}]`);
+                        } else {
+                            log(String(p));
+                        }
+                    }
+                },
+            },
+            string: {
+                concat: (a, b) => allocString((getString(a) || '') + (getString(b) || '')),
+                from_int: (n) => allocString(String(n)),
+                from_float: (n) => allocString(String(n)),
+                length: (s) => (getString(s) || '').length,
+                slice: (s, start, end) => allocString((getString(s) || '').slice(start, end)),
+                eq: (a, b) => (getString(a) || '') === (getString(b) || '') ? 1 : 0,
+                parse_int: (s) => BigInt(parseInt(getString(s) || '0')),
+                parse_float: (s) => parseFloat(getString(s) || '0'),
+                lines: () => 0, split_whitespace: () => 0, split: () => 0,
+                trim: (s) => allocString((getString(s) || '').trim()),
+                trim_start: (s) => allocString((getString(s) || '').trimStart()),
+                trim_end: (s) => allocString((getString(s) || '').trimEnd()),
+                to_uppercase: (s) => allocString((getString(s) || '').toUpperCase()),
+                to_lowercase: (s) => allocString((getString(s) || '').toLowerCase()),
+                contains: (a, b) => (getString(a) || '').includes(getString(b) || '') ? 1 : 0,
+                starts_with: (a, b) => (getString(a) || '').startsWith(getString(b) || '') ? 1 : 0,
+                ends_with: (a, b) => (getString(a) || '').endsWith(getString(b) || '') ? 1 : 0,
+                replace: (s, a, b) => allocString((getString(s) || '').replaceAll(getString(a) || '', getString(b) || '')),
+                chars: () => 0,
+            },
+            vdom: {
+                create_vnode: (tagPtr) => {
+                    const tag = getString(tagPtr) || 'div';
+                    const id = vnodeCounter++;
+                    vnodes.set(id, { tag, props: {}, children: [] });
+                    return id;
+                },
+                create_text_vnode: (textPtr) => {
+                    const text = getString(textPtr) || '';
+                    const id = vnodeCounter++;
+                    vnodes.set(id, { text });
+                    return id;
+                },
+                create_fragment: () => {
+                    const id = vnodeCounter++;
+                    vnodes.set(id, { fragment: true, children: [] });
+                    return id;
+                },
+                set_vnode_prop: (vnodeId, namePtr, value) => {
+                    const vnode = vnodes.get(vnodeId);
+                    const name = getString(namePtr);
+                    if (vnode && name) vnode.props[name] = value;
+                },
+                set_vnode_str_prop: (vnodeId, namePtr, valuePtr) => {
+                    const vnode = vnodes.get(vnodeId);
+                    const name = getString(namePtr);
+                    const value = getString(valuePtr);
+                    if (vnode && name) vnode.props[name] = value;
+                },
+                append_vnode_child: (parentId, childId) => {
+                    const parent = vnodes.get(parentId);
+                    if (parent && parent.children) parent.children.push(childId);
+                },
+                mount_vnode: (vnodeId, selectorPtr) => {
+                    const selector = getString(selectorPtr) || '#app';
+                    const container = document.querySelector(selector);
+                    if (!container) return 0;
+
+                    const html = renderVnode(vnodeId);
+                    container.innerHTML = html;
+                    attachEvents();
+                    return 1;
+                },
+                diff_and_patch: (oldId, newId, parentDomId) => {
+                    const container = document.querySelector('#app');
+                    if (!container) return;
+
+                    const html = renderVnode(newId);
+                    container.innerHTML = html;
+                    attachEvents();
+                },
+                dispose: () => {},
+            },
+            math: {
+                sqrt: Math.sqrt, sin: Math.sin, cos: Math.cos, tan: Math.tan,
+                pow: Math.pow, exp: Math.exp, log: Math.log, floor: Math.floor,
+                ceil: Math.ceil, round: Math.round, abs: Math.abs,
+                abs_int: (x) => x < 0n ? -x : x, random: Math.random,
+                clamp: (x, min, max) => Math.max(min, Math.min(max, x)),
+                clamp_int: (x, min, max) => x < min ? min : x > max ? max : x,
+                min: Math.min, max: Math.max,
+                min_int: (a, b) => a < b ? a : b, max_int: (a, b) => a > b ? a : b,
+                signum: Math.sign, signum_int: (x) => x < 0n ? -1n : x > 0n ? 1n : 0n,
+            },
+            morpheme: {
+                array_new: () => 0, array_push: () => {}, array_get: () => BigInt(0),
+                array_set: () => {}, array_len: () => 0, array_map: () => 0,
+                array_filter: () => 0, array_parallel_map: () => 0, array_parallel_filter: () => 0,
+                array_parallel_reduce: () => BigInt(0), array_reduce: () => BigInt(0),
+                array_sort: () => 0, array_first: () => BigInt(0), array_last: () => BigInt(0),
+                array_nth: () => BigInt(0), array_sum: () => BigInt(0), array_product: () => BigInt(1),
+                array_min: () => BigInt(0), array_max: () => BigInt(0),
+                array_all: () => 0, array_any: () => 0, array_random_element: () => BigInt(0),
+            },
+            memory: { alloc: (n) => Number(n), realloc: (p, n) => Number(n), free: () => {}, heap_alloc: (n) => n },
+            dom: { create_element: () => 0, create_text: () => 0, set_attribute: () => {}, remove_attribute: () => {}, set_property: () => {}, append_child: () => {}, insert_before: () => {}, remove_child: () => {}, replace_child: () => {}, set_text_content: () => {}, get_element_by_id: () => 0, query_selector: () => 0, clone_node: () => 0 },
+            events: { add_listener: () => 0, remove_listener: () => {}, prevent_default: () => {}, stop_propagation: () => {}, get_target: () => 0, get_value: () => 0 },
+            timing: { now: () => Date.now(), set_timeout: () => 0, clear_timeout: () => {}, set_interval: () => 0, clear_interval: () => {}, request_animation_frame: () => 0 },
+            fetch: { start: () => 0, poll: () => 0, get_status: () => 0, get_body: () => 0, abort: () => {} },
+            storage: { local_get: () => 0, local_set: () => {}, local_remove: () => {} },
+            router: { push_state: () => {}, replace_state: () => {}, get_pathname: () => 0 },
+            signal: { create: () => 0, get: () => BigInt(0), set: () => {}, subscribe: () => 0, unsubscribe: () => {}, batch_start: () => {}, batch_end: () => {}, computed: () => 0, effect: () => 0 },
+            async: { promise_new: () => 0, promise_resolve: () => {}, promise_reject: () => {}, promise_then: () => 0, promise_catch: () => 0, promise_all: () => 0, promise_race: () => 0, spawn: () => 0, yield_now: () => {}, await_promise: () => BigInt(0), create_continuation: () => 0, resume: () => {} },
+            browser: { window: () => 0, document: () => 0, inner_width: () => 0, inner_height: () => 0, add_event_listener: () => 0, remove_event_listener: () => {}, match_media: () => 0, mql_matches: () => 0, mql_add_listener: () => 0, mql_remove_listener: () => {} },
+            // AlphaTab imports (stub - alphaTabImports defined later)
+            alphatab: {
+                alphatab_create: (containerPtr, settingsPtr) => {
+                    // Defer to alphaTabImports when available
+                    if (typeof alphaTabImports !== 'undefined') {
+                        return alphaTabImports.alphatab_create(containerPtr, settingsPtr);
+                    }
+                    console.warn('[AlphaTab] Not yet initialized');
+                    return BigInt(-1);
+                },
+                alphatab_load_tex: (handle, texPtr) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_load_tex(handle, texPtr);
+                    }
+                },
+                alphatab_play: (handle) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_play(handle);
+                    }
+                },
+                alphatab_pause: (handle) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_pause(handle);
+                    }
+                },
+                alphatab_stop: (handle) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_stop(handle);
+                    }
+                },
+                alphatab_seek: (handle, positionMs) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_seek(handle, positionMs);
+                    }
+                },
+                alphatab_set_tempo: (handle, multiplier) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_set_tempo(handle, multiplier);
+                    }
+                },
+                alphatab_set_loop: (handle, startBeat, endBeat) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_set_loop(handle, startBeat, endBeat);
+                    }
+                },
+                alphatab_set_metronome: (handle, enabled) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_set_metronome(handle, enabled);
+                    }
+                },
+                alphatab_set_count_in: (handle, enabled) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_set_count_in(handle, enabled);
+                    }
+                },
+                alphatab_destroy: (handle) => {
+                    if (typeof alphaTabImports !== 'undefined') {
+                        alphaTabImports.alphatab_destroy(handle);
+                    }
+                },
+            },
+        };
+
+        // Render vnode to HTML
+        function renderVnode(id) {
+            const vnode = vnodes.get(id);
+            if (!vnode) return '';
+
+            if (vnode.text !== undefined) {
+                return escapeHtml(vnode.text);
+            }
+
+            if (vnode.fragment) {
+                return vnode.children.map(renderVnode).join('');
+            }
+
+            const tag = vnode.tag;
+            let attrs = '';
+            for (const [key, value] of Object.entries(vnode.props)) {
+                if (key === 'className') {
+                    attrs += ` class="${escapeHtml(String(value))}"`;
+                } else {
+                    attrs += ` ${key}="${escapeHtml(String(value))}"`;
+                }
+            }
+
+            const children = vnode.children.map(renderVnode).join('');
+            return `<${tag}${attrs}>${children}</${tag}>`;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        // Attach event listeners after render
+        function attachEvents() {
+            // Mode buttons
+            document.querySelectorAll('[data-mode]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = parseInt(btn.dataset.mode);
+                    if (window.wasmExports?.set_mode) {
+                        window.wasmExports.set_mode(BigInt(mode));
+                    }
+                });
+            });
+
+            // Transport buttons
+            document.getElementById('stop-btn')?.addEventListener('click', () => window.wasmExports?.stop?.());
+            document.getElementById('play-btn')?.addEventListener('click', () => window.wasmExports?.toggle_play?.());
+            document.getElementById('record-btn')?.addEventListener('click', () => window.wasmExports?.record?.());
+
+            // Channel buttons
+            document.querySelectorAll('[data-action]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const action = btn.dataset.action;
+                    const channel = BigInt(parseInt(btn.dataset.channel));
+                    if (action === 'mute') window.wasmExports?.toggle_mute?.(channel);
+                    if (action === 'solo') window.wasmExports?.toggle_solo?.(channel);
+                    if (action === 'arm') window.wasmExports?.toggle_arm?.(channel);
+                });
+            });
+        }
+
+        // Load WASM
+        async function loadWasm() {
+            try {
+                log('Loading Orpheus WASM...');
+                const response = await fetch('orpheus.wasm');
+                const buffer = await response.arrayBuffer();
+                const { instance } = await WebAssembly.instantiate(buffer, imports);
+
+                window.wasmExports = instance.exports;
+
+                if (instance.exports.memory) {
+                    loadDataStrings(instance.exports.memory);
+                    log(`Memory: ${instance.exports.memory.buffer.byteLength} bytes, ${strings.size} strings pre-cached`);
+                    // Debug: show first few cached strings
+                    let count = 0;
+                    for (const [ptr, str] of strings) {
+                        if (count++ < 5) log(`  [${ptr}] "${str.slice(0, 40)}${str.length > 40 ? '...' : ''}"`);
+                    }
+                }
+
+                log('WASM loaded. Exports: ' + Object.keys(instance.exports).join(', '));
+
+                // Run main
+                instance.exports.main?.();
+
+                log('Orpheus initialized!');
+
+            } catch (err) {
+                log('Error loading WASM: ' + err.message);
+                console.error(err);
+                document.getElementById('app').innerHTML = `
+                    <div class="loading" style="color: #cc2222;">
+                        Failed to load WASM: ${err.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Expose functions globally for console access
+        window.set_mode = (m) => window.wasmExports?.set_mode?.(BigInt(m));
+        window.play = () => window.wasmExports?.play?.();
+        window.pause = () => window.wasmExports?.pause?.();
+        window.stop = () => window.wasmExports?.stop?.();
+        window.record = () => window.wasmExports?.record?.();
+        window.toggle_play = () => window.wasmExports?.toggle_play?.();
+        window.set_tempo = (bpm) => window.wasmExports?.set_tempo?.(bpm);
+        window.toggle_mute = (ch) => window.wasmExports?.toggle_mute?.(BigInt(ch));
+        window.toggle_solo = (ch) => window.wasmExports?.toggle_solo?.(BigInt(ch));
+        window.toggle_arm = (ch) => window.wasmExports?.toggle_arm?.(BigInt(ch));
+
+        // =================================================================
+        // Fretboard / Tab Editor Keyboard Handlers
+        // =================================================================
+
+        // Track if fretboard edit mode is active
+        let fretboardEditMode = false;
+
+        // Enable fretboard editing
+        window.enableFretboardEdit = () => {
+            fretboardEditMode = true;
+            window.wasmExports?.set_fretboard_edit_mode?.(BigInt(1));
+        };
+
+        // Disable fretboard editing
+        window.disableFretboardEdit = () => {
+            fretboardEditMode = false;
+            window.wasmExports?.set_fretboard_edit_mode?.(BigInt(0));
+        };
+
+        // Keyboard event handler for fretboard input
+        document.addEventListener('keydown', (e) => {
+            // Only handle when in edit mode and not in an input field
+            if (!fretboardEditMode) return;
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // Numeric keys 0-9 for fret entry
+            if (/^[0-9]$/.test(e.key)) {
+                e.preventDefault();
+                window.wasmExports?.on_fret_key?.(BigInt(parseInt(e.key)));
+                return;
+            }
+
+            // Arrow keys for navigation
+            switch (e.key) {
+                case 'ArrowUp':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_arrow?.(BigInt(0));
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_arrow?.(BigInt(1));
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_arrow?.(BigInt(2));
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_arrow?.(BigInt(3));
+                    break;
+
+                // Technique hotkeys
+                case 'h': // Hammer-on
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('h'.charCodeAt(0)));
+                    break;
+                case 'p': // Pull-off
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('p'.charCodeAt(0)));
+                    break;
+                case 's': // Slide
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('s'.charCodeAt(0)));
+                    break;
+                case 'b': // Bend
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('b'.charCodeAt(0)));
+                    break;
+                case 'v': // Vibrato
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('v'.charCodeAt(0)));
+                    break;
+                case 'm': // Palm mute
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('m'.charCodeAt(0)));
+                    break;
+                case '*': // Harmonic
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('*'.charCodeAt(0)));
+                    break;
+                case 't': // Tap
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('t'.charCodeAt(0)));
+                    break;
+                case 'l': // Let ring
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('l'.charCodeAt(0)));
+                    break;
+                case 'a': // Accent
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('a'.charCodeAt(0)));
+                    break;
+                case 'g': // Ghost note
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_technique?.(BigInt('g'.charCodeAt(0)));
+                    break;
+
+                // Delete/Backspace
+                case 'Delete':
+                case 'Backspace':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_delete?.();
+                    break;
+
+                // Enter commits pending input
+                case 'Enter':
+                    e.preventDefault();
+                    window.wasmExports?.on_fret_commit?.();
+                    break;
+
+                // Escape exits edit mode
+                case 'Escape':
+                    e.preventDefault();
+                    window.disableFretboardEdit();
+                    break;
+            }
+        });
+
+        // Click handler for fret positions (uses data attributes)
+        document.addEventListener('click', (e) => {
+            const fretPos = e.target.closest('[data-fret]');
+            if (fretPos) {
+                const [string, fret] = fretPos.dataset.fret.split(',').map(Number);
+                if (string && fret !== undefined) {
+                    window.wasmExports?.set_fretboard_cursor?.(BigInt(string), BigInt(fret));
+                    // Enable edit mode on click
+                    window.enableFretboardEdit();
+                }
+            }
+        });
+
+        // Expose fretboard functions globally
+        window.getFretboardCursor = () => {
+            const result = window.wasmExports?.get_fretboard_cursor?.();
+            // Result would be a tuple, need to parse based on WASM return format
+            return result;
+        };
+        window.setFretboardCursor = (string, fret) => {
+            window.wasmExports?.set_fretboard_cursor?.(BigInt(string), BigInt(fret));
+        };
+
+        // =================================================================
+        // AlphaTab Integration
+        // =================================================================
+
+        // AlphaTab API instances (handle -> api object)
+        const alphaTabInstances = new Map();
+        let alphaTabNextHandle = 1;
+
+        // AlphaTab import functions (called by WASM)
+        const alphaTabImports = {
+            // Create an AlphaTab API instance
+            alphatab_create: (containerSelector, settingsJson) => {
+                const container = document.querySelector(getString(containerSelector));
+                if (!container) {
+                    console.error('[AlphaTab] Container not found:', containerSelector);
+                    return BigInt(-1);
+                }
+
+                try {
+                    const settings = JSON.parse(getString(settingsJson));
+
+                    // Check if alphaTab is loaded
+                    if (typeof alphaTab === 'undefined') {
+                        console.warn('[AlphaTab] Library not loaded. Using stub.');
+                        const handle = alphaTabNextHandle++;
+                        alphaTabInstances.set(handle, { stub: true, container });
+                        return BigInt(handle);
+                    }
+
+                    const api = new alphaTab.AlphaTabApi(container, settings);
+                    const handle = alphaTabNextHandle++;
+                    alphaTabInstances.set(handle, api);
+
+                    // Set up callbacks to WASM
+                    api.playerPositionChanged.on((args) => {
+                        window.wasmExports?.alphatab_on_position_changed?.(args.currentTime, args.currentTick / 960.0);
+                    });
+
+                    api.playerStateChanged.on((args) => {
+                        const isPlaying = args.state === alphaTab.synth.PlayerState.Playing;
+                        window.wasmExports?.alphatab_on_playback_state_changed?.(BigInt(isPlaying ? 1 : 0));
+                    });
+
+                    console.log('[AlphaTab] Created instance:', handle);
+                    return BigInt(handle);
+                } catch (e) {
+                    console.error('[AlphaTab] Failed to create:', e);
+                    return BigInt(-1);
+                }
+            },
+
+            // Load TEX notation
+            alphatab_load_tex: (handle, tex) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+
+                const texString = getString(tex);
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Would load TEX:', texString.substring(0, 100) + '...');
+                    return;
+                }
+
+                try {
+                    api.tex(texString);
+                    console.log('[AlphaTab] Loaded TEX notation');
+                } catch (e) {
+                    console.error('[AlphaTab] Failed to load TEX:', e);
+                }
+            },
+
+            // Playback controls
+            alphatab_play: (handle) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Play');
+                    return;
+                }
+                api.play();
+            },
+
+            alphatab_pause: (handle) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Pause');
+                    return;
+                }
+                api.pause();
+            },
+
+            alphatab_stop: (handle) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Stop');
+                    return;
+                }
+                api.stop();
+            },
+
+            alphatab_seek: (handle, positionMs) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Seek to:', positionMs);
+                    return;
+                }
+                api.tickPosition = positionMs * 960 / 1000; // Convert to ticks
+            },
+
+            alphatab_set_tempo: (handle, multiplier) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Set tempo multiplier:', multiplier);
+                    return;
+                }
+                api.playbackSpeed = multiplier;
+            },
+
+            alphatab_set_loop: (handle, startBeat, endBeat) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Set loop:', startBeat, '-', endBeat);
+                    return;
+                }
+                if (startBeat < 0 || endBeat < 0) {
+                    api.isLooping = false;
+                } else {
+                    api.isLooping = true;
+                    // AlphaTab uses tick positions
+                    api.playbackRange = { startTick: startBeat * 960, endTick: endBeat * 960 };
+                }
+            },
+
+            alphatab_set_metronome: (handle, enabled) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Metronome:', enabled);
+                    return;
+                }
+                api.metronomeVolume = enabled ? 1.0 : 0.0;
+            },
+
+            alphatab_set_count_in: (handle, enabled) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Count-in:', enabled);
+                    return;
+                }
+                api.countInVolume = enabled ? 1.0 : 0.0;
+            },
+
+            alphatab_destroy: (handle) => {
+                const api = alphaTabInstances.get(Number(handle));
+                if (!api) return;
+                if (api.stub) {
+                    console.log('[AlphaTab Stub] Destroy');
+                    alphaTabInstances.delete(Number(handle));
+                    return;
+                }
+                api.destroy();
+                alphaTabInstances.delete(Number(handle));
+                console.log('[AlphaTab] Destroyed instance:', handle);
+            },
+        };
+
+        // Add alphaTab imports to the WASM import object
+        // (These will be registered when loadWasm is called)
+
+        // Expose AlphaTab functions globally
+        window.alphaTabInit = (selector) => {
+            return window.wasmExports?.alphatab_init?.(selector);
+        };
+        window.alphaTabPlay = () => window.wasmExports?.alphatab_play_score?.();
+        window.alphaTabPause = () => window.wasmExports?.alphatab_pause_score?.();
+        window.alphaTabStop = () => window.wasmExports?.alphatab_stop_score?.();
+        window.alphaTabSetSpeed = (speed) => window.wasmExports?.alphatab_set_speed?.(speed);
+        window.alphaTabToggleMetronome = () => window.wasmExports?.alphatab_toggle_metronome?.();
+        window.alphaTabToggleCountIn = () => window.wasmExports?.alphatab_toggle_count_in?.();
+
+        loadWasm();
+    </script>
+</body>
+</html>

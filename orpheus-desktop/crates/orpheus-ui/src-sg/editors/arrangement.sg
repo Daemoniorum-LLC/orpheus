@@ -1,0 +1,861 @@
+//! Arrangement editor with clip/region timeline
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Grid snapping, zoom calculations
+//! - `~` (external) - Playhead position, clip data
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Pixels per beat at zoom level 1.0
+Λ BASE_PPB: f32 = 20.0;
+
+/// Track header width
+Λ TRACK_HEADER_WIDTH: f32 = 180.0;
+
+/// Ruler height
+Λ RULER_HEIGHT: f32 = 28.0;
+
+/// Arrangement editor properties
+☉ Σ ArrangementEditorProps {
+    /// All tracks
+    tracks~: Vec<Track>,
+    /// Current playhead position (beats)
+    playhead~: f64,
+    /// Horizontal zoom level
+    zoom_x: f32,
+    /// Vertical zoom level
+    zoom_y: f32,
+    /// Scroll offset X (beats)
+    scroll_x: f64,
+    /// Scroll offset Y (pixels)
+    scroll_y: f32,
+    /// Selected clip IDs
+    selected_clips: Vec<u32>,
+    /// Selected track ID
+    selected_track: Option<u32>,
+    /// Snap enabled
+    snap_enabled: bool,
+    /// Snap resolution (beats)
+    snap_resolution: f64,
+    /// Time signature numerator
+    time_sig_num: u8,
+    /// Time signature denominator
+    time_sig_denom: u8,
+    /// Loop region (start, end) in beats
+    loop_region: Option<(f64, f64)>,
+    /// Loop enabled
+    loop_enabled: bool,
+    /// Callbacks
+    on_clip_select: Box<dyn Fn(u32)>,
+    on_clip_move: Box<dyn Fn(u32, f64)>,
+    on_clip_resize: Box<dyn Fn(u32, f64, f64)>,
+    on_track_select: Box<dyn Fn(u32)>,
+    on_playhead_set: Box<dyn Fn(f64)>,
+    on_scroll: Box<dyn Fn(f64, f32)>,
+    on_zoom: Box<dyn Fn(f32, f32)>,
+    on_loop_set: Box<dyn Fn(f64, f64)>,
+}
+
+/// Track in arrangement
+☉ Σ Track {
+    id: u32,
+    name: String,
+    track_type: TrackType,
+    clips: Vec<Clip>,
+    compact: bool,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    color: Option<Color>,
+}
+
+/// Clip/region in a track
+☉ Σ Clip {
+    id: u32,
+    name: String,
+    start: f64,
+    end: f64,
+    offset: f64,
+    clip_type: ClipType,
+    color: Option<Color>,
+    muted: bool,
+}
+
+/// Clip type
+☉ ᛈ ClipType {
+    Audio { waveform: Vec<f32>, sample_rate: u32 },
+    Midi { notes: Vec<MidiNote> },
+    Empty,
+}
+
+/// MIDI note for preview
+☉ Σ MidiNote {
+    pitch: u8,
+    velocity: u8,
+    start: f64,
+    duration: f64,
+}
+
+/// Drag operation state
+☉ ᛈ DragState {
+    /// Dragging a clip
+    ClipMove { clip_id: u32, track_id: u32, start_pos: f64, offset_x: f32 },
+    /// Resizing clip left edge
+    ClipResizeLeft { clip_id: u32, original_start: f64, original_end: f64 },
+    /// Resizing clip right edge
+    ClipResizeRight { clip_id: u32, original_start: f64, original_end: f64 },
+    /// Setting loop region
+    LoopRegion { start: f64 },
+    /// Marquee selection
+    Selection { start_x: f32, start_y: f32, current_x: f32, current_y: f32 },
+    /// Scrolling via middle mouse
+    Scroll { start_scroll_x: f64, start_scroll_y: f32, start_mouse_x: f32, start_mouse_y: f32 },
+}
+
+/// Arrangement editor component
+☉ Σ ArrangementEditor {
+    props: ArrangementEditorProps,
+    drag_state: Option<DragState>,
+    hover_clip: Option<u32>,
+    hover_edge: Option<ClipEdge>,
+}
+
+/// Which edge of a clip is being hovered
+☉ ᛈ ClipEdge {
+    Left,
+    Right,
+}
+
+⊢ ArrangementEditor {
+    ☉ rite new(props: ArrangementEditorProps) -> Self! {
+        Self {
+            props,
+            drag_state: None,
+            hover_clip: None,
+            hover_edge: None,
+        }
+    }
+
+    /// Convert beats to pixels
+    rite beats_to_px(&self, beats: f64) -> f32! {
+        ((beats - self.props.scroll_x) * BASE_PPB as f64 * self.props.zoom_x as f64) as f32
+    }
+
+    /// Convert pixels to beats
+    rite px_to_beats(&self, px: f32) -> f64! {
+        (px as f64 / (BASE_PPB as f64 * self.props.zoom_x as f64)) + self.props.scroll_x
+    }
+
+    /// Snap position to grid if enabled
+    rite snap(&self, beats: f64) -> f64! {
+        ⎇ self.props.snap_enabled {
+            (beats / self.props.snap_resolution).round() * self.props.snap_resolution
+        } ⎉ {
+            beats
+        }
+    }
+
+    /// Get track height considering zoom and compact state
+    rite track_height(&self, track: &Track) -> f32! {
+        ≔ base = ⎇ track.compact { TRACK_HEIGHT_COMPACT } ⎉ { TRACK_HEIGHT };
+        base * self.props.zoom_y
+    }
+
+    /// Get Y offset for a track index
+    rite track_y_offset(&self, track_idx: usize) -> f32! {
+        ≔ Δ offset = 0.0;
+        ∀ i ∈ 0..track_idx {
+            ⎇ i < self.props.tracks.len() {
+                offset += self.track_height(&self.props.tracks[i]);
+            }
+        }
+        offset - self.props.scroll_y
+    }
+
+    /// Get track index at Y position
+    rite track_at_y(&self, y: f32) -> Option<usize>! {
+        ≔ adjusted_y = y + self.props.scroll_y;
+        ≔ Δ current_y = 0.0;
+        ∀ (i, track) ∈ self.props.tracks.iter().enumerate() {
+            ≔ height = self.track_height(track);
+            ⎇ adjusted_y >= current_y && adjusted_y < current_y + height {
+                ⮐ Some(i);
+            }
+            current_y += height;
+        }
+        None
+    }
+
+    /// Render timeline ruler
+    rite render_ruler(&self, width: f32) -> Element! {
+        ≔ beats_per_bar = self.props.time_sig_num as f64;
+        ≔ start_beat = self.props.scroll_x.floor() as i64;
+        ≔ end_beat = self.px_to_beats(width).ceil() as i64 + 1;
+
+        element! {
+            <div class="timeline-ruler" style={style! {
+                height: px(RULER_HEIGHT),
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", GRID_BAR.to_css()),
+                position: "relative",
+                overflow: "hidden",
+                margin_left: px(TRACK_HEADER_WIDTH),
+            }}
+            on_click={|e| {
+                ≔ beats = self.px_to_beats(e.offset_x as f32);
+                (self.props.on_playhead_set)(self.snap(beats));
+            }}>
+                // Beat/bar markers
+                ∀ beat ∈ start_beat..=end_beat {
+                    ≔ x = self.beats_to_px(beat as f64);
+                    ≔ is_bar = beat % beats_per_bar as i64 == 0;
+                    ≔ bar_num = (beat as f64 / beats_per_bar).floor() as i64 + 1;
+
+                    ⎇ x >= 0.0 {
+                        ⎇ is_bar {
+                            <div style={style! {
+                                position: "absolute",
+                                left: px(x),
+                                top: 0,
+                                height: "100%",
+                                display: "flex",
+                                flex_direction: "column",
+                            }}>
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    font_family: FONT_MONO,
+                                    color: SILVER.to_css(),
+                                    padding_left: "4px",
+                                    line_height: px(RULER_HEIGHT),
+                                }}>
+                                    {bar_num.to_string()}
+                                </span>
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: 0,
+                                    bottom: 0,
+                                    width: "1px",
+                                    height: "8px",
+                                    background: GRID_BAR.to_css(),
+                                }} />
+                            </div>
+                        } ⎉ {
+                            <div style={style! {
+                                position: "absolute",
+                                left: px(x),
+                                bottom: 0,
+                                width: "1px",
+                                height: "4px",
+                                background: GRID_BEAT.to_css(),
+                            }} />
+                        }
+                    }
+                }
+
+                // Loop region indicator
+                ⎇ ≔ Some((loop_start, loop_end)) = self.props.loop_region {
+                    ≔ x1 = self.beats_to_px(loop_start);
+                    ≔ x2 = self.beats_to_px(loop_end);
+                    <div style={style! {
+                        position: "absolute",
+                        left: px(x1),
+                        top: 0,
+                        width: px(x2 - x1),
+                        height: "6px",
+                        background: ⎇ self.props.loop_enabled {
+                            PHTHALO.with_alpha(0.6).to_css()
+                        } ⎉ {
+                            SILVER.with_alpha(0.3).to_css()
+                        },
+                        border_radius: "0 0 3px 3px",
+                    }} />
+                }
+
+                // Playhead marker
+                <div style={style! {
+                    position: "absolute",
+                    left: px(self.beats_to_px(self.props.playhead) - 5.0),
+                    top: px(RULER_HEIGHT - 10.0),
+                    width: "10px",
+                    height: "10px",
+                    background: PLAYHEAD.to_css(),
+                    clip_path: "polygon(50% 100%, 0% 0%, 100% 0%)",
+                }} />
+            </div>
+        }
+    }
+
+    /// Render track header
+    rite render_track_header(&self, track: &Track, y_offset: f32) -> Element! {
+        ≔ height = self.track_height(track);
+        ≔ color = track.color.unwrap_or(track.track_type.color());
+        ≔ is_selected = self.props.selected_track == Some(track.id);
+
+        element! {
+            <div class="track-header" style={style! {
+                position: "absolute",
+                left: 0,
+                top: px(y_offset),
+                width: px(TRACK_HEADER_WIDTH),
+                height: px(height),
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                border_left: format!("3px solid {}", ⎇ is_selected { PHTHALO } ⎉ { color }.to_css()),
+                display: "flex",
+                align_items: "center",
+                padding: "0 8px",
+                gap: "8px",
+                cursor: "pointer",
+            }}
+            on_click={|_| (self.props.on_track_select)(track.id)}>
+                // Track color indicator
+                <div style={style! {
+                    width: "4px",
+                    height: px(height - 16.0),
+                    background: color.to_css(),
+                    border_radius: "2px",
+                }} />
+
+                // Track name
+                <div style={style! {
+                    flex: 1,
+                    overflow: "hidden",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        color: SILVER.to_css(),
+                        white_space: "nowrap",
+                        overflow: "hidden",
+                        text_overflow: "ellipsis",
+                    }}>
+                        {&track.name}
+                    </span>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.5).to_css(),
+                        display: "block",
+                    }}>
+                        {track.track_type.label()}
+                    </span>
+                </div>
+
+                // Track controls
+                <div style={style! {
+                    display: "flex",
+                    gap: "2px",
+                }}>
+                    // Mute button
+                    <button style={style! {
+                        width: "20px",
+                        height: "20px",
+                        background: ⎇ track.muted { METER_YELLOW.with_alpha(0.8) } ⎉ { "transparent" }.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "2px",
+                        color: ⎇ track.muted { VOID } ⎉ { SILVER.with_alpha(0.6) }.to_css(),
+                        font_size: px(TEXT_XS),
+                        font_weight: "bold",
+                        cursor: "pointer",
+                    }}>
+                        {"M"}
+                    </button>
+                    // Solo button
+                    <button style={style! {
+                        width: "20px",
+                        height: "20px",
+                        background: ⎇ track.soloed { METER_GREEN.with_alpha(0.8) } ⎉ { "transparent" }.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "2px",
+                        color: ⎇ track.soloed { VOID } ⎉ { SILVER.with_alpha(0.6) }.to_css(),
+                        font_size: px(TEXT_XS),
+                        font_weight: "bold",
+                        cursor: "pointer",
+                    }}>
+                        {"S"}
+                    </button>
+                    // Record arm button
+                    <button style={style! {
+                        width: "20px",
+                        height: "20px",
+                        background: ⎇ track.armed { METER_RED.with_alpha(0.8) } ⎉ { "transparent" }.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "2px",
+                        color: ⎇ track.armed { VOID } ⎉ { SILVER.with_alpha(0.6) }.to_css(),
+                        font_size: px(TEXT_XS),
+                        font_weight: "bold",
+                        cursor: "pointer",
+                    }}>
+                        {"R"}
+                    </button>
+                </div>
+            </div>
+        }
+    }
+
+    /// Render a single clip
+    rite render_clip(&self, clip: &Clip, track: &Track, y_offset: f32) -> Element! {
+        ≔ x = self.beats_to_px(clip.start);
+        ≔ width = self.beats_to_px(clip.end) - x;
+        ≔ height = self.track_height(track) - 4.0;
+        ≔ color = clip.color.unwrap_or(track.color.unwrap_or(track.track_type.color()));
+        ≔ is_selected = self.props.selected_clips.contains(&clip.id);
+        ≔ is_hovered = self.hover_clip == Some(clip.id);
+        ≔ is_muted = clip.muted || track.muted;
+
+        element! {
+            <div
+                class="clip"
+                style={style! {
+                    position: "absolute",
+                    left: px(x + TRACK_HEADER_WIDTH),
+                    top: px(y_offset + 2.0),
+                    width: px(width.max(10.0)),
+                    height: px(height),
+                    background: ⎇ is_muted {
+                        color.with_alpha(0.3)
+                    } ⎉ {
+                        color.with_alpha(0.8)
+                    }.to_css(),
+                    border_radius: "4px",
+                    border: format!("{}px solid {}",
+                        ⎇ is_selected { 2 } ⎉ { 1 },
+                        ⎇ is_selected { PHTHALO } ⎉ ⎇ is_hovered { SILVER } ⎉ { color.lighten(0.2) }.to_css()
+                    ),
+                    overflow: "hidden",
+                    cursor: ⌥ self.hover_edge {
+                        Some(ClipEdge·Left) | Some(ClipEdge·Right) => "ew-resize",
+                        None => "move",
+                    },
+                    opacity: ⎇ is_muted { "0.5" } ⎉ { "1.0" },
+                    box_shadow: ⎇ is_selected { format!("0 0 8px {}", PHTHALO.with_alpha(0.5).to_css()) } ⎉ { "none".into() },
+                }}
+                on_mouse_enter={|_| self.hover_clip = Some(clip.id)}
+                on_mouse_leave={|_| { self.hover_clip = None; self.hover_edge = None; }}
+                on_mouse_move={|e| {
+                    ≔ edge_zone = 8.0;
+                    ⎇ e.offset_x < edge_zone {
+                        self.hover_edge = Some(ClipEdge·Left);
+                    } ⎉ ⎇ e.offset_x > width - edge_zone {
+                        self.hover_edge = Some(ClipEdge·Right);
+                    } ⎉ {
+                        self.hover_edge = None;
+                    }
+                }}
+                on_mouse_down={|e| {
+                    (self.props.on_clip_select)(clip.id);
+                    ⌥ self.hover_edge {
+                        Some(ClipEdge·Left) => {
+                            self.drag_state = Some(DragState·ClipResizeLeft {
+                                clip_id: clip.id,
+                                original_start: clip.start,
+                                original_end: clip.end,
+                            });
+                        }
+                        Some(ClipEdge·Right) => {
+                            self.drag_state = Some(DragState·ClipResizeRight {
+                                clip_id: clip.id,
+                                original_start: clip.start,
+                                original_end: clip.end,
+                            });
+                        }
+                        None => {
+                            self.drag_state = Some(DragState·ClipMove {
+                                clip_id: clip.id,
+                                track_id: track.id,
+                                start_pos: clip.start,
+                                offset_x: e.offset_x as f32,
+                            });
+                        }
+                    }
+                }}
+            >
+                // Clip name
+                <div style={style! {
+                    padding: "2px 6px",
+                    font_size: px(TEXT_XS),
+                    color: ⎇ color.is_light() { VOID } ⎉ { SILVER }.to_css(),
+                    white_space: "nowrap",
+                    overflow: "hidden",
+                    text_overflow: "ellipsis",
+                    font_weight: "500",
+                }}>
+                    {&clip.name}
+                </div>
+
+                // Clip content preview
+                <div style={style! {
+                    flex: 1,
+                    overflow: "hidden",
+                    padding: "0 2px",
+                }}>
+                    ⌥ &clip.clip_type {
+                        ClipType·Audio { waveform, sample_rate } => {
+                            {self.render_waveform(waveform, width - 4.0, height - 20.0, color)}
+                        }
+                        ClipType·Midi { notes } => {
+                            {self.render_midi_preview(notes, clip.start, clip.end, width - 4.0, height - 20.0)}
+                        }
+                        ClipType·Empty => {}
+                    }
+                </div>
+
+                // Resize handles (visual only, interaction handled above)
+                <div style={style! {
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    width: "4px",
+                    height: "100%",
+                    background: ⎇ self.hover_edge == Some(ClipEdge·Left) {
+                        SILVER.with_alpha(0.5)
+                    } ⎉ { Color·TRANSPARENT }.to_css(),
+                    border_radius: "4px 0 0 4px",
+                }} />
+                <div style={style! {
+                    position: "absolute",
+                    right: 0,
+                    top: 0,
+                    width: "4px",
+                    height: "100%",
+                    background: ⎇ self.hover_edge == Some(ClipEdge·Right) {
+                        SILVER.with_alpha(0.5)
+                    } ⎉ { Color·TRANSPARENT }.to_css(),
+                    border_radius: "0 4px 4px 0",
+                }} />
+            </div>
+        }
+    }
+
+    /// Render waveform preview
+    rite render_waveform(&self, waveform: &[f32], width: f32, height: f32, color: Color) -> Element! {
+        ≔ samples_per_px = waveform.len() as f32 / width;
+        ≔ center_y = height / 2.0;
+        ≔ Δ path_d = format!("M 0 {}", center_y);
+
+        ∀ x ∈ 0..(width as usize) {
+            ≔ start_idx = (x as f32 * samples_per_px) as usize;
+            ≔ end_idx = ((x + 1) as f32 * samples_per_px) as usize;
+            ≔ end_idx = end_idx.min(waveform.len());
+
+            ⎇ start_idx < end_idx {
+                ≔ Δ max_val: f32 = 0.0;
+                ∀ i ∈ start_idx..end_idx {
+                    max_val = max_val.max(waveform[i].abs());
+                }
+                ≔ y = center_y - (max_val * center_y * 0.9);
+                path_d = format!("{} L {} {}", path_d, x, y);
+            }
+        }
+
+        // Mirror path for bottom half
+        ∀ x ∈ (0..(width as usize)).rev() {
+            ≔ start_idx = (x as f32 * samples_per_px) as usize;
+            ≔ end_idx = ((x + 1) as f32 * samples_per_px) as usize;
+            ≔ end_idx = end_idx.min(waveform.len());
+
+            ⎇ start_idx < end_idx {
+                ≔ Δ max_val: f32 = 0.0;
+                ∀ i ∈ start_idx..end_idx {
+                    max_val = max_val.max(waveform[i].abs());
+                }
+                ≔ y = center_y + (max_val * center_y * 0.9);
+                path_d = format!("{} L {} {}", path_d, x, y);
+            }
+        }
+
+        path_d = format!("{} Z", path_d);
+
+        element! {
+            <svg width={width} height={height} style={style! { display: "block" }}>
+                <path
+                    d={path_d}
+                    fill={⎇ color.is_light() { VOID.with_alpha(0.3) } ⎉ { SILVER.with_alpha(0.4) }.to_css()}
+                    stroke="none"
+                />
+            </svg>
+        }
+    }
+
+    /// Render MIDI note preview
+    rite render_midi_preview(&self, notes: &[MidiNote], clip_start: f64, clip_end: f64, width: f32, height: f32) -> Element! {
+        ⎇ notes.is_empty() {
+            ⮐ element! { <div /> };
+        }
+
+        // Find note range
+        ≔ Δ min_pitch: u8 = 127;
+        ≔ Δ max_pitch: u8 = 0;
+        ∀ note ∈ notes {
+            min_pitch = min_pitch.min(note.pitch);
+            max_pitch = max_pitch.max(note.pitch);
+        }
+        ≔ pitch_range = (max_pitch - min_pitch + 1) as f32;
+        ≔ note_height = (height / pitch_range).min(8.0).max(2.0);
+        ≔ clip_duration = clip_end - clip_start;
+
+        element! {
+            <div style={style! {
+                position: "relative",
+                width: px(width),
+                height: px(height),
+            }}>
+                ∀ note ∈ notes {
+                    ≔ x = ((note.start / clip_duration) * width as f64) as f32;
+                    ≔ w = ((note.duration / clip_duration) * width as f64) as f32;
+                    ≔ y = ((max_pitch - note.pitch) as f32 / pitch_range) * height;
+                    ≔ velocity_alpha = 0.4 + (note.velocity as f32 / 127.0) * 0.6;
+
+                    <div style={style! {
+                        position: "absolute",
+                        left: px(x),
+                        top: px(y),
+                        width: px(w.max(2.0)),
+                        height: px(note_height),
+                        background: SILVER.with_alpha(velocity_alpha).to_css(),
+                        border_radius: "1px",
+                    }} />
+                }
+            </div>
+        }
+    }
+
+    /// Render grid lines in track area
+    rite render_grid(&self, width: f32, height: f32) -> Element! {
+        ≔ beats_per_bar = self.props.time_sig_num as f64;
+        ≔ start_beat = self.props.scroll_x.floor() as i64;
+        ≔ end_beat = self.px_to_beats(width).ceil() as i64 + 1;
+
+        element! {
+            <svg
+                class="grid-lines"
+                width={width}
+                height={height}
+                style={style! {
+                    position: "absolute",
+                    left: px(TRACK_HEADER_WIDTH),
+                    top: 0,
+                    pointer_events: "none",
+                }}
+            >
+                ∀ beat ∈ start_beat..=end_beat {
+                    ≔ x = self.beats_to_px(beat as f64);
+                    ≔ is_bar = beat % beats_per_bar as i64 == 0;
+
+                    ⎇ x >= 0.0 {
+                        <line
+                            x1={x}
+                            y1={0}
+                            x2={x}
+                            y2={height}
+                            stroke={⎇ is_bar { GRID_BAR } ⎉ { GRID_BEAT }.to_css()}
+                            stroke_width={⎇ is_bar { "1" } ⎉ { "0.5" }}
+                        />
+                    }
+                }
+            </svg>
+        }
+    }
+}
+
+⊢ Component ∀ ArrangementEditor {
+    type Props = ArrangementEditorProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bounds = ctx.bounds();
+        ≔ content_width = bounds.width - TRACK_HEADER_WIDTH;
+
+        // Calculate total track height
+        ≔ Δ total_track_height = 0.0;
+        ∀ track ∈ &self.props.tracks {
+            total_track_height += self.track_height(track);
+        }
+
+        element! {
+            <div
+                class="arrangement-editor"
+                style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    height: "100%",
+                    background: VOID.to_css(),
+                    user_select: "none",
+                }}
+                on_mouse_up={|_| self.drag_state = None}
+                on_mouse_move={|e| {
+                    ⌥ &self.drag_state {
+                        Some(DragState·ClipMove { clip_id, start_pos, offset_x, .. }) => {
+                            ≔ new_beats = self.px_to_beats(e.offset_x as f32 - TRACK_HEADER_WIDTH - offset_x);
+                            (self.props.on_clip_move)(*clip_id, self.snap(new_beats));
+                        }
+                        Some(DragState·ClipResizeLeft { clip_id, original_end, .. }) => {
+                            ≔ new_start = self.px_to_beats(e.offset_x as f32 - TRACK_HEADER_WIDTH);
+                            ≔ new_start = self.snap(new_start).min(*original_end - 0.25);
+                            (self.props.on_clip_resize)(*clip_id, new_start, *original_end);
+                        }
+                        Some(DragState·ClipResizeRight { clip_id, original_start, .. }) => {
+                            ≔ new_end = self.px_to_beats(e.offset_x as f32 - TRACK_HEADER_WIDTH);
+                            ≔ new_end = self.snap(new_end).max(*original_start + 0.25);
+                            (self.props.on_clip_resize)(*clip_id, *original_start, new_end);
+                        }
+                        Some(DragState·Scroll { start_scroll_x, start_scroll_y, start_mouse_x, start_mouse_y }) => {
+                            ≔ dx = (e.client_x as f32 - start_mouse_x) / (BASE_PPB * self.props.zoom_x);
+                            ≔ dy = e.client_y as f32 - start_mouse_y;
+                            (self.props.on_scroll)(*start_scroll_x - dx as f64, *start_scroll_y - dy);
+                        }
+                        _ => {}
+                    }
+                }}
+                on_wheel={|e| {
+                    ⎇ e.ctrl_key {
+                        // Zoom
+                        ≔ zoom_delta = ⎇ e.delta_y < 0.0 { 1.1 } ⎉ { 0.9 };
+                        (self.props.on_zoom)(
+                            (self.props.zoom_x * zoom_delta).clamp(0.1, 10.0),
+                            self.props.zoom_y
+                        );
+                    } ⎉ ⎇ e.shift_key {
+                        // Horizontal scroll
+                        ≔ scroll_delta = e.delta_y / (BASE_PPB * self.props.zoom_x) as f64;
+                        (self.props.on_scroll)(self.props.scroll_x + scroll_delta, self.props.scroll_y);
+                    } ⎉ {
+                        // Vertical scroll
+                        (self.props.on_scroll)(self.props.scroll_x, self.props.scroll_y + e.delta_y as f32);
+                    }
+                }}
+                on_mouse_down={|e| {
+                    ⎇ e.button == 1 {
+                        // Middle mouse - pan
+                        self.drag_state = Some(DragState·Scroll {
+                            start_scroll_x: self.props.scroll_x,
+                            start_scroll_y: self.props.scroll_y,
+                            start_mouse_x: e.client_x as f32,
+                            start_mouse_y: e.client_y as f32,
+                        });
+                    }
+                }}
+            >
+                // Timeline ruler
+                {self.render_ruler(content_width)}
+
+                // Main content area
+                <div class="arrangement-content" style={style! {
+                    flex: 1,
+                    position: "relative",
+                    overflow: "hidden",
+                }}>
+                    // Track headers (fixed left column)
+                    <div class="track-headers" style={style! {
+                        position: "absolute",
+                        left: 0,
+                        top: 0,
+                        width: px(TRACK_HEADER_WIDTH),
+                        height: "100%",
+                        background: ABYSS.to_css(),
+                        border_right: format!("1px solid {}", GRID_LINE.to_css()),
+                        overflow: "hidden",
+                        z_index: 10,
+                    }}>
+                        ≔ Δ y_offset = 0.0;
+                        ∀ track ∈ &self.props.tracks {
+                            ≔ offset = y_offset - self.props.scroll_y;
+                            {self.render_track_header(track, offset)}
+                            y_offset += self.track_height(track);
+                        }
+                    </div>
+
+                    // Track lanes (scrollable area)
+                    <div class="track-lanes" style={style! {
+                        position: "absolute",
+                        left: px(TRACK_HEADER_WIDTH),
+                        top: 0,
+                        right: 0,
+                        height: "100%",
+                        overflow: "hidden",
+                    }}
+                    on_double_click={|e| {
+                        // Double-click to set playhead
+                        ≔ beats = self.px_to_beats(e.offset_x as f32);
+                        (self.props.on_playhead_set)(self.snap(beats));
+                    }}>
+                        // Grid lines
+                        {self.render_grid(content_width, total_track_height)}
+
+                        // Track lane backgrounds
+                        ≔ Δ y_offset = 0.0;
+                        ∀ track ∈ &self.props.tracks {
+                            ≔ height = self.track_height(track);
+                            ≔ offset = y_offset - self.props.scroll_y;
+
+                            <div class="track-lane-bg" style={style! {
+                                position: "absolute",
+                                left: 0,
+                                top: px(offset),
+                                right: 0,
+                                height: px(height),
+                                background: ⎇ self.props.selected_track == Some(track.id) {
+                                    track.track_type.color().with_alpha(0.15)
+                                } ⎉ {
+                                    track.track_type.color().with_alpha(0.05)
+                                }.to_css(),
+                                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                            }} />
+
+                            y_offset += height;
+                        }
+
+                        // Clips layer
+                        <div class="clips-layer" style={style! {
+                            position: "absolute",
+                            left: px(-TRACK_HEADER_WIDTH),
+                            top: 0,
+                            right: 0,
+                            height: px(total_track_height),
+                        }}>
+                            ≔ Δ y_offset = 0.0;
+                            ∀ track ∈ &self.props.tracks {
+                                ≔ offset = y_offset - self.props.scroll_y;
+                                ∀ clip ∈ &track.clips {
+                                    {self.render_clip(clip, track, offset)}
+                                }
+                                y_offset += self.track_height(track);
+                            }
+                        </div>
+
+                        // Loop region overlay
+                        ⎇ self.props.loop_enabled {
+                            ⎇ ≔ Some((loop_start, loop_end)) = self.props.loop_region {
+                                ≔ x1 = self.beats_to_px(loop_start);
+                                ≔ x2 = self.beats_to_px(loop_end);
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: px(x1),
+                                    top: 0,
+                                    width: px(x2 - x1),
+                                    height: "100%",
+                                    background: PHTHALO.with_alpha(0.08).to_css(),
+                                    border_left: format!("1px solid {}", PHTHALO.with_alpha(0.3).to_css()),
+                                    border_right: format!("1px solid {}", PHTHALO.with_alpha(0.3).to_css()),
+                                    pointer_events: "none",
+                                }} />
+                            }
+                        }
+
+                        // Playhead line
+                        <div class="playhead-line" style={style! {
+                            position: "absolute",
+                            left: px(self.beats_to_px(self.props.playhead)),
+                            top: 0,
+                            height: "100%",
+                            width: "1px",
+                            background: PLAYHEAD.to_css(),
+                            pointer_events: "none",
+                            z_index: 50,
+                            box_shadow: format!("0 0 4px {}", PLAYHEAD.with_alpha(0.5).to_css()),
+                        }} />
+                    </div>
+                </div>
+            </div>
+        }
+    }
+}

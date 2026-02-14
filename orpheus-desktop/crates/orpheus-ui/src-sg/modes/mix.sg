@@ -1,0 +1,527 @@
+//! Mix mode - full mixing console view
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Layout calculations
+//! - `~` (external) - Mixer state, audio levels
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·panels·{MixerView, ChannelStrip, Channel};
+invoke crate·widgets·{LevelMeter, Knob, TransportBar};
+
+/// Mix mode properties
+☉ Σ MixModeProps {
+    /// Mixer state
+    mixer~: MixerState,
+    /// Transport state
+    transport~: TransportState,
+    /// Selected channel
+    selected_channel: Option<usize>,
+    /// View mode
+    view_mode: MixViewMode,
+    /// Callbacks
+    on_volume_change: Box<dyn Fn(usize, f32)>,
+    on_pan_change: Box<dyn Fn(usize, f32)>,
+    on_mute_toggle: Box<dyn Fn(usize)>,
+    on_solo_toggle: Box<dyn Fn(usize)>,
+    on_arm_toggle: Box<dyn Fn(usize)>,
+    on_channel_select: Box<dyn Fn(usize)>,
+    on_master_volume: Box<dyn Fn(f32)>,
+    on_transport_play: Box<dyn Fn()>,
+    on_transport_stop: Box<dyn Fn()>,
+}
+
+/// Mixer state
+☉ Σ MixerState {
+    channels: Vec<Channel>,
+    master: Channel,
+    levels: Vec<(f32, f32)>,
+    peaks: Vec<(f32, f32)>,
+    master_level: (f32, f32),
+    master_peak: (f32, f32),
+}
+
+/// Transport state (simplified)
+☉ Σ TransportState {
+    playing: bool,
+    position: f64,
+    tempo: f64,
+}
+
+/// View modes for mix mode
+☉ ᛈ MixViewMode {
+    /// Standard mixer view
+    Console,
+    /// Detailed single channel
+    Channel,
+    /// Routing matrix
+    Routing,
+    /// Automation lanes
+    Automation,
+}
+
+/// Mix mode view
+☉ Σ MixMode {
+    props: MixModeProps,
+    show_inserts: bool,
+    show_sends: bool,
+    show_eq: bool,
+    channel_width: f32,
+}
+
+⊢ MixMode {
+    ☉ rite new(props: MixModeProps) -> Self! {
+        Self {
+            props,
+            show_inserts: true,
+            show_sends: true,
+            show_eq: false,
+            channel_width: 80.0,
+        }
+    }
+
+    /// Render toolbar
+    rite render_toolbar(&self) -> Element! {
+        element! {
+            <div class="mix-toolbar" style={style! {
+                display: "flex",
+                align_items: "center",
+                gap: "16px",
+                padding: "8px 16px",
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+            }}>
+                // View mode selector
+                <div class="view-modes" style={style! {
+                    display: "flex",
+                    gap: "2px",
+                }}>
+                    ∀ (mode, label) ∈ [
+                        (MixViewMode·Console, "Console"),
+                        (MixViewMode·Channel, "Channel"),
+                        (MixViewMode·Routing, "Routing"),
+                        (MixViewMode·Automation, "Automation"),
+                    ] {
+                        ≔ is_active = self.props.view_mode == mode;
+                        <button style={style! {
+                            padding: "4px 12px",
+                            background: ⎇ is_active { PHTHALO.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                            border: format!("1px solid {}", ⎇ is_active { PHTHALO } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                            border_radius: "4px",
+                            color: ⎇ is_active { PHTHALO } ⎉ { SILVER }.to_css(),
+                            font_size: px(TEXT_SM),
+                            cursor: "pointer",
+                        }}>
+                            {label}
+                        </button>
+                    }
+                </div>
+
+                // Separator
+                <div style={style! { width: "1px", height: "24px", background: SILVER.with_alpha(0.2).to_css() }} />
+
+                // Show/hide toggles
+                <div style={style! {
+                    display: "flex",
+                    gap: "8px",
+                }}>
+                    <label style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "4px",
+                        font_size: px(TEXT_XS),
+                        color: SILVER.to_css(),
+                        cursor: "pointer",
+                    }}>
+                        <input type="checkbox" checked={self.show_inserts} />
+                        {"Inserts"}
+                    </label>
+                    <label style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "4px",
+                        font_size: px(TEXT_XS),
+                        color: SILVER.to_css(),
+                        cursor: "pointer",
+                    }}>
+                        <input type="checkbox" checked={self.show_sends} />
+                        {"Sends"}
+                    </label>
+                    <label style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        gap: "4px",
+                        font_size: px(TEXT_XS),
+                        color: SILVER.to_css(),
+                        cursor: "pointer",
+                    }}>
+                        <input type="checkbox" checked={self.show_eq} />
+                        {"EQ"}
+                    </label>
+                </div>
+
+                // Spacer
+                <div style={style! { flex: 1 }} />
+
+                // Channel width slider
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                    }}>
+                        {"Width:"}
+                    </span>
+                    <input
+                        type="range"
+                        min="60"
+                        max="120"
+                        value={self.channel_width.to_string()}
+                        style={style! { width: "80px" }}
+                    />
+                </div>
+
+                // Transport mini controls
+                <div style={style! {
+                    display: "flex",
+                    gap: "4px",
+                }}>
+                    <button style={style! {
+                        padding: "4px 8px",
+                        background: ⎇ self.props.transport.playing { METER_GREEN.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "4px",
+                        color: SILVER.to_css(),
+                        cursor: "pointer",
+                    }}
+                    on_click={|_| (self.props.on_transport_play)()}>
+                        {⎇ self.props.transport.playing { "⏸" } ⎉ { "▶" }}
+                    </button>
+                    <button style={style! {
+                        padding: "4px 8px",
+                        background: "transparent".to_string(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "4px",
+                        color: SILVER.to_css(),
+                        cursor: "pointer",
+                    }}
+                    on_click={|_| (self.props.on_transport_stop)()}>
+                        {"⏹"}
+                    </button>
+                </div>
+            </div>
+        }
+    }
+
+    /// Render console view
+    rite render_console(&self) -> Element! {
+        element! {
+            <div class="console-view" style={style! {
+                display: "flex",
+                flex: 1,
+                overflow_x: "auto",
+                background: VOID.to_css(),
+            }}>
+                // Channel strips
+                ∀ (i, channel) ∈ self.props.mixer.channels.iter().enumerate() {
+                    ≔ (level_l, level_r) = self.props.mixer.levels.get(i).unwrap_or(&(-60.0, -60.0));
+                    ≔ (peak_l, peak_r) = self.props.mixer.peaks.get(i).unwrap_or(&(-60.0, -60.0));
+                    ≔ is_selected = self.props.selected_channel == Some(i);
+
+                    <ChannelStrip
+                        channel={channel.clone()}
+                        level_db={*level_l}
+                        peak_db={*peak_l}
+                        level_db_right={Some(*level_r)}
+                        peak_db_right={Some(*peak_r)}
+                        selected={is_selected}
+                        compact={false}
+                        on_select={Box·new(move || (self.props.on_channel_select)(i))}
+                        on_volume_change={Box·new(move |v| (self.props.on_volume_change)(i, v))}
+                        on_pan_change={Box·new(move |v| (self.props.on_pan_change)(i, v))}
+                        on_mute_toggle={Box·new(move || (self.props.on_mute_toggle)(i))}
+                        on_solo_toggle={Box·new(move || (self.props.on_solo_toggle)(i))}
+                        on_arm_toggle={Box·new(move || (self.props.on_arm_toggle)(i))}
+                        on_insert_click={Box·new(|_| {})}
+                        on_send_change={Box·new(|_, _| {})}
+                    />
+                }
+
+                // Separator
+                <div style={style! {
+                    width: "8px",
+                    background: SILVER.with_alpha(0.1).to_css(),
+                }} />
+
+                // Master channel
+                <ChannelStrip
+                    channel={self.props.mixer.master.clone()}
+                    level_db={self.props.mixer.master_level.0}
+                    peak_db={self.props.mixer.master_peak.0}
+                    level_db_right={Some(self.props.mixer.master_level.1)}
+                    peak_db_right={Some(self.props.mixer.master_peak.1)}
+                    selected={false}
+                    compact={false}
+                    on_select={Box·new(|| {})}
+                    on_volume_change={Box·new(|v| (self.props.on_master_volume)(v))}
+                    on_pan_change={Box·new(|_| {})}
+                    on_mute_toggle={Box·new(|| {})}
+                    on_solo_toggle={Box·new(|| {})}
+                    on_arm_toggle={Box·new(|| {})}
+                    on_insert_click={Box·new(|_| {})}
+                    on_send_change={Box·new(|_, _| {})}
+                />
+            </div>
+        }
+    }
+
+    /// Render channel detail view
+    rite render_channel_detail(&self) -> Element! {
+        ≔ channel_idx = self.props.selected_channel.unwrap_or(0);
+        ≔ channel = self.props.mixer.channels.get(channel_idx);
+
+        ⎇ ≔ Some(ch) = channel {
+            element! {
+                <div class="channel-detail" style={style! {
+                    display: "flex",
+                    flex: 1,
+                    background: VOID.to_css(),
+                    padding: "16px",
+                    gap: "16px",
+                }}>
+                    // Channel info
+                    <div style={style! {
+                        width: "200px",
+                        background: ABYSS.to_css(),
+                        border_radius: "8px",
+                        padding: "16px",
+                    }}>
+                        <h3 style={style! {
+                            font_size: px(TEXT_LG),
+                            color: SILVER.to_css(),
+                            margin: 0,
+                            margin_bottom: "16px",
+                        }}>
+                            {&ch.name}
+                        </h3>
+
+                        // Volume
+                        <div style={style! { margin_bottom: "16px" }}>
+                            <span style={style! {
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.7).to_css(),
+                            }}>
+                                {"Volume"}
+                            </span>
+                            <Knob
+                                value={ch.volume}
+                                min={0.0}
+                                max={1.0}
+                                size={KnobSize·Large}
+                                label={"dB"}
+                                on_change={Box·new(move |v| (self.props.on_volume_change)(channel_idx, v))}
+                            />
+                        </div>
+
+                        // Pan
+                        <div style={style! { margin_bottom: "16px" }}>
+                            <span style={style! {
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.7).to_css(),
+                            }}>
+                                {"Pan"}
+                            </span>
+                            <Knob
+                                value={(ch.pan + 1.0) / 2.0}
+                                min={-1.0}
+                                max={1.0}
+                                size={KnobSize·Medium}
+                                bipolar={true}
+                                on_change={Box·new(move |v| (self.props.on_pan_change)(channel_idx, v * 2.0 - 1.0))}
+                            />
+                        </div>
+                    </div>
+
+                    // EQ Section
+                    <div style={style! {
+                        flex: 1,
+                        background: ABYSS.to_css(),
+                        border_radius: "8px",
+                        padding: "16px",
+                    }}>
+                        <h4 style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                            margin: 0,
+                            margin_bottom: "16px",
+                        }}>
+                            {"Equalizer"}
+                        </h4>
+
+                        // EQ visualization placeholder
+                        <div style={style! {
+                            height: "200px",
+                            background: VOID.to_css(),
+                            border_radius: "4px",
+                            display: "flex",
+                            align_items: "center",
+                            justify_content: "center",
+                            color: SILVER.with_alpha(0.5).to_css(),
+                        }}>
+                            {"EQ Curve Display"}
+                        </div>
+
+                        // EQ bands
+                        <div style={style! {
+                            display: "flex",
+                            justify_content: "space-around",
+                            margin_top: "16px",
+                        }}>
+                            ∀ (band, freq) ∈ [("Low", "80Hz"), ("Low-Mid", "400Hz"), ("High-Mid", "2.5kHz"), ("High", "8kHz")] {
+                                <div style={style! {
+                                    display: "flex",
+                                    flex_direction: "column",
+                                    align_items: "center",
+                                }}>
+                                    <Knob
+                                        value={0.5}
+                                        min={-12.0}
+                                        max={12.0}
+                                        size={KnobSize·Small}
+                                        bipolar={true}
+                                        on_change={Box·new(|_| {})}
+                                    />
+                                    <span style={style! {
+                                        font_size: px(TEXT_XS),
+                                        color: SILVER.with_alpha(0.7).to_css(),
+                                        margin_top: "4px",
+                                    }}>
+                                        {band}
+                                    </span>
+                                    <span style={style! {
+                                        font_size: "9px",
+                                        color: SILVER.with_alpha(0.5).to_css(),
+                                    }}>
+                                        {freq}
+                                    </span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    // Dynamics Section
+                    <div style={style! {
+                        width: "200px",
+                        background: ABYSS.to_css(),
+                        border_radius: "8px",
+                        padding: "16px",
+                    }}>
+                        <h4 style={style! {
+                            font_size: px(TEXT_SM),
+                            color: SILVER.to_css(),
+                            margin: 0,
+                            margin_bottom: "16px",
+                        }}>
+                            {"Dynamics"}
+                        </h4>
+
+                        // Compressor controls
+                        <div style={style! {
+                            display: "flex",
+                            flex_direction: "column",
+                            gap: "12px",
+                        }}>
+                            ∀ (param, value) ∈ [("Threshold", "-20dB"), ("Ratio", "4:1"), ("Attack", "10ms"), ("Release", "100ms")] {
+                                <div>
+                                    <span style={style! {
+                                        font_size: px(TEXT_XS),
+                                        color: SILVER.with_alpha(0.7).to_css(),
+                                    }}>
+                                        {param}
+                                    </span>
+                                    <div style={style! {
+                                        font_size: px(TEXT_SM),
+                                        font_family: FONT_MONO,
+                                        color: PHTHALO.to_css(),
+                                    }}>
+                                        {value}
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        } ⎉ {
+            element! {
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    justify_content: "center",
+                    flex: 1,
+                    color: SILVER.with_alpha(0.5).to_css(),
+                }}>
+                    {"Select a channel to view details"}
+                </div>
+            }
+        }
+    }
+
+    /// Render routing matrix view
+    rite render_routing(&self) -> Element! {
+        element! {
+            <div class="routing-view" style={style! {
+                display: "flex",
+                flex: 1,
+                align_items: "center",
+                justify_content: "center",
+                background: VOID.to_css(),
+                color: SILVER.with_alpha(0.5).to_css(),
+            }}>
+                {"Routing matrix view coming soon..."}
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ MixMode {
+    type Props = MixModeProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="mix-mode" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: VOID.to_css(),
+            }}>
+                // Toolbar
+                {self.render_toolbar()}
+
+                // Main content based on view mode
+                ⌥ self.props.view_mode {
+                    MixViewMode·Console => { {self.render_console()} }
+                    MixViewMode·Channel => { {self.render_channel_detail()} }
+                    MixViewMode·Routing => { {self.render_routing()} }
+                    MixViewMode·Automation => {
+                        element! {
+                            <div style={style! {
+                                display: "flex",
+                                flex: 1,
+                                align_items: "center",
+                                justify_content: "center",
+                                color: SILVER.with_alpha(0.5).to_css(),
+                            }}>
+                                {"Automation view coming soon..."}
+                            </div>
+                        }
+                    }
+                }
+            </div>
+        }
+    }
+}

@@ -1,0 +1,529 @@
+//! Compose mode - main arrangement and editing view
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Layout state
+//! - `~` (external) - Project data, transport state
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·layout·{DockLayout, DockState, DockPosition, SplitPane, SplitOrientation};
+invoke crate·editors·{ArrangementEditor, PianoRollEditor, TabEditor};
+invoke crate·panels·{BrowserPanel, InspectorPanel, MixerView, ChannelStrip};
+invoke crate·widgets·{TransportBar, Knob};
+
+/// Active editor type in compose mode
+☉ ᛈ ActiveEditor {
+    Arrangement,
+    PianoRoll,
+    Tab,
+    Score,
+}
+
+/// Compose mode properties
+☉ Σ ComposeModeProps {
+    /// Project state
+    project~: ProjectState,
+    /// Transport state
+    transport~: TransportState,
+    /// Mixer state
+    mixer~: MixerState,
+    /// Active editor
+    active_editor: ActiveEditor,
+    /// Dock layout state
+    dock_state: DockState,
+    /// Callbacks
+    on_transport_play: Box<dyn Fn()>,
+    on_transport_stop: Box<dyn Fn()>,
+    on_transport_record: Box<dyn Fn()>,
+    on_tempo_change: Box<dyn Fn(f64)>,
+    on_track_select: Box<dyn Fn(u32)>,
+    on_clip_select: Box<dyn Fn(u32)>,
+    on_editor_change: Box<dyn Fn(ActiveEditor)>,
+    on_dock_state_change: Box<dyn Fn(DockState)>,
+}
+
+/// Project state (simplified for mode view)
+☉ Σ ProjectState {
+    name: String,
+    tracks: Vec<Track>,
+    selected_track: Option<u32>,
+    selected_clips: Vec<u32>,
+    tempo: f64,
+    time_signature: (u8, u8),
+}
+
+/// Transport state
+☉ Σ TransportState {
+    playing: bool,
+    recording: bool,
+    position: f64,
+    loop_enabled: bool,
+    loop_start: f64,
+    loop_end: f64,
+}
+
+/// Mixer state (for compose mode mini mixer)
+☉ Σ MixerState {
+    channels: Vec<Channel>,
+    master: Channel,
+    levels: Vec<(f32, f32)>,
+    master_level: (f32, f32),
+}
+
+/// Compose mode view
+☉ Σ ComposeMode {
+    props: ComposeModeProps,
+    show_browser: bool,
+    show_inspector: bool,
+    show_mixer: bool,
+    browser_width: f32,
+    inspector_width: f32,
+    mixer_height: f32,
+}
+
+⊢ ComposeMode {
+    ☉ rite new(props: ComposeModeProps) -> Self! {
+        Self {
+            props,
+            show_browser: true,
+            show_inspector: true,
+            show_mixer: true,
+            browser_width: 250.0,
+            inspector_width: 280.0,
+            mixer_height: 200.0,
+        }
+    }
+
+    /// Render track list sidebar
+    rite render_track_list(&self) -> Element! {
+        element! {
+            <div class="track-list" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: ABYSS.to_css(),
+            }}>
+                // Header
+                <div style={style! {
+                    padding: "8px 12px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                    display: "flex",
+                    justify_content: "space-between",
+                    align_items: "center",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Tracks"}
+                    </span>
+                    <button style={style! {
+                        padding: "2px 8px",
+                        background: "transparent".to_string(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "4px",
+                        color: SILVER.to_css(),
+                        font_size: px(TEXT_XS),
+                        cursor: "pointer",
+                    }}>
+                        {"+ Add"}
+                    </button>
+                </div>
+
+                // Track items
+                <div style={style! {
+                    flex: 1,
+                    overflow_y: "auto",
+                }}>
+                    ∀ track ∈ &self.props.project.tracks {
+                        ≔ is_selected = self.props.project.selected_track == Some(track.id);
+                        ≔ color = track.track_type.color();
+
+                        <div
+                            class="track-item"
+                            style={style! {
+                                padding: "8px 12px",
+                                display: "flex",
+                                align_items: "center",
+                                gap: "8px",
+                                background: ⎇ is_selected { PHTHALO.with_alpha(0.2) } ⎉ { "transparent" }.to_css(),
+                                border_left: format!("3px solid {}", color.to_css()),
+                                cursor: "pointer",
+                            }}
+                            on_click={|_| (self.props.on_track_select)(track.id)}
+                        >
+                            // Track color indicator
+                            <div style={style! {
+                                width: "8px",
+                                height: "8px",
+                                border_radius: "50%",
+                                background: color.to_css(),
+                            }} />
+
+                            // Track name
+                            <span style={style! {
+                                flex: 1,
+                                font_size: px(TEXT_SM),
+                                color: SILVER.to_css(),
+                                white_space: "nowrap",
+                                overflow: "hidden",
+                                text_overflow: "ellipsis",
+                            }}>
+                                {&track.name}
+                            </span>
+
+                            // Track controls
+                            <div style={style! {
+                                display: "flex",
+                                gap: "2px",
+                            }}>
+                                <button style={style! {
+                                    width: "16px",
+                                    height: "16px",
+                                    background: ⎇ track.muted { METER_YELLOW.with_alpha(0.8) } ⎉ { "transparent" }.to_css(),
+                                    border: "none",
+                                    border_radius: "2px",
+                                    color: ⎇ track.muted { VOID } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                                    font_size: "9px",
+                                    cursor: "pointer",
+                                }}>
+                                    {"M"}
+                                </button>
+                                <button style={style! {
+                                    width: "16px",
+                                    height: "16px",
+                                    background: ⎇ track.soloed { METER_GREEN.with_alpha(0.8) } ⎉ { "transparent" }.to_css(),
+                                    border: "none",
+                                    border_radius: "2px",
+                                    color: ⎇ track.soloed { VOID } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                                    font_size: "9px",
+                                    cursor: "pointer",
+                                }}>
+                                    {"S"}
+                                </button>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    }
+
+    /// Render editor tabs
+    rite render_editor_tabs(&self) -> Element! {
+        element! {
+            <div class="editor-tabs" style={style! {
+                display: "flex",
+                gap: "1px",
+                background: ABYSS.to_css(),
+                padding: "0 8px",
+            }}>
+                ∀ (editor, label) ∈ [
+                    (ActiveEditor·Arrangement, "Arrange"),
+                    (ActiveEditor·PianoRoll, "Piano Roll"),
+                    (ActiveEditor·Tab, "Tab"),
+                    (ActiveEditor·Score, "Score"),
+                ] {
+                    ≔ is_active = self.props.active_editor == editor;
+
+                    <button
+                        style={style! {
+                            padding: "8px 16px",
+                            background: ⎇ is_active { VOID } ⎉ { "transparent" }.to_css(),
+                            border: "none",
+                            border_bottom: ⎇ is_active {
+                                format!("2px solid {}", PHTHALO.to_css())
+                            } ⎉ {
+                                "2px solid transparent".to_string()
+                            },
+                            color: ⎇ is_active { PHTHALO } ⎉ { SILVER.with_alpha(0.7) }.to_css(),
+                            font_size: px(TEXT_SM),
+                            cursor: "pointer",
+                        }}
+                        on_click={|_| (self.props.on_editor_change)(editor)}
+                    >
+                        {label}
+                    </button>
+                }
+            </div>
+        }
+    }
+
+    /// Render active editor
+    rite render_editor(&self) -> Element! {
+        ⌥ self.props.active_editor {
+            ActiveEditor·Arrangement => {
+                element! {
+                    <ArrangementEditor
+                        tracks={self.props.project.tracks.clone()}
+                        playhead={self.props.transport.position}
+                        zoom_x={1.0}
+                        zoom_y={1.0}
+                        scroll_x={0.0}
+                        scroll_y={0.0}
+                        selected_clips={self.props.project.selected_clips.clone()}
+                        selected_track={self.props.project.selected_track}
+                        snap_enabled={true}
+                        snap_resolution={0.25}
+                        time_sig_num={self.props.project.time_signature.0}
+                        time_sig_denom={self.props.project.time_signature.1}
+                        loop_region={⎇ self.props.transport.loop_enabled {
+                            Some((self.props.transport.loop_start, self.props.transport.loop_end))
+                        } ⎉ { None }}
+                        loop_enabled={self.props.transport.loop_enabled}
+                        on_clip_select={Box·new(|id| (self.props.on_clip_select)(id))}
+                        on_clip_move={Box·new(|_, _| {})}
+                        on_clip_resize={Box·new(|_, _, _| {})}
+                        on_track_select={Box·new(|id| (self.props.on_track_select)(id))}
+                        on_playhead_set={Box·new(|_| {})}
+                        on_scroll={Box·new(|_, _| {})}
+                        on_zoom={Box·new(|_, _| {})}
+                        on_loop_set={Box·new(|_, _| {})}
+                    />
+                }
+            }
+            ActiveEditor·PianoRoll => {
+                element! {
+                    <PianoRollEditor
+                        notes={vec![]}
+                        playhead={self.props.transport.position}
+                        zoom_x={1.0}
+                        zoom_y={1.0}
+                        scroll_x={0.0}
+                        scroll_y={60.0}
+                        selected_notes={vec![]}
+                        snap_enabled={true}
+                        snap_resolution={0.25}
+                        time_sig_num={self.props.project.time_signature.0}
+                        time_sig_denom={self.props.project.time_signature.1}
+                        clip_length={16.0}
+                        show_velocity={true}
+                        edit_tool={PianoRollTool·Select}
+                        default_velocity={100}
+                        on_note_select={Box·new(|_, _| {})}
+                        on_note_add={Box·new(|_, _, _, _| {})}
+                        on_note_move={Box·new(|_, _, _| {})}
+                        on_note_resize={Box·new(|_, _| {})}
+                        on_note_velocity={Box·new(|_, _| {})}
+                        on_note_delete={Box·new(|_| {})}
+                        on_playhead_set={Box·new(|_| {})}
+                        on_scroll={Box·new(|_, _| {})}
+                        on_zoom={Box·new(|_, _| {})}
+                    />
+                }
+            }
+            ActiveEditor·Tab => {
+                element! {
+                    <TabEditor
+                        score={TabScore·default()}
+                        playhead={self.props.transport.position}
+                        selected_notes={vec![]}
+                        cursor={(0, 0, 0)}
+                        zoom={1.0}
+                        scroll_x={0.0}
+                        scroll_y={0.0}
+                        edit_mode={TabEditMode·Navigate}
+                        show_chords={true}
+                        show_lyrics={true}
+                        on_note_select={Box·new(|_, _, _, _| {})}
+                        on_note_change={Box·new(|_, _, _, _| {})}
+                        on_note_technique={Box·new(|_, _, _, _| {})}
+                        on_cursor_move={Box·new(|_, _, _| {})}
+                        on_playhead_set={Box·new(|_| {})}
+                        on_measure_add={Box·new(|_| {})}
+                        on_measure_delete={Box·new(|_| {})}
+                    />
+                }
+            }
+            ActiveEditor·Score => {
+                element! {
+                    <div style={style! {
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                        height: "100%",
+                        color: SILVER.with_alpha(0.5).to_css(),
+                    }}>
+                        {"Score notation coming soon..."}
+                    </div>
+                }
+            }
+        }
+    }
+
+    /// Render mini mixer
+    rite render_mini_mixer(&self) -> Element! {
+        element! {
+            <div class="mini-mixer" style={style! {
+                display: "flex",
+                height: "100%",
+                background: ABYSS.to_css(),
+                overflow_x: "auto",
+            }}>
+                ∀ (i, channel) ∈ self.props.mixer.channels.iter().enumerate() {
+                    ≔ (level_l, level_r) = self.props.mixer.levels.get(i).unwrap_or(&(-60.0, -60.0));
+
+                    <div class="mini-channel" style={style! {
+                        display: "flex",
+                        flex_direction: "column",
+                        align_items: "center",
+                        width: "60px",
+                        padding: "8px 4px",
+                        border_right: format!("1px solid {}", GRID_LINE.to_css()),
+                    }}>
+                        // Channel name
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.to_css(),
+                            margin_bottom: "4px",
+                            white_space: "nowrap",
+                            overflow: "hidden",
+                            text_overflow: "ellipsis",
+                            width: "100%",
+                            text_align: "center",
+                        }}>
+                            {&channel.name}
+                        </span>
+
+                        // Volume knob
+                        <Knob
+                            value={channel.volume}
+                            min={0.0}
+                            max={1.0}
+                            size={KnobSize·Small}
+                            show_value={false}
+                            on_change={Box·new(|_| {})}
+                        />
+
+                        // Level indicator
+                        <div style={style! {
+                            width: "8px",
+                            height: "40px",
+                            background: VOID.to_css(),
+                            border_radius: "2px",
+                            margin_top: "4px",
+                            position: "relative",
+                            overflow: "hidden",
+                        }}>
+                            ≔ level_height = ((*level_l + 60.0) / 66.0 * 100.0).clamp(0.0, 100.0);
+                            <div style={style! {
+                                position: "absolute",
+                                bottom: 0,
+                                left: 0,
+                                width: "100%",
+                                height: pct(level_height),
+                                background: format!(
+                                    "linear-gradient(to top, {} 0%, {} 70%, {} 90%)",
+                                    METER_GREEN.to_css(),
+                                    METER_YELLOW.to_css(),
+                                    METER_RED.to_css()
+                                ),
+                            }} />
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ ComposeMode {
+    type Props = ComposeModeProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="compose-mode" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: VOID.to_css(),
+            }}>
+                // Transport bar
+                <TransportBar
+                    playing={self.props.transport.playing}
+                    recording={self.props.transport.recording}
+                    position={self.props.transport.position}
+                    tempo={self.props.project.tempo}
+                    time_sig_num={self.props.project.time_signature.0}
+                    time_sig_denom={self.props.project.time_signature.1}
+                    loop_enabled={self.props.transport.loop_enabled}
+                    on_play={Box·new(|| (self.props.on_transport_play)())}
+                    on_stop={Box·new(|| (self.props.on_transport_stop)())}
+                    on_record={Box·new(|| (self.props.on_transport_record)())}
+                    on_tempo_change={Box·new(|t| (self.props.on_tempo_change)(t))}
+                    on_loop_toggle={Box·new(|| {})}
+                />
+
+                // Main content area
+                <div class="compose-content" style={style! {
+                    display: "flex",
+                    flex: 1,
+                    overflow: "hidden",
+                }}>
+                    // Left sidebar - track list
+                    <div style={style! {
+                        width: "200px",
+                        border_right: format!("1px solid {}", GRID_LINE.to_css()),
+                    }}>
+                        {self.render_track_list()}
+                    </div>
+
+                    // Center - editor area
+                    <div style={style! {
+                        flex: 1,
+                        display: "flex",
+                        flex_direction: "column",
+                        overflow: "hidden",
+                    }}>
+                        // Editor tabs
+                        {self.render_editor_tabs()}
+
+                        // Active editor
+                        <div style={style! {
+                            flex: 1,
+                            overflow: "hidden",
+                        }}>
+                            {self.render_editor()}
+                        </div>
+                    </div>
+
+                    // Right sidebar - browser/inspector
+                    ⎇ self.show_browser || self.show_inspector {
+                        <div style={style! {
+                            width: px(self.browser_width),
+                            border_left: format!("1px solid {}", GRID_LINE.to_css()),
+                            display: "flex",
+                            flex_direction: "column",
+                        }}>
+                            ⎇ self.show_browser {
+                                <div style={style! { flex: 1, overflow: "hidden" }}>
+                                    <BrowserPanel />
+                                </div>
+                            }
+                            ⎇ self.show_inspector {
+                                <div style={style! {
+                                    height: "300px",
+                                    border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                                }}>
+                                    <InspectorPanel selection={None} />
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                // Bottom - mini mixer
+                ⎇ self.show_mixer {
+                    <div style={style! {
+                        height: px(self.mixer_height),
+                        border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                    }}>
+                        {self.render_mini_mixer()}
+                    </div>
+                }
+            </div>
+        }
+    }
+}

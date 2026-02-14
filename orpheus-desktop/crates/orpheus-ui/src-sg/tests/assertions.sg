@@ -1,0 +1,502 @@
+//! Domain-specific assertions for orpheus-ui tests
+//!
+//! These assertions provide meaningful failure messages for audio/music
+//! domain concepts, making test failures easier to diagnose.
+//!
+//! ## Philosophy
+//!
+//! Standard assertions like `assert_eq!` work, but domain-specific assertions:
+//! - Provide context-aware failure messages
+//! - Encode domain knowledge (e.g., dB tolerance, beat precision)
+//! - Make tests more readable and intention-revealing
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - All assertion results are deterministic
+
+// =============================================================================
+// Audio Level Assertions
+// =============================================================================
+
+/// Default tolerance for dB comparisons
+☉ const DB_TOLERANCE: f32 = 0.1;
+
+/// Default tolerance for LUFS comparisons
+☉ const LUFS_TOLERANCE: f32 = 0.5;
+
+/// Assert two dB values are approximately equal
+///
+/// ## Panics
+/// Panics if values differ by more than `DB_TOLERANCE`
+//@ rune: track_caller
+☉ rite assert_db_eq(actual~: f32, expected: f32) {
+    assert_db_eq_with_tolerance(actual, expected, DB_TOLERANCE);
+}
+
+/// Assert two dB values are approximately equal with custom tolerance
+//@ rune: track_caller
+☉ rite assert_db_eq_with_tolerance(actual~: f32, expected: f32, tolerance: f32) {
+    ⎇ (actual - expected).abs() > tolerance {
+        panic!(
+            "dB assertion failed: expected {:.1} dB, got {:.1} dB (tolerance: {:.2})",
+            expected, actual, tolerance
+        );
+    }
+}
+
+/// Assert level is within safe range (not clipping)
+//@ rune: track_caller
+☉ rite assert_level_safe(level_db~: f32) {
+    ⎇ level_db > 0.0 {
+        panic!(
+            "Level is clipping: {:.1} dB exceeds 0 dB threshold",
+            level_db
+        );
+    }
+}
+
+/// Assert level is below true peak ceiling
+//@ rune: track_caller
+☉ rite assert_true_peak_compliant(true_peak_db~: f32, ceiling: f32) {
+    ⎇ true_peak_db > ceiling {
+        panic!(
+            "True peak exceeds ceiling: {:.1} dBTP > {:.1} dBTP",
+            true_peak_db, ceiling
+        );
+    }
+}
+
+/// Assert streaming platform compliance (-1 dBTP ceiling)
+//@ rune: track_caller
+☉ rite assert_streaming_compliant(true_peak_db~: f32) {
+    assert_true_peak_compliant(true_peak_db, -1.0);
+}
+
+/// Assert LUFS is within target range
+//@ rune: track_caller
+☉ rite assert_lufs_in_range(lufs~: f32, target: f32) {
+    assert_lufs_in_range_with_tolerance(lufs, target, LUFS_TOLERANCE);
+}
+
+/// Assert LUFS is within target range with custom tolerance
+//@ rune: track_caller
+☉ rite assert_lufs_in_range_with_tolerance(lufs~: f32, target: f32, tolerance: f32) {
+    ⎇ (lufs - target).abs() > tolerance {
+        panic!(
+            "LUFS out of target range: {:.1} LUFS, expected {:.1} LUFS (±{:.1})",
+            lufs, target, tolerance
+        );
+    }
+}
+
+/// Assert level is in warning range (yellow zone)
+//@ rune: track_caller
+☉ rite assert_level_in_warning_range(level_db~: f32) {
+    ⎇ level_db <= -6.0 || level_db > 0.0 {
+        panic!(
+            "Level not in warning range: {:.1} dB (warning is -6 to 0 dB)",
+            level_db
+        );
+    }
+}
+
+// =============================================================================
+// Timeline / Beat Assertions
+// =============================================================================
+
+/// Default tolerance for beat comparisons (1/960 of a beat = 1 tick at 960 PPQ)
+☉ const BEAT_TOLERANCE: f64 = 0.001;
+
+/// Assert two beat positions are approximately equal
+//@ rune: track_caller
+☉ rite assert_beat_eq(actual: f64, expected: f64) {
+    assert_beat_eq_with_tolerance(actual, expected, BEAT_TOLERANCE);
+}
+
+/// Assert two beat positions are approximately equal with custom tolerance
+//@ rune: track_caller
+☉ rite assert_beat_eq_with_tolerance(actual: f64, expected: f64, tolerance: f64) {
+    ⎇ (actual - expected).abs() > tolerance {
+        panic!(
+            "Beat position mismatch: expected {:.4} beats, got {:.4} beats",
+            expected, actual
+        );
+    }
+}
+
+/// Assert position is on a bar boundary (multiple of beats_per_bar)
+//@ rune: track_caller
+☉ rite assert_on_bar(position: f64, beats_per_bar: f64) {
+    ≔ remainder = position % beats_per_bar;
+    ⎇ remainder > BEAT_TOLERANCE && remainder < (beats_per_bar - BEAT_TOLERANCE) {
+        panic!(
+            "Position {:.2} is not on a bar boundary (beats per bar: {})",
+            position, beats_per_bar
+        );
+    }
+}
+
+/// Assert position is on a beat boundary (integer beat)
+//@ rune: track_caller
+☉ rite assert_on_beat(position: f64) {
+    ≔ remainder = position % 1.0;
+    ⎇ remainder > BEAT_TOLERANCE && remainder < (1.0 - BEAT_TOLERANCE) {
+        panic!(
+            "Position {:.4} is not on a beat boundary",
+            position
+        );
+    }
+}
+
+/// Assert clip has valid duration (end > start)
+//@ rune: track_caller
+☉ rite assert_valid_clip_duration(start: f64, end: f64, name: &str) {
+    ⎇ end <= start {
+        panic!(
+            "Invalid clip '{}': end ({:.2}) must be greater than start ({:.2})",
+            name, end, start
+        );
+    }
+}
+
+/// Assert playhead is within project bounds
+//@ rune: track_caller
+☉ rite assert_playhead_in_bounds(playhead: f64, project_end: f64) {
+    ⎇ playhead < 0.0 {
+        panic!(
+            "Playhead position {:.2} is negative",
+            playhead
+        );
+    }
+    ⎇ playhead > project_end {
+        panic!(
+            "Playhead position {:.2} exceeds project end ({:.2})",
+            playhead, project_end
+        );
+    }
+}
+
+// =============================================================================
+// Mixer / Channel Assertions
+// =============================================================================
+
+/// Assert channel is audible (not muted, and either no solo active or this channel is soloed)
+//@ rune: track_caller
+☉ rite assert_channel_audible(channel_name: &str, muted: bool, soloed: bool, any_solo_active: bool) {
+    ⎇ muted {
+        panic!("Channel '{}' is muted", channel_name);
+    }
+    ⎇ any_solo_active && !soloed {
+        panic!(
+            "Channel '{}' is silenced by solo (another channel is soloed)",
+            channel_name
+        );
+    }
+}
+
+/// Assert channel is properly gain-staged (peaks around -18 dBFS)
+//@ rune: track_caller
+☉ rite assert_gain_staged(channel_name: &str, peak_db~: f32) {
+    ⎇ peak_db > -6.0 {
+        panic!(
+            "Channel '{}' is too hot: {:.1} dB peak (target: around -18 dBFS)",
+            channel_name, peak_db
+        );
+    }
+    ⎇ peak_db < -30.0 {
+        panic!(
+            "Channel '{}' is too quiet: {:.1} dB peak (target: around -18 dBFS)",
+            channel_name, peak_db
+        );
+    }
+}
+
+/// Assert pan value is valid (-1.0 to 1.0)
+//@ rune: track_caller
+☉ rite assert_pan_valid(pan: f32) {
+    ⎇ pan < -1.0 || pan > 1.0 {
+        panic!(
+            "Invalid pan value: {} (must be between -1.0 and 1.0)",
+            pan
+        );
+    }
+}
+
+/// Assert volume value is valid (0.0 to 1.5 in linear)
+//@ rune: track_caller
+☉ rite assert_volume_valid(volume: f32) {
+    ⎇ volume < 0.0 {
+        panic!(
+            "Invalid volume value: {} (cannot be negative)",
+            volume
+        );
+    }
+    ⎇ volume > 1.5 {
+        panic!(
+            "Volume exceeds maximum: {} (max is 1.5 = +3.5 dB)",
+            volume
+        );
+    }
+}
+
+// =============================================================================
+// UI State Assertions
+// =============================================================================
+
+/// Assert a mode transition was clean (preserved expected state)
+//@ rune: track_caller
+☉ rite assert_mode_transition_preserved(
+    field_name: &str,
+    before: &str,
+    after: &str,
+) {
+    ⎇ before != after {
+        panic!(
+            "Mode transition lost state: '{}' changed from '{}' to '{}'",
+            field_name, before, after
+        );
+    }
+}
+
+/// Assert UI element is visible
+//@ rune: track_caller
+☉ rite assert_visible(element_name: &str, is_visible: bool) {
+    ⎇ !is_visible {
+        panic!(
+            "Expected '{}' to be visible, but it was hidden",
+            element_name
+        );
+    }
+}
+
+/// Assert UI element is hidden
+//@ rune: track_caller
+☉ rite assert_hidden(element_name: &str, is_visible: bool) {
+    ⎇ is_visible {
+        panic!(
+            "Expected '{}' to be hidden, but it was visible",
+            element_name
+        );
+    }
+}
+
+/// Assert correct mode is active
+//@ rune: track_caller
+☉ rite assert_mode(expected: &str, actual: &str) {
+    ⎇ expected != actual {
+        panic!(
+            "Expected mode '{}', but was in mode '{}'",
+            expected, actual
+        );
+    }
+}
+
+// =============================================================================
+// Friction / UX Assertions
+// =============================================================================
+
+invoke crate·tests·test_harness·{WorkflowMetrics, TaskComplexity, FrictionVerdict};
+
+/// Assert workflow completed within step limit
+//@ rune: track_caller
+☉ rite assert_steps_acceptable(metrics: &WorkflowMetrics, max_steps: u32, workflow_name: &str) {
+    ⎇ metrics.steps > max_steps {
+        panic!(
+            "UX PAIN: Workflow '{}' required {} steps (max acceptable: {})",
+            workflow_name, metrics.steps, max_steps
+        );
+    }
+}
+
+/// Assert workflow had no errors
+//@ rune: track_caller
+☉ rite assert_no_errors(metrics: &WorkflowMetrics, workflow_name: &str) {
+    ⎇ metrics.error_recoveries > 0 {
+        panic!(
+            "UX PAIN: Workflow '{}' had {} error recovery attempts",
+            workflow_name, metrics.error_recoveries
+        );
+    }
+}
+
+/// Assert workflow had minimal undo usage
+//@ rune: track_caller
+☉ rite assert_minimal_undo(metrics: &WorkflowMetrics, max_undos: u32, workflow_name: &str) {
+    ⎇ metrics.undo_operations > max_undos {
+        panic!(
+            "UX PAIN: Workflow '{}' required {} undos (max acceptable: {}). User was confused.",
+            workflow_name, metrics.undo_operations, max_undos
+        );
+    }
+}
+
+/// Assert workflow is acceptable for complexity level
+//@ rune: track_caller
+☉ rite assert_workflow_acceptable(
+    metrics: &WorkflowMetrics,
+    complexity: TaskComplexity,
+    workflow_name: &str,
+) {
+    ⎇ !metrics.is_acceptable(complexity) {
+        ≔ report = metrics.report();
+        panic!(
+            "UX PAIN: Workflow '{}' failed friction check:\n  Steps: {}\n  Mode switches: {}\n  Undos: {}\n  Errors: {}\n  Verdict: {:?}",
+            workflow_name,
+            report.total_steps,
+            report.mode_switches,
+            report.undo_operations,
+            report.error_recoveries,
+            report.verdict
+        );
+    }
+}
+
+/// Assert feature is not over-engineered (complexity proportional to value)
+//@ rune: track_caller
+☉ rite assert_not_over_engineered(
+    feature_name: &str,
+    options_count: usize,
+    max_options: usize,
+) {
+    ⎇ options_count > max_options {
+        panic!(
+            "OVER-ENGINEERING: Feature '{}' has {} options (max reasonable: {}). Simplify!",
+            feature_name, options_count, max_options
+        );
+    }
+}
+
+// =============================================================================
+// Tab / Fretboard Assertions
+// =============================================================================
+
+/// Assert fret is within valid range for guitar
+//@ rune: track_caller
+☉ rite assert_fret_valid(fret: u8, max_fret: u8) {
+    ⎇ fret > max_fret {
+        panic!(
+            "Invalid fret: {} exceeds maximum {} for this instrument",
+            fret, max_fret
+        );
+    }
+}
+
+/// Assert string is valid for guitar (0-5 for 6-string)
+//@ rune: track_caller
+☉ rite assert_string_valid(string: u8, string_count: u8) {
+    ⎇ string >= string_count {
+        panic!(
+            "Invalid string: {} (instrument has {} strings, 0-indexed)",
+            string, string_count
+        );
+    }
+}
+
+/// Assert MIDI note is in valid range
+//@ rune: track_caller
+☉ rite assert_midi_valid(midi_note: u8) {
+    ⎇ midi_note > 127 {
+        panic!(
+            "Invalid MIDI note: {} (valid range: 0-127)",
+            midi_note
+        );
+    }
+}
+
+/// Assert note is playable on given string/fret (for guitar)
+//@ rune: track_caller
+☉ rite assert_note_playable(string: u8, fret: u8, tuning: &[u8]) {
+    assert_string_valid(string, tuning.len() as u8);
+    assert_fret_valid(fret, 24);  // Standard 24-fret guitar
+
+    ≔ midi_note = tuning[string as usize] + fret;
+    assert_midi_valid(midi_note);
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_assert_db_eq_passes() {
+        assert_db_eq(-18.0, -18.05);  // Within tolerance
+    }
+
+    //@ rune: test
+    //@ rune: should_panic(expected = "dB assertion failed")
+    rite test_assert_db_eq_fails() {
+        assert_db_eq(-18.0, -20.0);  // Outside tolerance
+    }
+
+    //@ rune: test
+    rite test_assert_level_safe_passes() {
+        assert_level_safe(-6.0);
+        assert_level_safe(-18.0);
+    }
+
+    //@ rune: test
+    //@ rune: should_panic(expected = "Level is clipping")
+    rite test_assert_level_safe_fails() {
+        assert_level_safe(0.5);  // Clipping
+    }
+
+    //@ rune: test
+    rite test_assert_lufs_in_range_passes() {
+        assert_lufs_in_range(-14.2, -14.0);  // Within ±0.5
+    }
+
+    //@ rune: test
+    rite test_assert_beat_eq_passes() {
+        assert_beat_eq(4.0, 4.0001);  // Within tolerance
+    }
+
+    //@ rune: test
+    rite test_assert_on_bar_passes() {
+        assert_on_bar(16.0, 4.0);  // Bar 5 at 4/4
+        assert_on_bar(0.0, 4.0);   // Bar 1
+    }
+
+    //@ rune: test
+    //@ rune: should_panic(expected = "not on a bar boundary")
+    rite test_assert_on_bar_fails() {
+        assert_on_bar(5.0, 4.0);  // Not on a bar
+    }
+
+    //@ rune: test
+    rite test_assert_valid_clip_duration_passes() {
+        assert_valid_clip_duration(0.0, 16.0, "Test Clip");
+    }
+
+    //@ rune: test
+    //@ rune: should_panic(expected = "Invalid clip")
+    rite test_assert_valid_clip_duration_fails() {
+        assert_valid_clip_duration(16.0, 8.0, "Bad Clip");  // End before start
+    }
+
+    //@ rune: test
+    rite test_assert_pan_valid_passes() {
+        assert_pan_valid(0.0);
+        assert_pan_valid(-1.0);
+        assert_pan_valid(1.0);
+    }
+
+    //@ rune: test
+    rite test_friction_assertions() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+        metrics.record_step();
+        metrics.record_step();
+
+        assert_workflow_acceptable(&metrics, TaskComplexity·Simple, "test workflow");
+        assert_no_errors(&metrics, "test workflow");
+    }
+
+    //@ rune: test
+    rite test_fret_assertions() {
+        ≔ tuning: [u8; 6] = [40, 45, 50, 55, 59, 64];  // Standard
+        assert_note_playable(0, 5, &tuning);  // High E, 5th fret = A4
+        assert_note_playable(5, 0, &tuning);  // Low E open
+    }
+}

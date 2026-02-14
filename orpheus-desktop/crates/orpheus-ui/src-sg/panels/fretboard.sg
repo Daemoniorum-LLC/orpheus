@@ -1,0 +1,805 @@
+//! Interactive fretboard visualization
+//!
+//! A guitar fretboard display with support for:
+//! - Custom tunings
+//! - Active note highlighting from MIDI/playback
+//! - Scale and chord highlighting
+//! - Note name or interval display
+//! - Click interaction for note input
+//! - Keyboard input via WASM exports
+//! - Multi-digit fret entry with timeout
+//! - Selection cursor for tab editing
+//!
+//! ## WASM Exports
+//!
+//! - `on_fret_key(digit: i64)` - Handle numeric key press (0-9)
+//! - `on_fret_arrow(direction: i64)` - Handle arrow key (0=up, 1=down, 2=left, 3=right)
+//! - `on_fret_technique(key: i64)` - Handle technique hotkey
+//! - `on_fret_delete()` - Handle delete/backspace
+//! - `on_fret_commit()` - Commit pending input
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Fret positions, note calculations
+//! - `~` (external) - Active notes from MIDI/playback, cursor position
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{ABYSS, SILVER, PHTHALO, VOID, TEXT_XS};
+invoke crate·editors·tab_editor·{Technique, SlideDirection, HarmonicType};
+
+/// Standard guitar tuning (high E to low E in MIDI notes)
+☉ Λ STANDARD_TUNING: [u8; 6] = [64, 59, 55, 50, 45, 40]!;
+
+/// Musical note names
+Λ NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]!;
+
+/// Interval names from root
+Λ INTERVAL_NAMES: [&str; 12] = ["R", "m2", "2", "m3", "3", "4", "b5", "5", "m6", "6", "m7", "7"]!;
+
+/// Musical scale definition
+☉ Σ Scale {
+    /// Scale name
+    name: String,
+    /// Intervals from root (semitones)
+    intervals: Vec<u8>,
+}
+
+⊢ Scale {
+    /// Major scale
+    ☉ rite major() -> Self! {
+        Self {
+            name: "Major".into(),
+            intervals: vec![0, 2, 4, 5, 7, 9, 11],
+        }
+    }
+
+    /// Natural minor scale
+    ☉ rite minor() -> Self! {
+        Self {
+            name: "Minor".into(),
+            intervals: vec![0, 2, 3, 5, 7, 8, 10],
+        }
+    }
+
+    /// Pentatonic major
+    ☉ rite pentatonic_major() -> Self! {
+        Self {
+            name: "Pentatonic Major".into(),
+            intervals: vec![0, 2, 4, 7, 9],
+        }
+    }
+
+    /// Pentatonic minor
+    ☉ rite pentatonic_minor() -> Self! {
+        Self {
+            name: "Pentatonic Minor".into(),
+            intervals: vec![0, 3, 5, 7, 10],
+        }
+    }
+
+    /// Check if note is in scale
+    rite contains(&self, root: u8, note: u8) -> bool! {
+        ≔ interval = (note + 12 - (root % 12)) % 12;
+        self.intervals.contains(&interval)
+    }
+}
+
+// =============================================================================
+// Fretboard Editor State (for WASM exports)
+// =============================================================================
+
+/// Global fretboard editor state (for WASM callbacks)
+Σ FretboardEditorState {
+    /// Current cursor string (1-6)
+    cursor_string: u8,
+    /// Current cursor fret (0-24)
+    cursor_fret: u8,
+    /// Input buffer for multi-digit fret entry
+    input_buffer: String,
+    /// Last input timestamp (for timeout)
+    last_input_time: f64,
+    /// Input timeout in ms (for multi-digit entry)
+    input_timeout_ms: f64,
+    /// Is in edit mode
+    edit_mode: bool,
+    /// Pending technique to apply
+    pending_technique: Option<Technique>,
+    /// Callback for fret changes
+    on_fret_change: Option<Box<dyn Fn(u8, u8)>>,
+    /// Callback for cursor moves
+    on_cursor_move: Option<Box<dyn Fn(u8, u8)>>,
+    /// Callback for technique application
+    on_technique_apply: Option<Box<dyn Fn(Technique)>>,
+    /// Callback for note deletion
+    on_note_delete: Option<Box<dyn Fn(u8)>>,
+}
+
+⊢ ◊ FretboardEditorState {
+    rite default() -> Self {
+        Self {
+            cursor_string: 1,
+            cursor_fret: 0,
+            input_buffer: String·new(),
+            last_input_time: 0.0,
+            input_timeout_ms: 500.0,
+            edit_mode: false,
+            pending_technique: None,
+            on_fret_change: None,
+            on_cursor_move: None,
+            on_technique_apply: None,
+            on_note_delete: None,
+        }
+    }
+}
+
+/// Global editor state instance
+☉ Δ FRETBOARD_STATE: FretboardEditorState = FretboardEditorState {
+    cursor_string: 1,
+    cursor_fret: 0,
+    input_buffer: String·new(),
+    last_input_time: 0.0,
+    input_timeout_ms: 500.0,
+    edit_mode: false,
+    pending_technique: None,
+    on_fret_change: None,
+    on_cursor_move: None,
+    on_technique_apply: None,
+    on_note_delete: None,
+};
+
+// =============================================================================
+// WASM Exports for Keyboard Input
+// =============================================================================
+
+/// Handle numeric key press (0-9) for fret entry
+/// Multi-digit support: pressing 1 then 2 quickly enters fret 12
+//@ rune: export
+☉ rite on_fret_key(digit: i64) {
+    ≔ digit = digit as u8;
+    ⎇ digit > 9 { ⮐; }
+
+    // Get current time for timeout check
+    ≔ now = timing·now();
+
+    // Check if we should append or start fresh
+    ⎇ now - FRETBOARD_STATE.last_input_time > FRETBOARD_STATE.input_timeout_ms {
+        FRETBOARD_STATE.input_buffer.clear();
+    }
+
+    // Append digit
+    FRETBOARD_STATE.input_buffer.push_str(&digit.to_string());
+    FRETBOARD_STATE.last_input_time = now;
+
+    // Parse current value
+    ⎇ ≔ Ok(fret) = FRETBOARD_STATE.input_buffer.parse::<u8>() {
+        // If value > 24 or buffer has 2+ digits, commit immediately
+        ⎇ fret > 24 {
+            // Take first digit only
+            FRETBOARD_STATE.input_buffer = FRETBOARD_STATE.input_buffer.chars().take(1).collect();
+            ⎇ ≔ Ok(single_fret) = FRETBOARD_STATE.input_buffer.parse::<u8>() {
+                FRETBOARD_STATE.cursor_fret = single_fret;
+                ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_fret_change {
+                    cb(FRETBOARD_STATE.cursor_string, single_fret);
+                }
+            }
+            FRETBOARD_STATE.input_buffer.clear();
+        } ⎉ ⎇ FRETBOARD_STATE.input_buffer.len() >= 2 {
+            // Two digits entered, commit
+            FRETBOARD_STATE.cursor_fret = fret.min(24);
+            ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_fret_change {
+                cb(FRETBOARD_STATE.cursor_string, fret.min(24));
+            }
+            FRETBOARD_STATE.input_buffer.clear();
+        } ⎉ ⎇ digit > 2 {
+            // Single digit > 2 means we can't form a valid two-digit fret (30+)
+            // Wait for timeout or commit now if unlikely to form valid number
+            // For now, let timeout handle it
+        }
+    }
+}
+
+/// Handle arrow key navigation
+/// direction: 0=up (lower string num), 1=down (higher string num), 2=left (lower fret), 3=right (higher fret)
+//@ rune: export
+☉ rite on_fret_arrow(direction: i64) {
+    // Commit any pending input first
+    on_fret_commit();
+
+    ⌥ direction {
+        0 => { // Up = lower string number (higher pitch)
+            ⎇ FRETBOARD_STATE.cursor_string > 1 {
+                FRETBOARD_STATE.cursor_string -= 1;
+            }
+        }
+        1 => { // Down = higher string number (lower pitch)
+            ⎇ FRETBOARD_STATE.cursor_string < 6 {
+                FRETBOARD_STATE.cursor_string += 1;
+            }
+        }
+        2 => { // Left = lower fret
+            ⎇ FRETBOARD_STATE.cursor_fret > 0 {
+                FRETBOARD_STATE.cursor_fret -= 1;
+            }
+        }
+        3 => { // Right = higher fret
+            ⎇ FRETBOARD_STATE.cursor_fret < 24 {
+                FRETBOARD_STATE.cursor_fret += 1;
+            }
+        }
+        _ => {}
+    }
+
+    ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_cursor_move {
+        cb(FRETBOARD_STATE.cursor_string, FRETBOARD_STATE.cursor_fret);
+    }
+}
+
+/// Handle technique hotkey
+/// key: 'h'=hammer, 'p'=pull, 's'=slide, 'b'=bend, 'v'=vibrato, 'm'=mute, '*'=harmonic, 't'=tap
+//@ rune: export
+☉ rite on_fret_technique(key: i64) {
+    ≔ technique = ⌥ key as u8 as char {
+        'h' => Some(Technique·HammerOn { target_fret: 0 }),
+        'p' => Some(Technique·PullOff { target_fret: 0 }),
+        's' => Some(Technique·Slide { direction: SlideDirection·Up, target_fret: None }),
+        'b' => Some(Technique·Bend { points: vec![] }),
+        'v' => Some(Technique·Vibrato { speed: 5.0, depth: 0.5 }),
+        'm' => Some(Technique·PalmMute),
+        '*' => Some(Technique·Harmonic { harmonic_type: HarmonicType·Natural }),
+        't' => Some(Technique·Tap),
+        'l' => Some(Technique·LetRing),
+        'a' => Some(Technique·Accent),
+        'g' => Some(Technique·GhostNote),
+        _ => None,
+    };
+
+    ⎇ ≔ Some(tech) = technique {
+        FRETBOARD_STATE.pending_technique = Some(tech.clone());
+        ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_technique_apply {
+            cb(tech);
+        }
+    }
+}
+
+/// Handle delete/backspace
+//@ rune: export
+☉ rite on_fret_delete() {
+    // Clear input buffer
+    FRETBOARD_STATE.input_buffer.clear();
+
+    // Notify callback
+    ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_note_delete {
+        cb(FRETBOARD_STATE.cursor_string);
+    }
+}
+
+/// Commit pending input (e.g., on timeout or explicit action)
+//@ rune: export
+☉ rite on_fret_commit() {
+    ⎇ !FRETBOARD_STATE.input_buffer.is_empty() {
+        ⎇ ≔ Ok(fret) = FRETBOARD_STATE.input_buffer.parse::<u8>() {
+            FRETBOARD_STATE.cursor_fret = fret.min(24);
+            ⎇ ≔ Some(ref cb) = FRETBOARD_STATE.on_fret_change {
+                cb(FRETBOARD_STATE.cursor_string, fret.min(24));
+            }
+        }
+        FRETBOARD_STATE.input_buffer.clear();
+    }
+}
+
+/// Get current cursor position
+//@ rune: export
+☉ rite get_fretboard_cursor() -> (u8, u8) {
+    (FRETBOARD_STATE.cursor_string, FRETBOARD_STATE.cursor_fret)
+}
+
+/// Set cursor position
+//@ rune: export
+☉ rite set_fretboard_cursor(string: i64, fret: i64) {
+    ≔ string = (string as u8).clamp(1, 6);
+    ≔ fret = (fret as u8).min(24);
+
+    FRETBOARD_STATE.cursor_string = string;
+    FRETBOARD_STATE.cursor_fret = fret;
+}
+
+/// Get pending input buffer
+//@ rune: export
+☉ rite get_fretboard_input() -> String {
+    FRETBOARD_STATE.input_buffer.clone()
+}
+
+/// Set edit mode
+//@ rune: export
+☉ rite set_fretboard_edit_mode(enabled: i64) {
+    FRETBOARD_STATE.edit_mode = enabled != 0;
+}
+
+// =============================================================================
+// Fretboard Properties
+// =============================================================================
+
+/// Fretboard properties
+☉ Σ FretboardProps {
+    /// Number of frets to display
+    frets: u8,
+    /// Tuning (MIDI notes, high to low)
+    tuning: Vec<u8>,
+    /// Currently active notes (MIDI numbers)
+    active_notes~: Vec<u8>,
+    /// Scale to highlight
+    scale: Option<Scale>,
+    /// Root note for scale highlighting (MIDI note)
+    root: Option<u8>,
+    /// Show note names
+    show_names: bool,
+    /// Show intervals instead of names
+    show_intervals: bool,
+    /// Click callback (string index, fret)
+    on_note_click: Option<Box<dyn Fn(u8, u8)>>,
+
+    // Tab editor integration
+    /// Show cursor for tab editing
+    show_cursor: bool,
+    /// Cursor string (1-6)
+    cursor_string~: u8,
+    /// Cursor fret (0-24)
+    cursor_fret~: u8,
+    /// Input buffer display
+    input_buffer~: String,
+    /// Is in edit mode
+    edit_mode~: bool,
+    /// Selected notes (string, fret) for multi-select
+    selected_positions: Vec<(u8, u8)>,
+}
+
+⊢ ◊ FretboardProps {
+    rite default() -> Self {
+        Self {
+            frets: 15,
+            tuning: STANDARD_TUNING.to_vec(),
+            active_notes: vec![],
+            scale: None,
+            root: None,
+            show_names: true,
+            show_intervals: false,
+            on_note_click: None,
+            // Tab editor defaults
+            show_cursor: false,
+            cursor_string: 1,
+            cursor_fret: 0,
+            input_buffer: String·new(),
+            edit_mode: false,
+            selected_positions: vec![],
+        }
+    }
+}
+
+/// Fretboard component
+☉ Σ Fretboard {
+    props: FretboardProps,
+}
+
+⊢ Fretboard {
+    /// Create a new fretboard
+    ☉ rite new(props: FretboardProps) -> Self! {
+        Self { props }
+    }
+
+    /// Get MIDI note for string and fret
+    rite midi_note(&self, string: usize, fret: u8) -> u8! {
+        self.props.tuning[string] + fret
+    }
+
+    /// Get note name from MIDI number
+    rite note_name(&self, midi: u8) -> &'static str! {
+        NOTE_NAMES[(midi % 12) as usize]
+    }
+
+    /// Get interval name from root
+    rite interval_name(&self, midi: u8) -> &'static str! {
+        ⌥ self.props.root {
+            Some(root) => {
+                ≔ interval = ((midi + 12) - (root % 12)) % 12;
+                INTERVAL_NAMES[interval as usize]
+            }
+            None => ""
+        }
+    }
+
+    /// Check if note is in active scale
+    rite is_in_scale(&self, midi: u8) -> bool! {
+        ⌥ (&self.props.scale, self.props.root) {
+            (Some(ref scale), Some(root)) => scale.contains(root, midi),
+            _ => false
+        }
+    }
+
+    /// Check if position is the cursor (string_idx is 0-based, cursor_string is 1-based)
+    rite is_cursor(&self, string_idx: usize, fret: u8) -> bool! {
+        self.props.show_cursor &&
+        (string_idx as u8 + 1) == self.props.cursor_string &&
+        fret == self.props.cursor_fret
+    }
+
+    /// Check if position is selected
+    rite is_selected(&self, string_idx: usize, fret: u8) -> bool! {
+        self.props.selected_positions.contains(&((string_idx as u8 + 1), fret))
+    }
+
+    /// Calculate fret position with logarithmic scaling
+    rite fret_position(&self, fret: u8, total_width: f32) -> f32! {
+        ⎇ fret == 0 {
+            0.0
+        } ⎉ {
+            // Frets get closer together as you go up the neck
+            ≔ scale_length = total_width * 1.5;
+            scale_length * (1.0 - (2.0_f32).powf(-(fret as f32) / 12.0))
+        }
+    }
+
+    /// Calculate width of a fret space
+    rite fret_width(&self, fret: u8, total_width: f32) -> f32! {
+        self.fret_position(fret + 1, total_width) - self.fret_position(fret, total_width)
+    }
+}
+
+⊢ Component ∀ Fretboard {
+    type Props = FretboardProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ num_strings = self.props.tuning.len();
+        ≔ string_spacing = 24.0;
+        ≔ height = num_strings as f32 * string_spacing;
+        ≔ neck_width = ctx.bounds().width - 48.0;  // Room for open string notes
+
+        element! {
+            <div
+                class="fretboard"
+                style={style! {
+                    display: "flex",
+                    padding: "16px",
+                    background: VOID.to_css(),
+                    border_radius: "4px",
+                }}
+            >
+                // Open string notes
+                <div class="open-strings" style={style! {
+                    width: "32px",
+                    display: "flex",
+                    flex_direction: "column",
+                }}>
+                    ∀ (string_idx, &open_note) ∈ self.props.tuning.iter().enumerate() {
+                        ≔ is_active = self.props.active_notes.contains(&open_note);
+                        ≔ in_scale = self.is_in_scale(open_note);
+
+                        <div
+                            style={style! {
+                                height: px(string_spacing),
+                                display: "flex",
+                                align_items: "center",
+                                justify_content: "center",
+                            }}
+                            on_click={|_| {
+                                ⎇ ≔ Some(ref callback) = self.props.on_note_click {
+                                    callback(string_idx as u8, 0);
+                                }
+                            }}
+                        >
+                            <div style={style! {
+                                width: "22px",
+                                height: "22px",
+                                border_radius: "50%",
+                                background: ⎇ is_active {
+                                    PHTHALO.to_css()
+                                } ⎉ ⎇ in_scale {
+                                    SILVER.with_alpha(0.2).to_css()
+                                } ⎉ {
+                                    "transparent"
+                                },
+                                border: format!("2px solid {}", SILVER.with_alpha(0.5).to_css()),
+                                display: "flex",
+                                align_items: "center",
+                                justify_content: "center",
+                                font_size: px(TEXT_XS),
+                                color: ⎇ is_active { VOID.to_css() } ⎉ { SILVER.to_css() },
+                                font_weight: "bold",
+                                cursor: "pointer",
+                            }}>
+                                ⎇ self.props.show_names || is_active || in_scale {
+                                    ⎇ self.props.show_intervals && self.props.root.is_some() {
+                                        {self.interval_name(open_note)}
+                                    } ⎉ {
+                                        {self.note_name(open_note)}
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                // Neck
+                <div class="neck" style={style! {
+                    position: "relative",
+                    width: px(neck_width),
+                    height: px(height),
+                    background: "#3a2a1a",  // Wood color
+                    border_radius: "2px",
+                }}>
+                    // Strings
+                    ∀ string_idx ∈ 0..num_strings {
+                        ≔ y = string_idx as f32 * string_spacing + string_spacing / 2.0;
+                        ≔ thickness = 1.0 + (string_idx as f32 * 0.3);  // Thicker bass strings
+
+                        <div style={style! {
+                            position: "absolute",
+                            left: 0,
+                            right: 0,
+                            top: px(y - thickness / 2.0),
+                            height: px(thickness),
+                            background: "#c0c0c0",
+                            box_shadow: "0 1px 2px rgba(0,0,0,0.3)",
+                            pointer_events: "none",
+                        }} />
+                    }
+
+                    // Frets
+                    ∀ fret ∈ 1..=self.props.frets {
+                        ≔ x = self.fret_position(fret, neck_width);
+
+                        <div style={style! {
+                            position: "absolute",
+                            left: px(x),
+                            top: 0,
+                            height: "100%",
+                            width: "3px",
+                            background: "#d0d0d0",
+                            box_shadow: "1px 0 2px rgba(0,0,0,0.3)",
+                            pointer_events: "none",
+                        }} />
+                    }
+
+                    // Fret markers (dots)
+                    ∀ fret ∈ [3u8, 5, 7, 9, 12, 15, 17, 19, 21, 24] {
+                        ⎇ fret <= self.props.frets {
+                            ≔ x = self.fret_position(fret - 1, neck_width) + self.fret_width(fret - 1, neck_width) / 2.0;
+                            ≔ is_octave = fret == 12 || fret == 24;
+
+                            ⎇ is_octave {
+                                // Double dot at octave
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: px(x - 4.0),
+                                    top: px(height * 0.25 - 4.0),
+                                    width: "8px",
+                                    height: "8px",
+                                    border_radius: "50%",
+                                    background: "#e0e0e0",
+                                    pointer_events: "none",
+                                }} />
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: px(x - 4.0),
+                                    top: px(height * 0.75 - 4.0),
+                                    width: "8px",
+                                    height: "8px",
+                                    border_radius: "50%",
+                                    background: "#e0e0e0",
+                                    pointer_events: "none",
+                                }} />
+                            } ⎉ {
+                                // Single dot
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: px(x - 4.0),
+                                    top: px(height / 2.0 - 4.0),
+                                    width: "8px",
+                                    height: "8px",
+                                    border_radius: "50%",
+                                    background: "#e0e0e0",
+                                    pointer_events: "none",
+                                }} />
+                            }
+                        }
+                    }
+
+                    // Note positions (clickable)
+                    ∀ string_idx ∈ 0..num_strings {
+                        ∀ fret ∈ 1..=self.props.frets {
+                            ≔ midi = self.midi_note(string_idx, fret);
+                            ≔ is_active = self.props.active_notes.contains(&midi);
+                            ≔ in_scale = self.is_in_scale(midi);
+                            ≔ is_cursor = self.is_cursor(string_idx, fret);
+                            ≔ is_selected = self.is_selected(string_idx, fret);
+                            ≔ x = self.fret_position(fret - 1, neck_width);
+                            ≔ w = self.fret_width(fret - 1, neck_width);
+                            ≔ y = string_idx as f32 * string_spacing;
+
+                            <div
+                                class="fret-position"
+                                data-fret={format!("{},{}", string_idx + 1, fret)}
+                                data-string={(string_idx + 1).to_string()}
+                                data-fret-num={fret.to_string()}
+                                style={style! {
+                                    position: "absolute",
+                                    left: px(x),
+                                    top: px(y),
+                                    width: px(w),
+                                    height: px(string_spacing),
+                                    display: "flex",
+                                    align_items: "center",
+                                    justify_content: "center",
+                                    cursor: "pointer",
+                                    // Cursor/selection highlighting
+                                    background: ⎇ is_cursor && self.props.edit_mode {
+                                        PHTHALO.with_alpha(0.15).to_css()
+                                    } ⎉ ⎇ is_selected {
+                                        PHTHALO.with_alpha(0.1).to_css()
+                                    } ⎉ {
+                                        "transparent"
+                                    },
+                                    border_radius: "4px",
+                                }}
+                                on_click={|_| {
+                                    ⎇ ≔ Some(ref callback) = self.props.on_note_click {
+                                        callback(string_idx as u8, fret);
+                                    }
+                                }}
+                            >
+                                // Show note indicator
+                                ⎇ is_active || in_scale || is_cursor || is_selected {
+                                    <div style={style! {
+                                        width: "18px",
+                                        height: "18px",
+                                        border_radius: "50%",
+                                        background: ⎇ is_active {
+                                            PHTHALO.to_css()
+                                        } ⎉ ⎇ is_cursor {
+                                            PHTHALO.with_alpha(0.8).to_css()
+                                        } ⎉ ⎇ is_selected {
+                                            PHTHALO.with_alpha(0.5).to_css()
+                                        } ⎉ {
+                                            SILVER.with_alpha(0.3).to_css()
+                                        },
+                                        border: ⎇ is_cursor && self.props.edit_mode {
+                                            format!("2px solid {}", PHTHALO.to_css())
+                                        } ⎉ {
+                                            "none"
+                                        },
+                                        display: "flex",
+                                        align_items: "center",
+                                        justify_content: "center",
+                                        font_size: "9px",
+                                        color: ⎇ is_active || is_cursor { VOID.to_css() } ⎉ { SILVER.to_css() },
+                                        font_weight: "bold",
+                                        box_shadow: ⎇ is_cursor && self.props.edit_mode {
+                                            format!("0 0 8px {}", PHTHALO.with_alpha(0.5).to_css())
+                                        } ⎉ {
+                                            "none"
+                                        },
+                                    }}>
+                                        // Show input buffer at cursor position
+                                        ⎇ is_cursor && !self.props.input_buffer.is_empty() {
+                                            {&self.props.input_buffer}
+                                        } ⎉ ⎇ self.props.show_names || is_active {
+                                            ⎇ self.props.show_intervals && self.props.root.is_some() {
+                                                {self.interval_name(midi)}
+                                            } ⎉ {
+                                                {self.note_name(midi)}
+                                            }
+                                        }
+                                    </div>
+                                }
+
+                                // Cursor indicator when no note shown
+                                ⎇ is_cursor && !is_active && !in_scale {
+                                    <div style={style! {
+                                        width: "18px",
+                                        height: "18px",
+                                        border_radius: "50%",
+                                        border: format!("2px dashed {}", PHTHALO.to_css()),
+                                        display: "flex",
+                                        align_items: "center",
+                                        justify_content: "center",
+                                        font_size: "9px",
+                                        color: PHTHALO.to_css(),
+                                        animation: ⎇ self.props.edit_mode { "pulse 1s infinite" } ⎉ { "none" },
+                                    }}>
+                                        ⎇ !self.props.input_buffer.is_empty() {
+                                            {&self.props.input_buffer}
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+
+                // Fret numbers
+                <div class="fret-numbers" style={style! {
+                    display: "flex",
+                    margin_left: "32px",
+                    margin_top: "4px",
+                    width: px(neck_width),
+                }}>
+                    ∀ fret ∈ 1..=self.props.frets {
+                        ≔ w = self.fret_width(fret - 1, neck_width);
+                        <span style={style! {
+                            width: px(w),
+                            text_align: "center",
+                            font_size: "9px",
+                            color: SILVER.with_alpha(0.5).to_css(),
+                        }}>
+                            {fret.to_string()}
+                        </span>
+                    }
+                </div>
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_midi_note_calculation() {
+        ≔ fb = Fretboard·new(FretboardProps::default());
+
+        // High E string (64) at fret 0 = 64
+        assert_eq!(fb.midi_note(0, 0), 64);
+
+        // High E string at fret 5 = 69 (A4)
+        assert_eq!(fb.midi_note(0, 5), 69);
+
+        // Low E string (40) at fret 12 = 52
+        assert_eq!(fb.midi_note(5, 12), 52);
+    }
+
+    //@ rune: test
+    rite test_note_names() {
+        ≔ fb = Fretboard·new(FretboardProps·default());
+
+        assert_eq!(fb.note_name(60), "C");   // Middle C
+        assert_eq!(fb.note_name(64), "E");   // High E string
+        assert_eq!(fb.note_name(69), "A");   // A440
+    }
+
+    //@ rune: test
+    rite test_scale_contains() {
+        ≔ major = Scale·major();
+
+        // C major scale starting from C (60)
+        assert!(major.contains(60, 60));  // C - root
+        assert!(major.contains(60, 62));  // D - 2nd
+        assert!(major.contains(60, 64));  // E - 3rd
+        assert!(!major.contains(60, 61)); // C# - not in scale
+        assert!(!major.contains(60, 63)); // D# - not in scale
+    }
+
+    //@ rune: test
+    rite test_fret_position_increases() {
+        ≔ fb = Fretboard·new(FretboardProps·default());
+        ≔ width = 600.0;
+
+        ≔ pos_1 = fb.fret_position(1, width);
+        ≔ pos_5 = fb.fret_position(5, width);
+        ≔ pos_12 = fb.fret_position(12, width);
+
+        assert!(pos_1 < pos_5);
+        assert!(pos_5 < pos_12);
+
+        // Frets should get closer together
+        ≔ width_1 = fb.fret_width(1, width);
+        ≔ width_5 = fb.fret_width(5, width);
+        ≔ width_12 = fb.fret_width(12, width);
+
+        assert!(width_1 > width_5);
+        assert!(width_5 > width_12);
+    }
+}

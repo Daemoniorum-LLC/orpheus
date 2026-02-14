@@ -1,0 +1,494 @@
+//! AlphaTab Integration Bridge
+//!
+//! Provides WASM exports and TEX conversion for AlphaTab integration.
+//! AlphaTab is a JavaScript library for professional music notation rendering.
+//!
+//! ## Architecture
+//!
+//! - Sigil manages state and converts TabScore to alphaTab TEX format
+//! - JavaScript hosts the AlphaTab library and renders notation
+//! - WASM exports allow JS to query state and receive updates
+//! - WASM imports allow Sigil to control AlphaTab playback
+//!
+//! ## TEX Format
+//!
+//! alphaTab uses a text-based format (TEX) that we convert to.
+//! See: https://www.alphatab.net/docs/alphatex/introduction
+
+invoke crate·editors·tab_editor·*;
+
+// =============================================================================
+// AlphaTab State (Global for WASM)
+// =============================================================================
+
+/// AlphaTab API handle (managed by JS)
+Σ AlphaTabState {
+    /// Handle ID returned from JS alphatab.create_api
+    api_handle: i64,
+    /// Is AlphaTab initialized
+    initialized: bool,
+    /// Is currently playing
+    is_playing: bool,
+    /// Current playback position (ms)
+    position_ms: f64,
+    /// Current playback position (beats)
+    position_beats: f64,
+    /// Tempo multiplier (for speed training)
+    tempo_multiplier: f64,
+    /// Loop start position (beats, -1 = no loop)
+    loop_start: f64,
+    /// Loop end position (beats, -1 = no loop)
+    loop_end: f64,
+    /// Metronome enabled
+    metronome: bool,
+    /// Count-in enabled
+    count_in: bool,
+}
+
+⊢ ◊ AlphaTabState {
+    rite default() -> Self {
+        Self {
+            api_handle: -1,
+            initialized: false,
+            is_playing: false,
+            position_ms: 0.0,
+            position_beats: 0.0,
+            tempo_multiplier: 1.0,
+            loop_start: -1.0,
+            loop_end: -1.0,
+            metronome: false,
+            count_in: false,
+        }
+    }
+}
+
+/// Global AlphaTab state
+☉ Δ ALPHATAB_STATE: AlphaTabState = AlphaTabState {
+    api_handle: -1,
+    initialized: false,
+    is_playing: false,
+    position_ms: 0.0,
+    position_beats: 0.0,
+    tempo_multiplier: 1.0,
+    loop_start: -1.0,
+    loop_end: -1.0,
+    metronome: false,
+    count_in: false,
+};
+
+// =============================================================================
+// JS Imports (AlphaTab API)
+// =============================================================================
+
+// These imports are provided by the JavaScript runtime
+extern "wasm" {
+    /// Create an AlphaTab API instance
+    /// Returns a handle ID for subsequent calls
+    fn alphatab_create(container_selector: &str, settings_json: &str) -> i64;
+
+    /// Load a TEX string into AlphaTab
+    fn alphatab_load_tex(handle: i64, tex: &str);
+
+    /// Start playback
+    fn alphatab_play(handle: i64);
+
+    /// Pause playback
+    fn alphatab_pause(handle: i64);
+
+    /// Stop playback and reset position
+    fn alphatab_stop(handle: i64);
+
+    /// Seek to position (in milliseconds)
+    fn alphatab_seek(handle: i64, position_ms: f64);
+
+    /// Set tempo multiplier (1.0 = normal, 0.5 = half speed, 2.0 = double)
+    fn alphatab_set_tempo(handle: i64, multiplier: f64);
+
+    /// Set loop region (start/end in beats, -1 to disable)
+    fn alphatab_set_loop(handle: i64, start_beat: f64, end_beat: f64);
+
+    /// Enable/disable metronome
+    fn alphatab_set_metronome(handle: i64, enabled: bool);
+
+    /// Enable/disable count-in
+    fn alphatab_set_count_in(handle: i64, enabled: bool);
+
+    /// Destroy the AlphaTab instance
+    fn alphatab_destroy(handle: i64);
+}
+
+// =============================================================================
+// WASM Exports (Called by JS)
+// =============================================================================
+
+/// Initialize AlphaTab with a container selector
+//@ rune: export
+☉ rite alphatab_init(container_selector: &str) -> i64 {
+    ⎇ ALPHATAB_STATE.initialized {
+        ⮐ ALPHATAB_STATE.api_handle;
+    }
+
+    // Default settings
+    ≔ settings = r#"{
+        "core": {
+            "fontDirectory": "/fonts/",
+            "engine": "html5"
+        },
+        "display": {
+            "staveProfile": "Default",
+            "layoutMode": "Page",
+            "scale": 1.0
+        },
+        "player": {
+            "enablePlayer": true,
+            "soundFont": "/soundfont/sonivox.sf2",
+            "scrollElement": null
+        }
+    }"#;
+
+    ≔ handle = alphatab_create(container_selector, settings);
+    ALPHATAB_STATE.api_handle = handle;
+    ALPHATAB_STATE.initialized = handle >= 0;
+    handle
+}
+
+/// Called by JS when playback position changes
+//@ rune: export
+☉ rite alphatab_on_position_changed(position_ms: f64, position_beats: f64) {
+    ALPHATAB_STATE.position_ms = position_ms;
+    ALPHATAB_STATE.position_beats = position_beats;
+}
+
+/// Called by JS when playback state changes
+//@ rune: export
+☉ rite alphatab_on_playback_state_changed(is_playing: i64) {
+    ALPHATAB_STATE.is_playing = is_playing != 0;
+}
+
+/// Get current playback position in beats
+//@ rune: export
+☉ rite alphatab_get_position_beats() -> f64 {
+    ALPHATAB_STATE.position_beats
+}
+
+/// Get current playback position in milliseconds
+//@ rune: export
+☉ rite alphatab_get_position_ms() -> f64 {
+    ALPHATAB_STATE.position_ms
+}
+
+/// Check if AlphaTab is playing
+//@ rune: export
+☉ rite alphatab_is_playing() -> i64 {
+    ⎇ ALPHATAB_STATE.is_playing { 1 } ⎉ { 0 }
+}
+
+/// Play the current score
+//@ rune: export
+☉ rite alphatab_play_score() {
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_play(ALPHATAB_STATE.api_handle);
+    }
+}
+
+/// Pause playback
+//@ rune: export
+☉ rite alphatab_pause_score() {
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_pause(ALPHATAB_STATE.api_handle);
+    }
+}
+
+/// Stop playback
+//@ rune: export
+☉ rite alphatab_stop_score() {
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_stop(ALPHATAB_STATE.api_handle);
+    }
+}
+
+/// Seek to position in beats
+//@ rune: export
+☉ rite alphatab_seek_to_beat(beat: f64) {
+    ⎇ ALPHATAB_STATE.initialized {
+        // Convert beats to ms (rough estimate, AlphaTab handles tempo)
+        ≔ ms = beat * 500.0; // Assumes 120 BPM as baseline
+        alphatab_seek(ALPHATAB_STATE.api_handle, ms);
+    }
+}
+
+/// Set playback speed (0.5 = half, 1.0 = normal, 2.0 = double)
+//@ rune: export
+☉ rite alphatab_set_speed(multiplier: f64) {
+    ALPHATAB_STATE.tempo_multiplier = multiplier.clamp(0.25, 4.0);
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_set_tempo(ALPHATAB_STATE.api_handle, ALPHATAB_STATE.tempo_multiplier);
+    }
+}
+
+/// Set loop region
+//@ rune: export
+☉ rite alphatab_set_loop_region(start_beat: f64, end_beat: f64) {
+    ALPHATAB_STATE.loop_start = start_beat;
+    ALPHATAB_STATE.loop_end = end_beat;
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_set_loop(ALPHATAB_STATE.api_handle, start_beat, end_beat);
+    }
+}
+
+/// Clear loop region
+//@ rune: export
+☉ rite alphatab_clear_loop() {
+    ALPHATAB_STATE.loop_start = -1.0;
+    ALPHATAB_STATE.loop_end = -1.0;
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_set_loop(ALPHATAB_STATE.api_handle, -1.0, -1.0);
+    }
+}
+
+/// Toggle metronome
+//@ rune: export
+☉ rite alphatab_toggle_metronome() -> i64 {
+    ALPHATAB_STATE.metronome = !ALPHATAB_STATE.metronome;
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_set_metronome(ALPHATAB_STATE.api_handle, ALPHATAB_STATE.metronome);
+    }
+    ⎇ ALPHATAB_STATE.metronome { 1 } ⎉ { 0 }
+}
+
+/// Toggle count-in
+//@ rune: export
+☉ rite alphatab_toggle_count_in() -> i64 {
+    ALPHATAB_STATE.count_in = !ALPHATAB_STATE.count_in;
+    ⎇ ALPHATAB_STATE.initialized {
+        alphatab_set_count_in(ALPHATAB_STATE.api_handle, ALPHATAB_STATE.count_in);
+    }
+    ⎇ ALPHATAB_STATE.count_in { 1 } ⎉ { 0 }
+}
+
+// =============================================================================
+// TEX Conversion
+// =============================================================================
+
+/// Convert a TabScore to alphaTab TEX format
+☉ rite convert_to_tex(score: &TabScore) -> String! {
+    ≔ Δ tex = String·new();
+
+    // Header
+    tex.push_str("\\title \"");
+    tex.push_str(&score.title);
+    tex.push_str("\"\n");
+
+    tex.push_str("\\artist \"");
+    tex.push_str(&score.artist);
+    tex.push_str("\"\n");
+
+    tex.push_str("\\tempo ");
+    tex.push_str(&score.tempo.to_string());
+    tex.push_str("\n");
+
+    // Track info (use primary track or legacy)
+    ≔ tuning = ⎇ ≔ Some(track) = score.tracks.first() {
+        &track.tuning
+    } ⎉ {
+        &score.tuning
+    };
+
+    tex.push_str("\\tuning ");
+    ∀ (i, &midi) ∈ tuning.iter().enumerate() {
+        ⎇ i > 0 { tex.push_str(" "); }
+        tex.push_str(&midi_to_note_name(midi));
+    }
+    tex.push_str("\n");
+
+    tex.push_str(".\n"); // Start track content
+
+    // Measures
+    ≔ measures = ⎇ ≔ Some(track) = score.tracks.first() {
+        &track.measures
+    } ⎉ {
+        &score.measures
+    };
+
+    ∀ (measure_idx, measure) ∈ measures.iter().enumerate() {
+        // Time signature at start of measure or when changed
+        ⎇ measure_idx == 0 || (measure_idx > 0 && measures[measure_idx - 1].time_signature != measure.time_signature) {
+            tex.push_str("\\ts ");
+            tex.push_str(&measure.time_signature.numerator.to_string());
+            tex.push_str(" ");
+            tex.push_str(&measure.time_signature.denominator.to_string());
+            tex.push_str("\n");
+        }
+
+        // Notes in measure
+        ⎇ measure.notes.is_empty() {
+            // Rest measure
+            tex.push_str("r.1 ");
+        } ⎉ {
+            // Group notes by position into beats
+            ≔ Δ beats: std·collections·HashMap<u8, Vec<&TabNote>> = std·collections·HashMap·new();
+            ∀ note ∈ &measure.notes {
+                beats.entry(note.position).or_insert_with(Vec·new).push(note);
+            }
+
+            // Sort positions
+            ≔ Δ positions: Vec<u8> = beats.keys().cloned().collect();
+            positions.sort();
+
+            ∀ pos ∈ positions {
+                ⎇ ≔ Some(notes) = beats.get(&pos) {
+                    ⎇ notes.len() == 1 {
+                        // Single note
+                        tex.push_str(&note_to_tex(notes[0]));
+                    } ⎉ {
+                        // Chord (multiple notes)
+                        tex.push_str("(");
+                        ∀ (i, note) ∈ notes.iter().enumerate() {
+                            ⎇ i > 0 { tex.push_str(" "); }
+                            tex.push_str(&note_to_tex(note));
+                        }
+                        tex.push_str(")");
+                    }
+                    tex.push_str(" ");
+                }
+            }
+        }
+
+        tex.push_str("|\n"); // Measure separator
+    }
+
+    tex
+}
+
+/// Convert a single note to TEX
+rite note_to_tex(note: &TabNote) -> String! {
+    ≔ Δ tex = String·new();
+
+    // Fret.String format
+    tex.push_str(&note.fret.to_string());
+    tex.push_str(".");
+    tex.push_str(&note.string.to_string());
+
+    // Duration (simplified - use quarter note default)
+    tex.push_str("{d4}");
+
+    // Techniques
+    ∀ tech ∈ &note.techniques {
+        ⌥ tech {
+            Technique·HammerOn { .. } => tex.push_str("{h}"),
+            Technique·PullOff { .. } => tex.push_str("{p}"),
+            Technique·Slide { .. } => tex.push_str("{s}"),
+            Technique·Bend { .. } => tex.push_str("{b}"),
+            Technique·Vibrato { .. } => tex.push_str("{v}"),
+            Technique·PalmMute => tex.push_str("{pm}"),
+            Technique·Harmonic { .. } => tex.push_str("{nh}"),
+            Technique·Tap => tex.push_str("{t}"),
+            Technique·LetRing => tex.push_str("{lr}"),
+            Technique·GhostNote => tex.push_str("{g}"),
+            Technique·Staccato => tex.push_str("{st}"),
+            Technique·Accent => tex.push_str("{ac}"),
+            Technique·TremoloPicking { .. } => tex.push_str("{tp}"),
+            Technique·Trill { .. } => tex.push_str("{tr}"),
+            _ => {}
+        }
+    }
+
+    // Legacy technique
+    ⎇ ≔ Some(ref tech) = note.technique {
+        ⌥ tech {
+            NoteTechnique·HammerOn => tex.push_str("{h}"),
+            NoteTechnique·PullOff => tex.push_str("{p}"),
+            NoteTechnique·Slide => tex.push_str("{s}"),
+            NoteTechnique·Bend { .. } => tex.push_str("{b}"),
+            NoteTechnique·Vibrato => tex.push_str("{v}"),
+            NoteTechnique·PalmMute => tex.push_str("{pm}"),
+            NoteTechnique·Harmonic => tex.push_str("{nh}"),
+            NoteTechnique·Tap => tex.push_str("{t}"),
+            NoteTechnique·LetRing => tex.push_str("{lr}"),
+        }
+    }
+
+    // Note flags
+    ⎇ note.ghost { tex.push_str("{g}"); }
+    ⎇ note.dead { tex.push_str("{x}"); }
+    ⎇ note.accent { tex.push_str("{ac}"); }
+    ⎇ note.let_ring { tex.push_str("{lr}"); }
+
+    tex
+}
+
+/// Convert MIDI note number to note name (e.g., 64 -> "E4")
+rite midi_to_note_name(midi: u8) -> String! {
+    ≔ notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    ≔ note = notes[(midi % 12) as usize];
+    ≔ octave = (midi / 12) as i8 - 1;
+    format!("{}{}", note, octave)
+}
+
+/// Load a TabScore into AlphaTab
+//@ rune: export
+☉ rite alphatab_load_score(score: &TabScore) {
+    ⎇ !ALPHATAB_STATE.initialized {
+        ⮐;
+    }
+
+    ≔ tex = convert_to_tex(score);
+    alphatab_load_tex(ALPHATAB_STATE.api_handle, &tex);
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_midi_to_note_name() {
+        assert_eq!(midi_to_note_name(60), "C4");
+        assert_eq!(midi_to_note_name(64), "E4");
+        assert_eq!(midi_to_note_name(69), "A4");
+        assert_eq!(midi_to_note_name(40), "E2");
+    }
+
+    //@ rune: test
+    rite test_note_to_tex_simple() {
+        ≔ note = TabNote {
+            string: 1,
+            fret: 5,
+            position: 0,
+            duration: 4,
+            velocity: 80,
+            techniques: vec![],
+            technique: None,
+            let_ring: false,
+            accent: false,
+            ghost: false,
+            dead: false,
+        };
+
+        ≔ tex = note_to_tex(&note);
+        assert!(tex.contains("5.1"));
+    }
+
+    //@ rune: test
+    rite test_note_to_tex_with_technique() {
+        ≔ note = TabNote {
+            string: 2,
+            fret: 7,
+            position: 0,
+            duration: 4,
+            velocity: 80,
+            techniques: vec![Technique·HammerOn { target_fret: 9 }],
+            technique: None,
+            let_ring: false,
+            accent: false,
+            ghost: false,
+            dead: false,
+        };
+
+        ≔ tex = note_to_tex(&note);
+        assert!(tex.contains("7.2"));
+        assert!(tex.contains("{h}"));
+    }
+}

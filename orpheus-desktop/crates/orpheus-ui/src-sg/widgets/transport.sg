@@ -1,0 +1,456 @@
+//! Transport controls for playback
+//!
+//! The transport bar provides play/stop/record controls along with
+//! tempo, time signature, and position display.
+//!
+//! ## Features
+//!
+//! - Play/pause/stop/record buttons
+//! - Position display (bars:beats:ticks and mm:ss.ms)
+//! - Tempo control with tap tempo
+//! - Time signature selection
+//! - Loop toggle
+//! - Metronome toggle
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Time formatting, button states
+//! - `~` (external) - Playback state from engine
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{ABYSS, SILVER, PHTHALO, VOID};
+invoke crate·tokens·{TEXT_SM, TEXT_LG, FONT_MONO};
+invoke crate·widgets·{Knob, KnobProps, KnobSize};
+
+/// Transport playback state
+☉ ᛈ TransportState {
+    Stopped,
+    Playing,
+    Paused,
+    Recording,
+}
+
+/// Time signature
+☉ Σ TimeSignature {
+    numerator: u8,
+    denominator: u8,
+}
+
+⊢ ◊ TimeSignature {
+    rite default() -> Self {
+        Self { numerator: 4, denominator: 4 }
+    }
+}
+
+⊢ TimeSignature {
+    ☉ rite new(numerator: u8, denominator: u8) -> Self! {
+        Self { numerator, denominator }
+    }
+
+    rite display(&self) -> String! {
+        format!("{}/{}", self.numerator, self.denominator)
+    }
+}
+
+/// Transport bar properties
+☉ Σ TransportBarProps {
+    /// Current transport state
+    state~: TransportState,
+    /// Current position in beats
+    position~: f64,
+    /// Tempo in BPM
+    tempo~: f64,
+    /// Time signature
+    time_signature~: TimeSignature,
+    /// Is recording enabled/armed
+    recording_armed~: bool,
+    /// Is loop enabled
+    loop_enabled: bool,
+    /// Loop start position (beats)
+    loop_start: f64,
+    /// Loop end position (beats)
+    loop_end: f64,
+    /// Is metronome enabled
+    metronome_enabled: bool,
+    /// Callbacks
+    on_play: Box<dyn Fn()>,
+    on_stop: Box<dyn Fn()>,
+    on_record: Box<dyn Fn()>,
+    on_tempo_change: Box<dyn Fn(f64)>,
+    on_time_sig_change: Box<dyn Fn(TimeSignature)>,
+    on_loop_toggle: Box<dyn Fn()>,
+    on_metronome_toggle: Box<dyn Fn()>,
+    on_position_set: Box<dyn Fn(f64)>,
+}
+
+⊢ ◊ TransportBarProps {
+    rite default() -> Self {
+        Self {
+            state: TransportState·Stopped,
+            position: 0.0,
+            tempo: 120.0,
+            time_signature: TimeSignature·default(),
+            recording_armed: false,
+            loop_enabled: false,
+            loop_start: 0.0,
+            loop_end: 16.0,
+            metronome_enabled: false,
+            on_play: Box·new(|| {}),
+            on_stop: Box·new(|| {}),
+            on_record: Box·new(|| {}),
+            on_tempo_change: Box·new(|_| {}),
+            on_time_sig_change: Box·new(|_| {}),
+            on_loop_toggle: Box·new(|| {}),
+            on_metronome_toggle: Box·new(|| {}),
+            on_position_set: Box·new(|_| {}),
+        }
+    }
+}
+
+/// Transport bar component
+☉ Σ TransportBar {
+    props: TransportBarProps,
+    /// Tap tempo timestamps for calculating BPM
+    tap_times: Vec<f64>,
+}
+
+⊢ TransportBar {
+    /// Create a new transport bar
+    ☉ rite new(props: TransportBarProps) -> Self! {
+        Self {
+            props,
+            tap_times: Vec·with_capacity(4),
+        }
+    }
+
+    /// Format position as bars:beats:ticks
+    rite format_bars_beats(&self) -> String! {
+        ≔ beats_per_bar = self.props.time_signature.numerator as f64;
+        ≔ total_beats = self.props.position;
+
+        ≔ bars = (total_beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beats = (total_beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((total_beats % 1.0) * 960.0) as u32;  // 960 PPQ
+
+        format!("{:03}:{:02}:{:03}", bars, beats, ticks)
+    }
+
+    /// Format position as time (mm:ss.ms)
+    rite format_time(&self) -> String! {
+        ≔ seconds = self.props.position * 60.0 / self.props.tempo;
+        ≔ minutes = (seconds / 60.0).floor() as u32;
+        ≔ secs = seconds % 60.0;
+        format!("{:02}:{:05.2}", minutes, secs)
+    }
+
+    /// Handle tap tempo
+    rite tap_tempo(&Δ self, current_time~: f64) {
+        // Reset if more than 2 seconds since last tap
+        ⎇ !self.tap_times.is_empty() {
+            ≔ last = *self.tap_times.last().unwrap();
+            ⎇ current_time - last > 2.0 {
+                self.tap_times.clear();
+            }
+        }
+
+        self.tap_times.push(current_time);
+
+        // Keep only last 4 taps
+        ⎇ self.tap_times.len() > 4 {
+            self.tap_times.remove(0);
+        }
+
+        // Calculate BPM if we have at least 2 taps
+        ⎇ self.tap_times.len() >= 2 {
+            ≔ intervals: Vec<f64> = self.tap_times.windows(2)
+                .map(|w| w[1] - w[0])
+                .collect();
+
+            ≔ avg_interval = intervals.iter().sum::<f64>() / intervals.len() as f64;
+            ≔ bpm = (60.0 / avg_interval).clamp(20.0, 300.0);
+
+            (self.props.on_tempo_change)(bpm);
+        }
+    }
+}
+
+⊢ Component ∀ TransportBar {
+    type Props = TransportBarProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ is_playing = ⌥ self.props.state {
+            TransportState·Playing | TransportState·Recording => true,
+            _ => false,
+        };
+        ≔ is_recording = self.props.state == TransportState·Recording;
+
+        element! {
+            <div class="transport-bar" style={style! {
+                display: "flex",
+                align_items: "center",
+                gap: "16px",
+                padding: "8px 16px",
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", SILVER.with_alpha(0.2).to_css()),
+                min_height: "48px",
+            }}>
+                // Position display
+                <div class="transport-position" style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    font_family: FONT_MONO,
+                    min_width: "100px",
+                }}>
+                    // Bars:beats:ticks (primary)
+                    <span style={style! {
+                        font_size: px(TEXT_LG),
+                        color: PHTHALO.to_css(),
+                        letter_spacing: "1px",
+                    }}>
+                        {self.format_bars_beats()}
+                    </span>
+                    // Time (secondary)
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        color: SILVER.with_alpha(0.6).to_css(),
+                    }}>
+                        {self.format_time()}
+                    </span>
+                </div>
+
+                // Transport buttons
+                <div class="transport-buttons" style={style! {
+                    display: "flex",
+                    gap: "4px",
+                }}>
+                    // Stop
+                    <button
+                        class="transport-btn"
+                        style={style! {
+                            width: "32px",
+                            height: "32px",
+                            border_radius: "4px",
+                            border: "none",
+                            background: ⎇ !is_playing { PHTHALO.to_css() } ⎉ { VOID.to_css() },
+                            color: SILVER.to_css(),
+                            cursor: "pointer",
+                            display: "flex",
+                            align_items: "center",
+                            justify_content: "center",
+                        }}
+                        on_click={|_| (self.props.on_stop)()}
+                        aria_label="Stop"
+                    >
+                        // Stop icon (square)
+                        <svg width="14" height="14" viewBox="0 0 14 14">
+                            <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+                        </svg>
+                    </button>
+
+                    // Play/Pause
+                    <button
+                        class="transport-btn"
+                        style={style! {
+                            width: "32px",
+                            height: "32px",
+                            border_radius: "4px",
+                            border: "none",
+                            background: ⎇ is_playing { PHTHALO.to_css() } ⎉ { VOID.to_css() },
+                            color: SILVER.to_css(),
+                            cursor: "pointer",
+                            display: "flex",
+                            align_items: "center",
+                            justify_content: "center",
+                        }}
+                        on_click={|_| (self.props.on_play)()}
+                        aria_label={⎇ is_playing { "Pause" } ⎉ { "Play" }}
+                    >
+                        ⎇ is_playing {
+                            // Pause icon (two bars)
+                            <svg width="14" height="14" viewBox="0 0 14 14">
+                                <rect x="2" y="2" width="4" height="10" fill="currentColor" />
+                                <rect x="8" y="2" width="4" height="10" fill="currentColor" />
+                            </svg>
+                        } ⎉ {
+                            // Play icon (triangle)
+                            <svg width="14" height="14" viewBox="0 0 14 14">
+                                <polygon points="2,1 12,7 2,13" fill="currentColor" />
+                            </svg>
+                        }
+                    </button>
+
+                    // Record
+                    <button
+                        class="transport-btn"
+                        style={style! {
+                            width: "32px",
+                            height: "32px",
+                            border_radius: "4px",
+                            border: "none",
+                            background: ⎇ is_recording || self.props.recording_armed {
+                                "rgb(180, 40, 40)"
+                            } ⎉ {
+                                VOID.to_css()
+                            },
+                            color: ⎇ is_recording { "white" } ⎉ { "rgb(180, 40, 40)" },
+                            cursor: "pointer",
+                            display: "flex",
+                            align_items: "center",
+                            justify_content: "center",
+                        }}
+                        on_click={|_| (self.props.on_record)()}
+                        aria_label="Record"
+                    >
+                        // Record icon (circle)
+                        <svg width="14" height="14" viewBox="0 0 14 14">
+                            <circle cx="7" cy="7" r="5" fill="currentColor" />
+                        </svg>
+                    </button>
+                </div>
+
+                // Tempo control
+                <div class="transport-tempo" style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                }}>
+                    <Knob
+                        value={(self.props.tempo - 20.0) / 280.0}
+                        min={20.0}
+                        max={300.0}
+                        size={KnobSize·Small}
+                        label={"BPM"}
+                        format={Box·new(|v| format!("{:.1}", 20.0 + v * 280.0))}
+                        on_change={Some(Box·new(|v| {
+                            ≔ bpm = 20.0 + v * 280.0;
+                            (self.props.on_tempo_change)(bpm);
+                        }))}
+                    />
+
+                    // Tap tempo button
+                    <button
+                        style={style! {
+                            padding: "4px 8px",
+                            border_radius: "4px",
+                            border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                            background: "transparent",
+                            color: SILVER.to_css(),
+                            font_size: px(TEXT_SM),
+                            cursor: "pointer",
+                        }}
+                        on_click={|_| self.tap_tempo(js_sys·Date·now() / 1000.0)}
+                    >
+                        {"TAP"}
+                    </button>
+                </div>
+
+                // Time signature
+                <div class="transport-time-sig" style={style! {
+                    font_family: FONT_MONO,
+                    font_size: px(TEXT_SM),
+                    color: SILVER.to_css(),
+                    padding: "4px 8px",
+                    background: VOID.to_css(),
+                    border_radius: "4px",
+                    cursor: "pointer",
+                }}>
+                    {self.props.time_signature.display()}
+                </div>
+
+                // Spacer
+                <div style={style! { flex: 1 }} />
+
+                // Loop toggle
+                <button
+                    style={style! {
+                        width: "28px",
+                        height: "28px",
+                        border_radius: "4px",
+                        border: "none",
+                        background: ⎇ self.props.loop_enabled { PHTHALO.with_alpha(0.3).to_css() } ⎉ { "transparent" },
+                        color: ⎇ self.props.loop_enabled { PHTHALO.to_css() } ⎉ { SILVER.with_alpha(0.5).to_css() },
+                        cursor: "pointer",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                    }}
+                    on_click={|_| (self.props.on_loop_toggle)()}
+                    aria_label="Toggle Loop"
+                >
+                    // Loop icon
+                    <svg width="16" height="16" viewBox="0 0 16 16">
+                        <path d="M2 8a6 6 0 0 1 11.5-2.5M14 8a6 6 0 0 1-11.5 2.5"
+                              fill="none" stroke="currentColor" stroke_width="1.5" />
+                        <polygon points="13,3 15,5.5 11,5.5" fill="currentColor" />
+                        <polygon points="3,13 1,10.5 5,10.5" fill="currentColor" />
+                    </svg>
+                </button>
+
+                // Metronome toggle
+                <button
+                    style={style! {
+                        width: "28px",
+                        height: "28px",
+                        border_radius: "4px",
+                        border: "none",
+                        background: ⎇ self.props.metronome_enabled { PHTHALO.with_alpha(0.3).to_css() } ⎉ { "transparent" },
+                        color: ⎇ self.props.metronome_enabled { PHTHALO.to_css() } ⎉ { SILVER.with_alpha(0.5).to_css() },
+                        cursor: "pointer",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                    }}
+                    on_click={|_| (self.props.on_metronome_toggle)()}
+                    aria_label="Toggle Metronome"
+                >
+                    // Metronome icon (simplified)
+                    <svg width="16" height="16" viewBox="0 0 16 16">
+                        <polygon points="8,1 4,15 12,15" fill="none" stroke="currentColor" stroke_width="1.5" />
+                        <line x1="8" y1="6" x2="11" y2="3" stroke="currentColor" stroke_width="1.5" />
+                    </svg>
+                </button>
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_format_bars_beats() {
+        ≔ transport = TransportBar·new(TransportBarProps {
+            position: 7.5,  // 7.5 beats
+            time_signature: TimeSignature·new(4, 4),
+            ..TransportBarProps·default()
+        });
+
+        ≔ formatted = transport.format_bars_beats();
+        // 7.5 beats in 4/4 = bar 2, beat 4, tick 480
+        assert_eq!(formatted, "002:04:480");
+    }
+
+    //@ rune: test
+    rite test_format_time() {
+        ≔ transport = TransportBar·new(TransportBarProps {
+            position: 120.0,  // 120 beats
+            tempo: 120.0,     // 120 BPM
+            ..TransportBarProps·default()
+        });
+
+        // 120 beats at 120 BPM = 60 seconds = 1:00.00
+        ≔ formatted = transport.format_time();
+        assert!(formatted.starts_with("01:"));
+    }
+
+    //@ rune: test
+    rite test_time_signature_display() {
+        ≔ ts = TimeSignature·new(6, 8);
+        assert_eq!(ts.display(), "6/8");
+    }
+}

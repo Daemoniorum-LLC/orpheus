@@ -1,0 +1,499 @@
+//! Dockable panel layout system
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Panel sizes, positions
+//! - `~` (external) - Dock state persisted from storage
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Minimum panel size in pixels
+Λ MIN_PANEL_SIZE: f32 = 100.0;
+
+/// Resize handle size
+Λ HANDLE_SIZE: f32 = 6.0;
+
+/// Dock position
+☉ ᛈ DockPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+    Floating { x: f32, y: f32 },
+}
+
+/// Panel state
+☉ Σ PanelState {
+    id: String,
+    title: String,
+    position: DockPosition,
+    size: f32,
+    min_size: f32,
+    visible: bool,
+    collapsed: bool,
+}
+
+/// Dock layout state
+☉ Σ DockState {
+    panels: Vec<PanelState>,
+    active_panel: Option<String>,
+}
+
+⊢ ◊ DockState {
+    rite default() -> Self {
+        Self {
+            panels: vec![],
+            active_panel: None,
+        }
+    }
+}
+
+⊢ DockState {
+    /// Add a panel
+    ☉ rite add_panel(&Δ self, id: &str, title: &str, position: DockPosition, size: f32) {
+        self.panels.push(PanelState {
+            id: id.to_string(),
+            title: title.to_string(),
+            position,
+            size,
+            min_size: MIN_PANEL_SIZE,
+            visible: true,
+            collapsed: false,
+        });
+    }
+
+    /// Get panel by ID
+    rite get_panel(&self, id: &str) -> Option<&PanelState>! {
+        self.panels.iter().find(|p| p.id == id)
+    }
+
+    /// Get mutable panel by ID
+    rite get_panel_mut(&Δ self, id: &str) -> Option<&Δ PanelState>! {
+        self.panels.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Toggle panel visibility
+    ☉ rite toggle_panel(&Δ self, id: &str) {
+        ⎇ ≔ Some(panel) = self.get_panel_mut(id) {
+            panel.visible = !panel.visible;
+        }
+    }
+
+    /// Get panels by position
+    rite panels_at(&self, position: &DockPosition) -> Vec<&PanelState>! {
+        self.panels.iter()
+            .filter(|p| std·mem·discriminant(&p.position) == std·mem·discriminant(position))
+            .collect()
+    }
+}
+
+/// Dock layout properties
+☉ Σ DockLayoutProps {
+    state: DockState,
+    on_state_change: Box<dyn Fn(DockState)>,
+    on_panel_close: Box<dyn Fn(String)>,
+    children: Vec<(String, Element)>,
+}
+
+/// Dock layout component
+☉ Σ DockLayout {
+    props: DockLayoutProps,
+    resizing: Option<ResizeState>,
+    dragging: Option<DragState>,
+}
+
+/// Resize operation state
+☉ Σ ResizeState {
+    panel_id: String,
+    edge: DockPosition,
+    start_size: f32,
+    start_mouse: f32,
+}
+
+/// Drag operation state
+☉ Σ DragState {
+    panel_id: String,
+    start_x: f32,
+    start_y: f32,
+    current_x: f32,
+    current_y: f32,
+}
+
+⊢ DockLayout {
+    ☉ rite new(props: DockLayoutProps) -> Self! {
+        Self {
+            props,
+            resizing: None,
+            dragging: None,
+        }
+    }
+
+    /// Get content for a panel ID
+    rite get_content(&self, id: &str) -> Option<&Element>! {
+        self.props.children.iter()
+            .find(|(panel_id, _)| panel_id == id)
+            .map(|(_, element)| element)
+    }
+
+    /// Calculate layout dimensions
+    rite calculate_layout(&self, bounds: &Rect) -> LayoutDimensions! {
+        ≔ Δ left_width = 0.0;
+        ≔ Δ right_width = 0.0;
+        ≔ Δ top_height = 0.0;
+        ≔ Δ bottom_height = 0.0;
+
+        ∀ panel ∈ &self.props.state.panels {
+            ⎇ panel.visible && !panel.collapsed {
+                ⌥ &panel.position {
+                    DockPosition·Left => left_width = panel.size,
+                    DockPosition·Right => right_width = panel.size,
+                    DockPosition·Top => top_height = panel.size,
+                    DockPosition·Bottom => bottom_height = panel.size,
+                    _ => {}
+                }
+            }
+        }
+
+        LayoutDimensions {
+            left_width,
+            right_width,
+            top_height,
+            bottom_height,
+            center_width: bounds.width - left_width - right_width,
+            center_height: bounds.height - top_height - bottom_height,
+        }
+    }
+
+    /// Render panel header
+    rite render_panel_header(&self, panel: &PanelState) -> Element! {
+        ≔ is_active = self.props.state.active_panel.as_ref() == Some(&panel.id);
+
+        element! {
+            <div class="dock-panel-header" style={style! {
+                display: "flex",
+                align_items: "center",
+                height: "28px",
+                padding: "0 8px",
+                background: ⎇ is_active { PHTHALO.with_alpha(0.2) } ⎉ { ABYSS }.to_css(),
+                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                cursor: "move",
+            }}
+            on_mouse_down={|e| {
+                self.dragging = Some(DragState {
+                    panel_id: panel.id.clone(),
+                    start_x: e.client_x as f32,
+                    start_y: e.client_y as f32,
+                    current_x: e.client_x as f32,
+                    current_y: e.client_y as f32,
+                });
+            }}>
+                // Panel title
+                <span style={style! {
+                    flex: 1,
+                    font_size: px(TEXT_SM),
+                    font_weight: "500",
+                    color: ⎇ is_active { PHTHALO } ⎉ { SILVER }.to_css(),
+                    user_select: "none",
+                }}>
+                    {&panel.title}
+                </span>
+
+                // Collapse button
+                <button style={style! {
+                    width: "20px",
+                    height: "20px",
+                    background: "transparent".to_string(),
+                    border: "none",
+                    color: SILVER.with_alpha(0.6).to_css(),
+                    font_size: px(TEXT_XS),
+                    cursor: "pointer",
+                    display: "flex",
+                    align_items: "center",
+                    justify_content: "center",
+                }}
+                on_click={|_| {
+                    ≔ Δ state = self.props.state.clone();
+                    ⎇ ≔ Some(p) = state.get_panel_mut(&panel.id) {
+                        p.collapsed = !p.collapsed;
+                    }
+                    (self.props.on_state_change)(state);
+                }}>
+                    {⎇ panel.collapsed { "▶" } ⎉ { "▼" }}
+                </button>
+
+                // Close button
+                <button style={style! {
+                    width: "20px",
+                    height: "20px",
+                    background: "transparent".to_string(),
+                    border: "none",
+                    color: SILVER.with_alpha(0.6).to_css(),
+                    font_size: px(TEXT_XS),
+                    cursor: "pointer",
+                    display: "flex",
+                    align_items: "center",
+                    justify_content: "center",
+                }}
+                on_click={|_| (self.props.on_panel_close)(panel.id.clone())}>
+                    {"×"}
+                </button>
+            </div>
+        }
+    }
+
+    /// Render a docked panel
+    rite render_panel(&self, panel: &PanelState, layout: &LayoutDimensions) -> Element! {
+        ≔ (width, height, left, top) = ⌥ &panel.position {
+            DockPosition·Left => (
+                panel.size,
+                layout.center_height,
+                0.0,
+                layout.top_height,
+            ),
+            DockPosition·Right => (
+                panel.size,
+                layout.center_height,
+                layout.left_width + layout.center_width,
+                layout.top_height,
+            ),
+            DockPosition·Top => (
+                layout.center_width + layout.left_width + layout.right_width,
+                panel.size,
+                0.0,
+                0.0,
+            ),
+            DockPosition·Bottom => (
+                layout.center_width + layout.left_width + layout.right_width,
+                panel.size,
+                0.0,
+                layout.top_height + layout.center_height,
+            ),
+            DockPosition·Center => (
+                layout.center_width,
+                layout.center_height,
+                layout.left_width,
+                layout.top_height,
+            ),
+            DockPosition·Floating { x, y } => (
+                panel.size,
+                300.0,
+                *x,
+                *y,
+            ),
+        };
+
+        element! {
+            <div class="dock-panel" style={style! {
+                position: "absolute",
+                left: px(left),
+                top: px(top),
+                width: px(width),
+                height: px(height),
+                background: VOID.to_css(),
+                border: ⌥ &panel.position {
+                    DockPosition·Floating { .. } => format!("1px solid {}", GRID_LINE.to_css()),
+                    _ => "none".to_string(),
+                },
+                display: "flex",
+                flex_direction: "column",
+                overflow: "hidden",
+            }}>
+                // Panel header
+                {self.render_panel_header(panel)}
+
+                // Panel content
+                ⎇ !panel.collapsed {
+                    <div class="dock-panel-content" style={style! {
+                        flex: 1,
+                        overflow: "auto",
+                    }}>
+                        ⎇ ≔ Some(content) = self.get_content(&panel.id) {
+                            {content.clone()}
+                        }
+                    </div>
+                }
+
+                // Resize handles
+                ⌥ &panel.position {
+                    DockPosition·Left => {
+                        <div style={style! {
+                            position: "absolute",
+                            right: 0,
+                            top: 0,
+                            width: px(HANDLE_SIZE),
+                            height: "100%",
+                            cursor: "ew-resize",
+                        }}
+                        on_mouse_down={|e| {
+                            self.resizing = Some(ResizeState {
+                                panel_id: panel.id.clone(),
+                                edge: DockPosition·Left,
+                                start_size: panel.size,
+                                start_mouse: e.client_x as f32,
+                            });
+                        }} />
+                    }
+                    DockPosition·Right => {
+                        <div style={style! {
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            width: px(HANDLE_SIZE),
+                            height: "100%",
+                            cursor: "ew-resize",
+                        }}
+                        on_mouse_down={|e| {
+                            self.resizing = Some(ResizeState {
+                                panel_id: panel.id.clone(),
+                                edge: DockPosition·Right,
+                                start_size: panel.size,
+                                start_mouse: e.client_x as f32,
+                            });
+                        }} />
+                    }
+                    DockPosition·Top => {
+                        <div style={style! {
+                            position: "absolute",
+                            left: 0,
+                            bottom: 0,
+                            width: "100%",
+                            height: px(HANDLE_SIZE),
+                            cursor: "ns-resize",
+                        }}
+                        on_mouse_down={|e| {
+                            self.resizing = Some(ResizeState {
+                                panel_id: panel.id.clone(),
+                                edge: DockPosition·Top,
+                                start_size: panel.size,
+                                start_mouse: e.client_y as f32,
+                            });
+                        }} />
+                    }
+                    DockPosition·Bottom => {
+                        <div style={style! {
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            width: "100%",
+                            height: px(HANDLE_SIZE),
+                            cursor: "ns-resize",
+                        }}
+                        on_mouse_down={|e| {
+                            self.resizing = Some(ResizeState {
+                                panel_id: panel.id.clone(),
+                                edge: DockPosition·Bottom,
+                                start_size: panel.size,
+                                start_mouse: e.client_y as f32,
+                            });
+                        }} />
+                    }
+                    _ => {}
+                }
+            </div>
+        }
+    }
+}
+
+/// Layout dimensions helper
+☉ Σ LayoutDimensions {
+    left_width: f32,
+    right_width: f32,
+    top_height: f32,
+    bottom_height: f32,
+    center_width: f32,
+    center_height: f32,
+}
+
+⊢ Component ∀ DockLayout {
+    type Props = DockLayoutProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bounds = ctx.bounds();
+        ≔ layout = self.calculate_layout(&bounds);
+
+        element! {
+            <div
+                class="dock-layout"
+                style={style! {
+                    position: "relative",
+                    width: "100%",
+                    height: "100%",
+                    background: VOID.to_css(),
+                }}
+                on_mouse_move={|e| {
+                    ⎇ ≔ Some(ref resize) = self.resizing {
+                        ≔ Δ state = self.props.state.clone();
+                        ⎇ ≔ Some(panel) = state.get_panel_mut(&resize.panel_id) {
+                            ≔ delta = ⌥ &resize.edge {
+                                DockPosition·Left => e.client_x as f32 - resize.start_mouse,
+                                DockPosition·Right => resize.start_mouse - e.client_x as f32,
+                                DockPosition·Top => e.client_y as f32 - resize.start_mouse,
+                                DockPosition·Bottom => resize.start_mouse - e.client_y as f32,
+                                _ => 0.0,
+                            };
+                            panel.size = (resize.start_size + delta).max(panel.min_size);
+                        }
+                        (self.props.on_state_change)(state);
+                    }
+
+                    ⎇ ≔ Some(ref Δ drag) = self.dragging {
+                        drag.current_x = e.client_x as f32;
+                        drag.current_y = e.client_y as f32;
+                    }
+                }}
+                on_mouse_up={|_| {
+                    self.resizing = None;
+                    self.dragging = None;
+                }}
+            >
+                // Render all visible panels
+                ∀ panel ∈ &self.props.state.panels {
+                    ⎇ panel.visible {
+                        {self.render_panel(panel, &layout)}
+                    }
+                }
+
+                // Drop zone indicators (when dragging)
+                ⎇ self.dragging.is_some() {
+                    // Left drop zone
+                    <div style={style! {
+                        position: "absolute",
+                        left: 0,
+                        top: px(layout.top_height),
+                        width: "40px",
+                        height: px(layout.center_height),
+                        background: PHTHALO.with_alpha(0.2).to_css(),
+                        border: format!("2px dashed {}", PHTHALO.to_css()),
+                        pointer_events: "none",
+                    }} />
+
+                    // Right drop zone
+                    <div style={style! {
+                        position: "absolute",
+                        right: 0,
+                        top: px(layout.top_height),
+                        width: "40px",
+                        height: px(layout.center_height),
+                        background: PHTHALO.with_alpha(0.2).to_css(),
+                        border: format!("2px dashed {}", PHTHALO.to_css()),
+                        pointer_events: "none",
+                    }} />
+
+                    // Bottom drop zone
+                    <div style={style! {
+                        position: "absolute",
+                        left: 0,
+                        bottom: 0,
+                        width: "100%",
+                        height: "40px",
+                        background: PHTHALO.with_alpha(0.2).to_css(),
+                        border: format!("2px dashed {}", PHTHALO.to_css()),
+                        pointer_events: "none",
+                    }} />
+                }
+            </div>
+        }
+    }
+}

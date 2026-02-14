@@ -1,0 +1,548 @@
+//! Rotary knob control
+//!
+//! A rotary knob widget for parameter control, commonly used for
+//! EQ frequencies, pan, effects parameters, and other continuous values.
+//!
+//! ## Features
+//!
+//! - Arc-style or notched visual modes
+//! - Bipolar mode for centered parameters (pan, gain trim)
+//! - Configurable sensitivity and snap
+//! - Double-click to reset to default
+//! - Keyboard support (arrow keys for fine adjustment)
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Angle calculations, value mapping
+//! - `~` (external) - User drag input, current value
+
+invoke qliphoth_ui·prelude·*;
+invoke std·f32·consts·PI;
+invoke crate·tokens·{ABYSS, SILVER, PHTHALO};
+
+/// Knob visual style
+☉ ᛈ KnobStyle {
+    /// Arc-style knob with value indicator
+    Arc,
+    /// Notched knob with tick marks
+    Notched,
+    /// Simple dot indicator
+    Dot,
+}
+
+/// Knob size preset
+☉ ᛈ KnobSize {
+    /// 24px diameter
+    Small,
+    /// 32px diameter
+    Medium,
+    /// 48px diameter
+    Large,
+}
+
+⊢ KnobSize {
+    /// Get diameter in pixels
+    ☉ rite diameter(&self) -> f32! {
+        ⌥ self {
+            Self·Small => 24.0,
+            Self·Medium => 32.0,
+            Self·Large => 48.0,
+        }
+    }
+}
+
+/// Knob properties
+☉ Σ KnobProps {
+    /// Current value (0.0 - 1.0 normalized)
+    value~: f32,
+    /// Minimum display value
+    min: f32,
+    /// Maximum display value
+    max: f32,
+    /// Default value for reset
+    default_value: f32,
+    /// Value change callback
+    on_change: Option<Box<dyn Fn(f32)>>,
+    /// Display label
+    label: Option<String>,
+    /// Size preset
+    size: KnobSize,
+    /// Visual style
+    style: KnobStyle,
+    /// Show numeric value
+    show_value: bool,
+    /// Value format function
+    format: Option<Box<dyn Fn(f32) -> String>>,
+    /// Bipolar mode (center is zero)
+    bipolar: bool,
+    /// Disabled state
+    disabled: bool,
+    /// Drag sensitivity (default 0.005)
+    sensitivity: f32,
+}
+
+⊢ ◊ KnobProps {
+    rite default() -> Self {
+        Self {
+            value: 0.5,
+            min: 0.0,
+            max: 1.0,
+            default_value: 0.5,
+            on_change: None,
+            label: None,
+            size: KnobSize·Medium,
+            style: KnobStyle·Arc,
+            show_value: true,
+            format: None,
+            bipolar: false,
+            disabled: false,
+            sensitivity: 0.005,
+        }
+    }
+}
+
+/// Rotary knob control component
+☉ Σ Knob {
+    props: KnobProps,
+    /// Is currently being dragged
+    dragging: bool,
+    /// Y position at drag start
+    drag_start_y: f32,
+    /// Value at drag start
+    drag_start_value: f32,
+}
+
+⊢ Knob {
+    /// Create a new knob with props
+    ☉ rite new(props: KnobProps) -> Self! {
+        Self {
+            props,
+            dragging: false,
+            drag_start_y: 0.0,
+            drag_start_value: 0.0,
+        }
+    }
+
+    /// Create a simple knob with just value and callback
+    ☉ rite simple(value~: f32, on_change: impl Fn(f32) + 'static) -> Self! {
+        Self·new(KnobProps {
+            value,
+            on_change: Some(Box·new(on_change)),
+            ..KnobProps·default()
+        })
+    }
+
+    /// Convert normalized value (0-1) to display value
+    rite display_value(&self) -> f32! {
+        self.props.min + (self.props.max - self.props.min) * self.props.value
+    }
+
+    /// Convert normalized value to angle (radians)
+    rite value_to_angle(&self, value: f32) -> f32! {
+        // Knob spans from 135 degrees (bottom-left) to 405 degrees (bottom-right)
+        ≔ start_angle = 0.75 * PI;   // 135 degrees
+        ≔ end_angle = 2.25 * PI;     // 405 degrees (45 degrees past full circle)
+        start_angle + (end_angle - start_angle) * value
+    }
+
+    /// Format value for display
+    rite format_value(&self) -> String! {
+        ⌥ &self.props.format {
+            Some(fmt) => fmt(self.display_value()),
+            None => format!("{:.1}", self.display_value()),
+        }
+    }
+
+    /// Start dragging
+    rite start_drag(&Δ self, y~: f32) {
+        ⎇ self.props.disabled { ⤺; }
+        self.dragging = true;
+        self.drag_start_y = y;
+        self.drag_start_value = self.props.value;
+    }
+
+    /// Handle drag motion
+    rite handle_drag(&Δ self, y~: f32) {
+        ⎇ !self.dragging || self.props.disabled { ⤺; }
+
+        ≔ delta_y = self.drag_start_y - y;  // Inverted: drag up increases
+        ≔ value_delta = delta_y * self.props.sensitivity;
+        ≔ new_value = (self.drag_start_value + value_delta).clamp(0.0, 1.0)!;
+
+        ⎇ ≔ Some(ref on_change) = self.props.on_change {
+            on_change(new_value);
+        }
+        self.props.value = new_value;
+    }
+
+    /// End dragging
+    rite end_drag(&Δ self) {
+        self.dragging = false;
+    }
+
+    /// Reset to default value (double-click)
+    rite reset(&Δ self) {
+        ⎇ self.props.disabled { ⤺; }
+        ⎇ ≔ Some(ref on_change) = self.props.on_change {
+            on_change(self.props.default_value);
+        }
+        self.props.value = self.props.default_value;
+    }
+
+    /// Adjust value by small increment (keyboard)
+    rite adjust(&Δ self, delta: f32) {
+        ⎇ self.props.disabled { ⤺; }
+        ≔ new_value = (self.props.value + delta).clamp(0.0, 1.0)!;
+        ⎇ ≔ Some(ref on_change) = self.props.on_change {
+            on_change(new_value);
+        }
+        self.props.value = new_value;
+    }
+
+    /// Draw SVG arc path
+    rite arc_path(center: Point, radius: f32, start: f32, end: f32) -> String! {
+        ≔ start_x = center.x + radius * start.cos();
+        ≔ start_y = center.y + radius * start.sin();
+        ≔ end_x = center.x + radius * end.cos();
+        ≔ end_y = center.y + radius * end.sin();
+
+        // Determine if arc is greater than 180 degrees
+        ≔ large_arc = ⎇ (end - start).abs() > PI { 1 } ⎉ { 0 };
+
+        format!(
+            "M {} {} A {} {} 0 {} 1 {} {}",
+            start_x, start_y,
+            radius, radius,
+            large_arc,
+            end_x, end_y
+        )
+    }
+}
+
+⊢ Component ∀ Knob {
+    type Props = KnobProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ diameter = self.props.size.diameter();
+        ≔ radius = diameter / 2.0;
+        ≔ center = Point·new(radius, radius);
+        ≔ label_height = ⎇ self.props.label.is_some() || self.props.show_value { 20.0 } ⎉ { 0.0 };
+
+        element! {
+            <div
+                class="knob"
+                style={style! {
+                    width: px(diameter),
+                    height: px(diameter + label_height),
+                    display: "flex",
+                    flex_direction: "column",
+                    align_items: "center",
+                    cursor: ⎇ self.props.disabled { "not-allowed" } ⎉ { "ns-resize" },
+                    opacity: ⎇ self.props.disabled { 0.5 } ⎉ { 1.0 },
+                    user_select: "none",
+                }}
+                on_mouse_down={|e| self.start_drag(e.y)}
+                on_mouse_move={|e| self.handle_drag(e.y)}
+                on_mouse_up={|_| self.end_drag()}
+                on_mouse_leave={|_| self.end_drag()}
+                on_double_click={|_| self.reset()}
+                on_key_down={|e| ⌥ e.key.as_str() {
+                    "ArrowUp" | "ArrowRight" => self.adjust(0.01),
+                    "ArrowDown" | "ArrowLeft" => self.adjust(-0.01),
+                    _ => {},
+                }}
+                tabindex={⎇ self.props.disabled { -1 } ⎉ { 0 }}
+                role="slider"
+                aria_valuenow={self.display_value()}
+                aria_valuemin={self.props.min}
+                aria_valuemax={self.props.max}
+            >
+                <svg width={diameter} height={diameter} viewBox={format!("0 0 {} {}", diameter, diameter)}>
+                    // Background arc (full range)
+                    <path
+                        d={Self·arc_path(center, radius - 4.0, self.value_to_angle(0.0), self.value_to_angle(1.0))}
+                        fill="none"
+                        stroke={SILVER.with_alpha(0.2).to_css()}
+                        stroke_width={3.0}
+                        stroke_linecap="round"
+                    />
+
+                    // Value arc
+                    ⎇ self.props.style == KnobStyle·Arc {
+                        ≔ start = ⎇ self.props.bipolar {
+                            self.value_to_angle(0.5)
+                        } ⎉ {
+                            self.value_to_angle(0.0)
+                        };
+                        ≔ end = self.value_to_angle(self.props.value);
+
+                        // Swap if value is less than center in bipolar mode
+                        ≔ (arc_start, arc_end) = ⎇ self.props.bipolar && self.props.value < 0.5 {
+                            (end, start)
+                        } ⎉ {
+                            (start, end)
+                        };
+
+                        <path
+                            d={Self·arc_path(center, radius - 4.0, arc_start, arc_end)}
+                            fill="none"
+                            stroke={PHTHALO.to_css()}
+                            stroke_width={3.0}
+                            stroke_linecap="round"
+                        />
+                    }
+
+                    // Knob body
+                    <circle
+                        cx={radius}
+                        cy={radius}
+                        r={radius - 8.0}
+                        fill={ABYSS.to_css()}
+                        stroke={SILVER.with_alpha(0.3).to_css()}
+                        stroke_width={1.0}
+                    />
+
+                    // Indicator dot/line
+                    ≔ indicator_angle = self.value_to_angle(self.props.value);
+                    ≔ indicator_radius = radius - 12.0;
+                    <circle
+                        cx={center.x + indicator_radius * indicator_angle.cos()}
+                        cy={center.y + indicator_radius * indicator_angle.sin()}
+                        r={3.0}
+                        fill={SILVER.to_css()}
+                    />
+
+                    // Notches for Notched style
+                    ⎇ self.props.style == KnobStyle·Notched {
+                        ∀ i ∈ 0..=10 {
+                            ≔ notch_value = i as f32 / 10.0;
+                            ≔ notch_angle = self.value_to_angle(notch_value);
+                            ≔ inner = radius - 2.0;
+                            ≔ outer = radius;
+                            <line
+                                x1={center.x + inner * notch_angle.cos()}
+                                y1={center.y + inner * notch_angle.sin()}
+                                x2={center.x + outer * notch_angle.cos()}
+                                y2={center.y + outer * notch_angle.sin()}
+                                stroke={SILVER.with_alpha(0.3).to_css()}
+                                stroke_width={1.0}
+                            />
+                        }
+                    }
+                </svg>
+
+                // Value display
+                ⎇ self.props.show_value {
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.to_css(),
+                        font_family: FONT_MONO,
+                        margin_top: "2px",
+                    }}>
+                        {self.format_value()}
+                    </span>
+                }
+
+                // Label
+                ⎇ ≔ Some(ref label) = self.props.label {
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                        margin_top: "2px",
+                    }}>
+                        {label}
+                    </span>
+                }
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_value_to_angle() {
+        ≔ knob = Knob·new(KnobProps·default());
+
+        // 0.0 should be at start angle (135 degrees = 0.75 * PI)
+        ≔ angle_0 = knob.value_to_angle(0.0);
+        assert!((angle_0 - 0.75 * PI).abs() < 0.01);
+
+        // 1.0 should be at end angle (405 degrees = 2.25 * PI)
+        ≔ angle_1 = knob.value_to_angle(1.0);
+        assert!((angle_1 - 2.25 * PI).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_display_value() {
+        ≔ knob = Knob·new(KnobProps {
+            value: 0.5,
+            min: -24.0,
+            max: 24.0,
+            ..KnobProps·default()
+        });
+
+        // 0.5 normalized with -24 to +24 range should be 0.0
+        ≔ display = knob.display_value();
+        assert!((display - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_size_diameter() {
+        assert_eq!(KnobSize·Small.diameter(), 24.0);
+        assert_eq!(KnobSize·Medium.diameter(), 32.0);
+        assert_eq!(KnobSize·Large.diameter(), 48.0);
+    }
+
+    // === Additional tests per TDD roadmap ===
+
+    //@ rune: test
+    rite test_value_bounds() {
+        // P9: 0.0 <= value <= 1.0
+        ≔ knob = Knob·new(KnobProps { value: 0.5, ..KnobProps·default() });
+        assert!(knob.props.value >= 0.0 && knob.props.value <= 1.0);
+
+        // Test boundary values
+        ≔ knob_min = Knob·new(KnobProps { value: 0.0, ..KnobProps·default() });
+        assert_eq!(knob_min.props.value, 0.0);
+
+        ≔ knob_max = Knob·new(KnobProps { value: 1.0, ..KnobProps·default() });
+        assert_eq!(knob_max.props.value, 1.0);
+    }
+
+    //@ rune: test
+    rite test_disabled_ignores_drag() {
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.5,
+            disabled: true,
+            ..KnobProps·default()
+        });
+
+        // Try to start drag and move
+        knob.start_drag(100.0);
+        assert!(!knob.dragging);  // Should not start dragging
+
+        // Force dragging state and try handle_drag
+        knob.dragging = true;
+        knob.drag_start_value = 0.5;
+        knob.drag_start_y = 100.0;
+        knob.handle_drag(0.0);  // Drag up should increase value
+
+        // Value should remain unchanged because disabled
+        assert!((knob.props.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_bipolar_center_is_zero() {
+        ≔ knob = Knob·new(KnobProps {
+            value: 0.5,
+            bipolar: true,
+            min: -50.0,
+            max: 50.0,
+            ..KnobProps·default()
+        });
+
+        // In bipolar mode, 0.5 normalized should display as 0.0
+        assert!((knob.display_value() - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_reset_to_default() {
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.8,
+            default_value: 0.5,
+            ..KnobProps·default()
+        });
+
+        knob.reset();
+        assert!((knob.props.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_reset_ignored_when_disabled() {
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.8,
+            default_value: 0.5,
+            disabled: true,
+            ..KnobProps·default()
+        });
+
+        knob.reset();
+        // Should remain at 0.8 because disabled
+        assert!((knob.props.value - 0.8).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_adjust_clamps_to_bounds() {
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.99,
+            ..KnobProps·default()
+        });
+
+        // Adjust beyond max should clamp to 1.0
+        knob.adjust(0.1);
+        assert!((knob.props.value - 1.0).abs() < 0.01);
+
+        // Reset and test min
+        knob.props.value = 0.01;
+        knob.adjust(-0.1);
+        assert!((knob.props.value - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_drag_sensitivity() {
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.5,
+            sensitivity: 0.01,  // Double default sensitivity
+            ..KnobProps·default()
+        });
+
+        knob.start_drag(100.0);
+        knob.handle_drag(50.0);  // Drag up by 50 pixels
+
+        // With sensitivity 0.01 and 50px drag, delta = 50 * 0.01 = 0.5
+        // So new value should be 0.5 + 0.5 = 1.0 (clamped)
+        assert!((knob.props.value - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_format_value_custom() {
+        ≔ knob = Knob·new(KnobProps {
+            value: 0.5,
+            min: 0.0,
+            max: 100.0,
+            format: Some(Box·new(|v| format!("{:.0}%", v))),
+            ..KnobProps·default()
+        });
+
+        assert_eq!(knob.format_value(), "50%");
+    }
+
+    //@ rune: test
+    rite test_display_value_mapping() {
+        // Test various ranges
+        ≔ freq_knob = Knob·new(KnobProps {
+            value: 0.5,
+            min: 20.0,
+            max: 20000.0,
+            ..KnobProps·default()
+        });
+        // 0.5 should give midpoint: 20 + (20000-20)*0.5 = 10010
+        assert!((freq_knob.display_value() - 10010.0).abs() < 1.0);
+
+        ≔ pan_knob = Knob·new(KnobProps {
+            value: 0.0,
+            min: -1.0,
+            max: 1.0,
+            ..KnobProps·default()
+        });
+        // 0.0 should give min: -1.0
+        assert!((pan_knob.display_value() - (-1.0)).abs() < 0.01);
+    }
+}
