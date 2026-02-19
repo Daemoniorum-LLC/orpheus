@@ -587,9 +587,10 @@ impl<'a> PreferencesDialog<'a> {
                         self.shortcut_row(ui, "Ctrl+T", "Add Track");
                         self.shortcut_row(ui, "Delete", "Delete Selection");
 
-                        ui.add_space(8.0);
+                        ui.label("");
                         ui.end_row();
                         ui.label(RichText::new("Tab Editor").strong());
+                        ui.label("");
                         ui.end_row();
 
                         self.shortcut_row(ui, "i", "Enter Insert Mode");

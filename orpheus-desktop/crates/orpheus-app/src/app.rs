@@ -28,6 +28,8 @@ use orpheus_ui::{
 };
 use orpheus_synth::NoteEventType;
 
+use std::panic;
+
 use crate::audio_engine::{AudioEngine, EngineState, AudioStatus, PluginFormat, RecordedClipInfo};
 use crate::screenshot::ScreenshotManager;
 
@@ -246,6 +248,7 @@ impl OrpheusApp {
             OrpheusTheme::dark()
         };
         theme.apply(&cc.egui_ctx);
+        cc.egui_ctx.set_pixels_per_point(settings.ui.scale);
 
         // Initialize welcome dialog - show if first run or if setting is enabled
         let mut welcome_state = WelcomeState::new();
@@ -465,11 +468,19 @@ impl OrpheusApp {
     fn open_project(&mut self) {
         info!("Opening project dialog");
 
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Orpheus Project", &["orpheus", "json"])
-            .pick_file()
-        {
-            self.load_project_from_path(path);
+        let result = panic::catch_unwind(|| {
+            rfd::FileDialog::new()
+                .add_filter("Orpheus Project", &["orpheus", "json"])
+                .pick_file()
+        });
+
+        match result {
+            Ok(Some(path)) => self.load_project_from_path(path),
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!("File dialog not available (XDG portal requires Tokio runtime)");
+                self.notifications.warning("File dialog unavailable on this platform");
+            }
         }
     }
 
@@ -509,11 +520,23 @@ impl OrpheusApp {
     fn save_project_as(&mut self) {
         let default_name = format!("{}.orpheus", self.project.metadata.name);
 
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Orpheus Project", &["orpheus"])
-            .set_file_name(&default_name)
-            .save_file()
-        {
+        let result = panic::catch_unwind(move || {
+            rfd::FileDialog::new()
+                .add_filter("Orpheus Project", &["orpheus"])
+                .set_file_name(&default_name)
+                .save_file()
+        });
+
+        let path = match result {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("File dialog not available (XDG portal requires Tokio runtime)");
+                self.notifications.warning("File dialog unavailable on this platform");
+                return;
+            }
+        };
+
+        if let Some(path) = path {
             self.save_project_to_path(&path);
             self.app_state.project_path = Some(path);
         }
@@ -552,12 +575,20 @@ impl OrpheusApp {
             _ => ("Audio File", format.extension()),
         };
 
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter(filter_name, &[filter_ext])
-            .set_file_name(&default_name)
-            .save_file()
-        {
-            self.export_to_path(&path, format);
+        let result = panic::catch_unwind(move || {
+            rfd::FileDialog::new()
+                .add_filter(filter_name, &[filter_ext])
+                .set_file_name(&default_name)
+                .save_file()
+        });
+
+        match result {
+            Ok(Some(path)) => self.export_to_path(&path, format),
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!("File dialog not available (XDG portal requires Tokio runtime)");
+                self.notifications.warning("File dialog unavailable on this platform");
+            }
         }
     }
 

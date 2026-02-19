@@ -123,7 +123,7 @@ impl Default for DockLayout {
 impl DockLayout {
     pub fn new() -> Self {
         // Create default layout with Tab Editor as the main view for new projects
-        let mut state = DockState::new(vec![DockTab::TabEditor]);
+        let mut state = DockState::new(vec![DockTab::ModeView]);
 
         // Get the main surface
         let surface = state.main_surface_mut();
@@ -228,8 +228,9 @@ impl<'a> OrpheusTabViewer<'a> {
                 let _action = ArrangeView::show(ui, &mut self.view_states.arrange, self.theme);
             }
             ProductionMode::Compose => {
-                let mut view = ComposeView::new(&mut self.view_states.compose, self.theme);
-                view.show(ui);
+                // Show the tab editor (blank document editor) as the default compose view
+                // ComposeView is for viewing imported Guitar Pro files
+                self.show_tab_editor(ui);
             }
             ProductionMode::Mix => {
                 // Sync mixer channels with tab editor tracks
