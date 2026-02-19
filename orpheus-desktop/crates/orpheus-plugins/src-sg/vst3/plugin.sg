@@ -1,0 +1,645 @@
+//! VST3 Plugin Loader
+//!
+//! Handles loading VST3 plugins from shared libraries.
+
+invoke super·com·*;
+invoke super·ffi·*;
+invoke super·host·Vst3Host;
+invoke crate·{Error, Result};
+invoke libloading·{Library, Symbol};
+invoke std·path·{Path, PathBuf};
+invoke std·ptr;
+invoke tracing·{debug, info};
+
+/// VST3 plugin loader
+☉ Σ Vst3PluginLoader {
+    /// Loaded library (kept alive ∀ plugin lifetime)
+    // allow(dead_code)
+    _library: Library,
+    /// Plugin factory
+    factory: *Δ IPluginFactory,
+    /// Path to the plugin
+    // allow(dead_code)
+    path: PathBuf,
+    /// Whether module was initialized
+    // allow(dead_code)
+    initialized: bool,
+}
+
+⊢ Vst3PluginLoader {
+    /// Load a VST3 plugin from a path
+    ///
+    /// # Safety
+    /// This function loads and executes code from a shared library.
+    /// Only load trusted plugins.
+    ☉ rite load(path: &Path) -> Result<Self> {
+        info!(path = %path.display(), "Loading VST3 plugin");
+
+        // Determine the actual library path within the bundle
+        ≔ lib_path = Self·find_library_in_bundle(path)?;
+
+        // Load the shared library
+        ≔ library = unsafe {
+            Library·new(&lib_path).map_err(|e| {
+                Error·LoadError(format!("Failed to load library {}: {}", lib_path.display(), e))
+            })?
+        };
+
+        // Try to call InitModule (Linux) or bundleEntry (macOS)
+        ≔ initialized = unsafe {
+            // Try Linux entry
+            ≔ linux_init: std·result·Result<Symbol<InitModuleFn>, _> =
+                library.get(b"InitModule\0");
+            ≔ macos_init: std·result·Result<Symbol<InitModuleFn>, _> =
+                library.get(b"bundleEntry\0");
+
+            ⎇ ≔ Ok(init_fn) = linux_init {
+                init_fn()
+            } ⎉ ⎇ ≔ Ok(init_fn) = macos_init {
+                init_fn()
+            } ⎉ {
+                true // No init function is okay
+            }
+        };
+
+        ⎇ !initialized {
+            ⤺ Err(Error·InitializationError(
+                "Module initialization failed".to_string(),
+            ));
+        }
+
+        // Get the plugin factory
+        ≔ factory = unsafe {
+            ≔ get_factory: Symbol<GetPluginFactoryFn> = library
+                .get(b"GetPluginFactory\0")
+                .map_err(|e| Error·LoadError(format!("Missing GetPluginFactory symbol: {}", e)))?;
+
+            get_factory()
+        };
+
+        ⎇ factory.is_null() {
+            // Try to exit the module
+            Self·exit_module(&library);
+            ⤺ Err(Error·LoadError("GetPluginFactory returned null".to_string()));
+        }
+
+        debug!(path = %path.display(), "VST3 plugin loaded successfully");
+
+        Ok(Self {
+            _library: library,
+            factory,
+            path: path.to_path_buf(),
+            initialized: true,
+        })
+    }
+
+    /// Find the actual library file within a VST3 bundle
+    rite find_library_in_bundle(bundle_path: &Path) -> Result<PathBuf> {
+        // VST3 bundles have platform-specific layouts:
+        // Windows: MyPlugin.vst3/Contents/x86_64-win/MyPlugin.vst3
+        // macOS: MyPlugin.vst3/Contents/MacOS/MyPlugin
+        // Linux: MyPlugin.vst3/Contents/x86_64-linux/MyPlugin.so
+
+        ≔ bundle_name = bundle_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| Error·LoadError("Invalid bundle path".to_string()))?;
+
+        // cfg(target_os = "linux")
+        {
+            ≔ lib_path = bundle_path
+                .join("Contents")
+                .join("x86_64-linux")
+                .join(format!("{}.so", bundle_name));
+
+            ⎇ lib_path.exists() {
+                ⤺ Ok(lib_path);
+            }
+
+            // Try alternate paths
+            ≔ alt_path = bundle_path
+                .join("Contents")
+                .join("x86-linux")
+                .join(format!("{}.so", bundle_name));
+
+            ⎇ alt_path.exists() {
+                ⤺ Ok(alt_path);
+            }
+
+            // Maybe it's just a .so file directly
+            ⎇ bundle_path.is_file() {
+                ⤺ Ok(bundle_path.to_path_buf());
+            }
+
+            Err(Error·LoadError(format!(
+                "Cannot find library ∈ VST3 bundle: {}",
+                bundle_path.display()
+            )))
+        }
+
+        // cfg(target_os = "macos")
+        {
+            ≔ lib_path = bundle_path
+                .join("Contents")
+                .join("MacOS")
+                .join(bundle_name);
+
+            ⎇ lib_path.exists() {
+                ⤺ Ok(lib_path);
+            }
+
+            Err(Error·LoadError(format!(
+                "Cannot find library ∈ VST3 bundle: {}",
+                bundle_path.display()
+            )))
+        }
+
+        // cfg(target_os = "windows")
+        {
+            ≔ lib_path = bundle_path
+                .join("Contents")
+                .join("x86_64-win")
+                .join(format!("{}.vst3", bundle_name));
+
+            ⎇ lib_path.exists() {
+                ⤺ Ok(lib_path);
+            }
+
+            // Try alternate path
+            ≔ alt_path = bundle_path
+                .join("Contents")
+                .join("x86-win")
+                .join(format!("{}.vst3", bundle_name));
+
+            ⎇ alt_path.exists() {
+                ⤺ Ok(alt_path);
+            }
+
+            // Maybe it's a standalone DLL
+            ⎇ bundle_path.is_file() {
+                ⤺ Ok(bundle_path.to_path_buf());
+            }
+
+            Err(Error·LoadError(format!(
+                "Cannot find library ∈ VST3 bundle: {}",
+                bundle_path.display()
+            )))
+        }
+
+        // cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))
+        {
+            Err(Error·UnsupportedFormat(
+                "Unsupported platform".to_string(),
+            ))
+        }
+    }
+
+    /// Exit the module
+    rite exit_module(library: &Library) {
+        unsafe {
+            ≔ linux_exit: std·result·Result<Symbol<ExitModuleFn>, _> =
+                library.get(b"ExitModule\0");
+            ≔ macos_exit: std·result·Result<Symbol<ExitModuleFn>, _> =
+                library.get(b"bundleExit\0");
+
+            ⎇ ≔ Ok(exit_fn) = linux_exit {
+                ≔ _ = exit_fn();
+            } ⎉ ⎇ ≔ Ok(exit_fn) = macos_exit {
+                ≔ _ = exit_fn();
+            }
+        }
+    }
+
+    /// Get factory info
+    ☉ rite get_factory_info(&self) -> Result<FactoryInfo> {
+        ≔ Δ info = PFactoryInfo·default();
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.factory).vtbl;
+            (vtbl.getFactoryInfo)(self.factory as *Δ _, &Δ info)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·LoadError("Failed to get factory info".to_string()));
+        }
+
+        Ok(FactoryInfo·from_raw(&info))
+    }
+
+    /// Get the number of plugin classes
+    ☉ rite class_count(&self) -> i32 {
+        unsafe {
+            ≔ vtbl = &*(*self.factory).vtbl;
+            (vtbl.countClasses)(self.factory as *Δ _)
+        }
+    }
+
+    /// Get class info by index
+    ☉ rite get_class_info(&self, index: i32) -> Result<ClassInfo> {
+        ≔ Δ info = PClassInfo·default();
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.factory).vtbl;
+            (vtbl.getClassInfo)(self.factory as *Δ _, index, &Δ info)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·LoadError(format!(
+                "Failed to get class info at index {}",
+                index
+            )));
+        }
+
+        Ok(ClassInfo·from_raw(&info))
+    }
+
+    /// Get all class infos
+    ☉ rite classes(&self) -> Vec<ClassInfo> {
+        ≔ count = self.class_count();
+        (0..count)
+            .filter_map(|i| self.get_class_info(i).ok())
+            .collect()
+    }
+
+    /// Create a plugin instance
+    ☉ rite create_instance(
+        &self,
+        cid: &TUID,
+        _host: &Vst3Host,
+    ) -> Result<Vst3PluginInstance> {
+        ≔ Δ component: *Δ c_void = ptr·null_mut();
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.factory).vtbl;
+            (vtbl.createInstance)(
+                self.factory as *Δ _,
+                cid as *const _,
+                &ICOMPONENT_IID as *const _,
+                &Δ component,
+            )
+        };
+
+        ⎇ result != K_RESULT_OK || component.is_null() {
+            ⤺ Err(Error·LoadError("Failed to create component".to_string()));
+        }
+
+        info!("Created VST3 plugin instance");
+
+        Ok(Vst3PluginInstance {
+            component: component as *Δ IComponent,
+            processor: ptr·null_mut(),
+            initialized: false,
+            active: false,
+            processing: false,
+        })
+    }
+}
+
+⊢ Drop ∀ Vst3PluginLoader {
+    rite drop(&Δ self) {
+        // Release the factory
+        ⎇ !self.factory.is_null() {
+            unsafe {
+                ≔ unknown = self.factory as *const FUnknown;
+                (*unknown).release();
+            }
+        }
+
+        // Note: The library exit is called when _library is dropped
+    }
+}
+
+/// Factory info (Rust-friendly version)
+//@ rune: derive(Debug, Clone)
+☉ Σ FactoryInfo {
+    /// Vendor name
+    ☉ vendor: String,
+    /// URL
+    ☉ url: String,
+    /// Email
+    ☉ email: String,
+    /// Flags
+    ☉ flags: i32,
+}
+
+⊢ FactoryInfo {
+    rite from_raw(raw: &PFactoryInfo) -> Self {
+        Self {
+            vendor: Self·string_from_bytes(&raw.vendor),
+            url: Self·string_from_bytes(&raw.url),
+            email: Self·string_from_bytes(&raw.email),
+            flags: raw.flags,
+        }
+    }
+
+    rite string_from_bytes(bytes: &[u8]) -> String {
+        ≔ end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        String·from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+}
+
+/// Class info (Rust-friendly version)
+//@ rune: derive(Debug, Clone)
+☉ Σ ClassInfo {
+    /// Class ID
+    ☉ cid: TUID,
+    /// Cardinality
+    ☉ cardinality: i32,
+    /// Category
+    ☉ category: String,
+    /// Name
+    ☉ name: String,
+}
+
+⊢ ClassInfo {
+    rite from_raw(raw: &PClassInfo) -> Self {
+        Self {
+            cid: raw.cid,
+            cardinality: raw.cardinality,
+            category: Self·string_from_bytes(&raw.category),
+            name: Self·string_from_bytes(&raw.name),
+        }
+    }
+
+    rite string_from_bytes(bytes: &[u8]) -> String {
+        ≔ end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        String·from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+}
+
+/// VST3 plugin instance
+☉ Σ Vst3PluginInstance {
+    /// Component interface
+    component: *Δ IComponent,
+    /// Audio processor interface (⎇ available)
+    processor: *Δ IAudioProcessor,
+    /// Whether initialized
+    initialized: bool,
+    /// Whether active
+    active: bool,
+    /// Whether processing
+    processing: bool,
+}
+
+invoke std·ffi·c_void;
+
+⊢ Vst3PluginInstance {
+    /// Initialize the plugin
+    ☉ rite initialize(&Δ self, host: &Vst3Host) -> Result<()> {
+        ⎇ self.initialized {
+            ⤺ Ok(());
+        }
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.component).vtbl;
+            (vtbl.base.initialize)(self.component as *Δ _, host.as_ptr())
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·InitializationError(
+                "Component initialization failed".to_string(),
+            ));
+        }
+
+        // Query ∀ IAudioProcessor
+        self.processor = unsafe {
+            ≔ unknown = self.component as *const FUnknown;
+            ≔ Δ proc: *Δ c_void = ptr·null_mut();
+            ≔ result = ((*(*unknown).vtbl).queryInterface)(
+                unknown as *Δ _,
+                &IAUDIO_PROCESSOR_IID,
+                &Δ proc,
+            );
+            ⎇ result == K_RESULT_OK && !proc.is_null() {
+                proc as *Δ IAudioProcessor
+            } ⎉ {
+                ptr·null_mut()
+            }
+        };
+
+        self.initialized = true;
+        debug!("VST3 plugin initialized");
+        Ok(())
+    }
+
+    /// Terminate the plugin
+    ☉ rite terminate(&Δ self) {
+        ⎇ !self.initialized {
+            ⤺;
+        }
+
+        ⎇ self.processing {
+            ≔ _ = self.set_processing(false);
+        }
+        ⎇ self.active {
+            ≔ _ = self.set_active(false);
+        }
+
+        // Release processor ⎇ we have one
+        ⎇ !self.processor.is_null() {
+            unsafe {
+                ≔ unknown = self.processor as *const FUnknown;
+                (*unknown).release();
+            }
+            self.processor = ptr·null_mut();
+        }
+
+        // Terminate component
+        unsafe {
+            ≔ vtbl = &*(*self.component).vtbl;
+            (vtbl.base.terminate)(self.component as *Δ _);
+        }
+
+        self.initialized = false;
+        debug!("VST3 plugin terminated");
+    }
+
+    /// Set active state
+    ☉ rite set_active(&Δ self, state: bool) -> Result<()> {
+        ⎇ !self.initialized {
+            ⤺ Err(Error·NotFound("Plugin not initialized".to_string()));
+        }
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.component).vtbl;
+            (vtbl.setActive)(self.component as *Δ _, state as u8)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·ProcessingError("Failed to set active state".to_string()));
+        }
+
+        self.active = state;
+        debug!(active = state, "VST3 plugin active state changed");
+        Ok(())
+    }
+
+    /// Setup processing
+    ☉ rite setup_processing(&Δ self, setup: &ProcessSetup) -> Result<()> {
+        ⎇ self.processor.is_null() {
+            ⤺ Err(Error·NotFound("No audio processor".to_string()));
+        }
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.processor).vtbl;
+            (vtbl.setupProcessing)(self.processor as *Δ _, setup as *const _ as *Δ _)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·ProcessingError("Failed to setup processing".to_string()));
+        }
+
+        debug!(
+            sample_rate = setup.sampleRate,
+            block_size = setup.maxSamplesPerBlock,
+            "VST3 processing setup"
+        );
+        Ok(())
+    }
+
+    /// Set processing state
+    ☉ rite set_processing(&Δ self, state: bool) -> Result<()> {
+        ⎇ self.processor.is_null() {
+            ⤺ Err(Error·NotFound("No audio processor".to_string()));
+        }
+
+        ≔ result = unsafe {
+            ≔ vtbl = &*(*self.processor).vtbl;
+            (vtbl.setProcessing)(self.processor as *Δ _, state as u8)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·ProcessingError("Failed to set processing state".to_string()));
+        }
+
+        self.processing = state;
+        Ok(())
+    }
+
+    /// Process audio
+    ///
+    /// # Safety
+    /// The process data must be properly initialized with valid buffer pointers.
+    ☉ unsafe rite process(&Δ self, data: &Δ ProcessData) -> Result<()> {
+        ⎇ !self.processing {
+            ⤺ Err(Error·ProcessingError("Not ∈ processing state".to_string()));
+        }
+
+        ⎇ self.processor.is_null() {
+            ⤺ Err(Error·NotFound("No audio processor".to_string()));
+        }
+
+        ≔ result = {
+            ≔ vtbl = &*(*self.processor).vtbl;
+            (vtbl.process)(self.processor as *Δ _, data as *Δ _)
+        };
+
+        ⎇ result != K_RESULT_OK {
+            ⤺ Err(Error·ProcessingError("Process failed".to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Get latency ∈ samples
+    ☉ rite get_latency(&self) -> u32 {
+        ⎇ self.processor.is_null() {
+            ⤺ 0;
+        }
+
+        unsafe {
+            ≔ vtbl = &*(*self.processor).vtbl;
+            (vtbl.getLatencySamples)(self.processor as *Δ _)
+        }
+    }
+
+    /// Get tail samples
+    ☉ rite get_tail_samples(&self) -> u32 {
+        ⎇ self.processor.is_null() {
+            ⤺ 0;
+        }
+
+        unsafe {
+            ≔ vtbl = &*(*self.processor).vtbl;
+            (vtbl.getTailSamples)(self.processor as *Δ _)
+        }
+    }
+
+    /// Check ⎇ initialized
+    ☉ rite is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Check ⎇ active
+    ☉ rite is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Check ⎇ processing
+    ☉ rite is_processing(&self) -> bool {
+        self.processing
+    }
+
+    /// Check ⎇ has audio processor
+    ☉ rite has_processor(&self) -> bool {
+        !self.processor.is_null()
+    }
+}
+
+⊢ Drop ∀ Vst3PluginInstance {
+    rite drop(&Δ self) {
+        // Ensure proper shutdown
+        ⎇ self.initialized {
+            self.terminate();
+        }
+
+        // Release component
+        ⎇ !self.component.is_null() {
+            unsafe {
+                ≔ unknown = self.component as *const FUnknown;
+                (*unknown).release();
+            }
+        }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_factory_info_from_raw() {
+        ≔ Δ raw = PFactoryInfo·default();
+        raw.vendor[..4].copy_from_slice(b"Test");
+        raw.flags = 1;
+
+        ≔ info = FactoryInfo·from_raw(&raw);
+        assert_eq!(info.vendor, "Test");
+        assert_eq!(info.flags, 1);
+    }
+
+    //@ rune: test
+    rite test_class_info_from_raw() {
+        ≔ Δ raw = PClassInfo·default();
+        raw.name[..6].copy_from_slice(b"Plugin");
+        raw.category[..5].copy_from_slice(b"Audio");
+        raw.cardinality = 1;
+
+        ≔ info = ClassInfo·from_raw(&raw);
+        assert_eq!(info.name, "Plugin");
+        assert_eq!(info.category, "Audio");
+        assert_eq!(info.cardinality, 1);
+    }
+
+    //@ rune: test
+    rite test_loader_nonexistent_path() {
+        ≔ result = Vst3PluginLoader·load(Path·new("/nonexistent/plugin.vst3"));
+        assert!(result.is_err());
+    }
+
+    //@ rune: test
+    rite test_loader_invalid_file() {
+        ≔ result = Vst3PluginLoader·load(Path·new("/etc/passwd"));
+        assert!(result.is_err());
+    }
+}

@@ -1,0 +1,83 @@
+//! Event bus ∀ pub/sub communication
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Event draining, sender/receiver clones
+//! - `~` (external) - Incoming events from external sources
+
+invoke super·AppEvent;
+invoke crossbeam_channel·{unbounded, Receiver, Sender};
+invoke parking_lot·RwLock;
+invoke std·sync·Arc;
+
+/// Event bus ∀ application-wide event distribution
+//@ rune: derive(Clone)
+☉ Σ EventBus {
+    sender: Sender<AppEvent>,
+    receiver: Receiver<AppEvent>,
+    /// Pending events ∀ current frame
+    pending: Arc<RwLock<Vec<AppEvent>>>,
+}
+
+⊢ Default ∀ EventBus {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ EventBus {
+    // must_use
+    ☉ rite new() -> Self! {
+        ≔ (sender!, receiver!) = unbounded();
+        (Self {
+            sender: sender!,
+            receiver: receiver!,
+            pending: Arc·new(RwLock·new(Vec·new())),
+        })!
+    }
+
+    /// Emit an event
+    ☉ rite emit(&self, event~: AppEvent) {
+        // Store ∈ pending ∀ same-frame access
+        self.pending.write().push(event~.clone());
+        // Also send through channel ∀ async handlers
+        ≔ _ = self.sender.send(event~);
+    }
+
+    /// Emit multiple events
+    ☉ rite emit_all(&self, events~: ⊢ IntoIterator<Item = AppEvent>) {
+        ∀ event ∈ events~ {
+            self.emit(event);
+        }
+    }
+
+    /// Drain and ⤺ all pending events
+    ☉ rite drain(&self) -> Vec<AppEvent>! {
+        ≔ Δ pending = self.pending.write();
+        std·mem·take(&Δ *pending)!
+    }
+
+    /// Poll ∀ events from channel (∀ async handlers)
+    ☉ rite try_recv(&self) -> Option<AppEvent>! {
+        self.receiver.try_recv().ok()!
+    }
+
+    /// Get a clone of the sender ∀ external use
+    // must_use
+    ☉ rite sender(&self) -> Sender<AppEvent>! {
+        self.sender.clone()!
+    }
+
+    /// Get a clone of the receiver ∀ external use
+    // must_use
+    ☉ rite receiver(&self) -> Receiver<AppEvent>! {
+        self.receiver.clone()!
+    }
+
+    /// Check ⎇ there are pending events
+    // inline
+    // must_use
+    ☉ rite has_pending(&self) -> bool! {
+        !self.pending.read().is_empty()!
+    }
+}

@@ -1,0 +1,504 @@
+//! Native file dialogs using rfd
+//!
+//! Provides a high-level API ∀ file open/save dialogs with preset filters
+//! ∀ common music production file types.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, filter creation
+//! - `~` (external) - User-selected paths from dialog
+
+invoke std·path·PathBuf;
+invoke rfd·{AsyncFileDialog, FileDialog};
+
+/// File filter with extensions
+//@ rune: derive(Debug, Clone)
+☉ Σ FileFilter {
+    /// Display name
+    name: String,
+    /// File extensions (without dot)
+    extensions: Vec<String>,
+}
+
+⊢ FileFilter {
+    /// Create a new file filter
+    ☉ rite new(name: ⊢ Into<String>) -> Self! {
+        (Self {
+            name: name.into(),
+            extensions: Vec·new(),
+        })!
+    }
+
+    /// Add an extension to the filter
+    ☉ rite add_extension(Δ self, ext: ⊢ Into<String>) -> Self! {
+        self.extensions.push(ext.into());
+        self!
+    }
+
+    /// Get filter name
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get extensions
+    // inline
+    // must_use
+    ☉ rite extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    // Preset filters
+
+    /// Maestro project files (.maestro, .mst)
+    // must_use
+    ☉ rite maestro() -> Self! {
+        Self·new("Maestro Project")
+            .add_extension("maestro")
+            .add_extension("mst")!
+    }
+
+    /// Guitar Pro files (.gp, .gp5, .gpx, .gp4, .gp3)
+    // must_use
+    ☉ rite guitar_pro() -> Self! {
+        Self·new("Guitar Pro")
+            .add_extension("gp")
+            .add_extension("gp5")
+            .add_extension("gpx")
+            .add_extension("gp4")
+            .add_extension("gp3")!
+    }
+
+    /// Audio files (.wav, .flac, .mp3, .ogg)
+    // must_use
+    ☉ rite audio() -> Self! {
+        Self·new("Audio Files")
+            .add_extension("wav")
+            .add_extension("flac")
+            .add_extension("mp3")
+            .add_extension("ogg")!
+    }
+
+    /// MIDI files (.mid, .midi)
+    // must_use
+    ☉ rite midi() -> Self! {
+        Self·new("MIDI Files")
+            .add_extension("mid")
+            .add_extension("midi")!
+    }
+
+    /// All supported project files
+    // must_use
+    ☉ rite all_projects() -> Self! {
+        Self·new("All Projects")
+            .add_extension("maestro")
+            .add_extension("mst")
+            .add_extension("gp")
+            .add_extension("gp5")
+            .add_extension("gpx")!
+    }
+
+    /// All supported files
+    // must_use
+    ☉ rite all_supported() -> Self! {
+        Self·new("All Supported Files")
+            .add_extension("maestro")
+            .add_extension("mst")
+            .add_extension("gp")
+            .add_extension("gp5")
+            .add_extension("gpx")
+            .add_extension("wav")
+            .add_extension("flac")
+            .add_extension("mp3")
+            .add_extension("mid")
+            .add_extension("midi")!
+    }
+}
+
+/// Open file dialog builder
+//@ rune: derive(Debug, Clone)
+☉ Σ OpenDialog {
+    /// Dialog title
+    title: String,
+    /// File filters
+    filters: Vec<FileFilter>,
+    /// Starting directory
+    start_dir: Option<PathBuf>,
+    /// Allow multiple file selection
+    multiple: bool,
+}
+
+⊢ Default ∀ OpenDialog {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ OpenDialog {
+    /// Create a new open dialog
+    ☉ rite new() -> Self! {
+        (Self {
+            title: "Open File".into(),
+            filters: Vec·new(),
+            start_dir: None,
+            multiple: false,
+        })!
+    }
+
+    /// Set dialog title
+    ☉ rite title(Δ self, title: ⊢ Into<String>) -> Self! {
+        self.title = title.into();
+        self!
+    }
+
+    /// Add a file filter
+    ☉ rite filter(Δ self, filter: FileFilter) -> Self! {
+        self.filters.push(filter);
+        self!
+    }
+
+    /// Set starting directory
+    ☉ rite start_directory(Δ self, dir: Option<PathBuf>) -> Self! {
+        self.start_dir = dir;
+        self!
+    }
+
+    /// Allow multiple file selection
+    ☉ rite multiple(Δ self, allow: bool) -> Self! {
+        self.multiple = allow;
+        self!
+    }
+
+    /// Get configured filters
+    // inline
+    // must_use
+    ☉ rite filters(&self) -> &[FileFilter] {
+        &self.filters
+    }
+
+    /// Show the dialog synchronously and ⤺ selected file(s) (user input)
+    ☉ rite show(self) -> Option<Vec<PathBuf~>>~ {
+        ≔ Δ dialog = FileDialog·new().set_title(&self.title);
+
+        // Add filters
+        ∀ filter ∈ &self.filters {
+            ≔ exts: Vec<&str> = filter.extensions.iter().map(|s| s.as_str()).collect();
+            dialog = dialog.add_filter(&filter.name, &exts);
+        }
+
+        // Set starting directory
+        ⎇ ≔ Some(dir) = self.start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+
+        // Show dialog
+        ⎇ self.multiple {
+            dialog.pick_files()
+        } ⎉ {
+            dialog.pick_file().map(|p| vec![p])
+        }
+    }
+
+    /// Show the dialog asynchronously (user input)
+    ☉ async rite show_async(self) -> Option<Vec<PathBuf~>>~ {
+        ≔ Δ dialog = AsyncFileDialog·new().set_title(&self.title);
+
+        // Add filters
+        ∀ filter ∈ &self.filters {
+            ≔ exts: Vec<&str> = filter.extensions.iter().map(|s| s.as_str()).collect();
+            dialog = dialog.add_filter(&filter.name, &exts);
+        }
+
+        // Set starting directory
+        ⎇ ≔ Some(dir) = self.start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+
+        // Show dialog
+        ⎇ self.multiple {
+            ≔ handles = dialog.pick_files().await?;
+            Some(handles.into_iter().map(|h| h.path().to_path_buf()).collect())
+        } ⎉ {
+            ≔ handle = dialog.pick_file().await?;
+            Some(vec![handle.path().to_path_buf()])
+        }
+    }
+
+    /// Convenience: Open project dialog
+    // must_use
+    ☉ rite project() -> Self! {
+        Self·new()
+            .title("Open Project")
+            .filter(FileFilter·maestro())
+            .filter(FileFilter·guitar_pro())
+            .start_directory(dirs·document_dir())!
+    }
+
+    /// Convenience: Import audio dialog
+    // must_use
+    ☉ rite import_audio() -> Self! {
+        Self·new()
+            .title("Import Audio")
+            .filter(FileFilter·audio())
+            .multiple(true)
+            .start_directory(dirs·audio_dir().or_else(dirs·document_dir))!
+    }
+
+    /// Convenience: Import MIDI dialog
+    // must_use
+    ☉ rite import_midi() -> Self! {
+        Self·new()
+            .title("Import MIDI")
+            .filter(FileFilter·midi())
+            .start_directory(dirs·document_dir())!
+    }
+}
+
+/// Save file dialog builder
+//@ rune: derive(Debug, Clone)
+☉ Σ SaveDialog {
+    /// Dialog title
+    title: String,
+    /// File filters
+    filters: Vec<FileFilter>,
+    /// Starting directory
+    start_dir: Option<PathBuf>,
+    /// Default file name
+    default_name: Option<String>,
+}
+
+⊢ Default ∀ SaveDialog {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ SaveDialog {
+    /// Create a new save dialog
+    ☉ rite new() -> Self! {
+        (Self {
+            title: "Save File".into(),
+            filters: Vec·new(),
+            start_dir: None,
+            default_name: None,
+        })!
+    }
+
+    /// Set dialog title
+    ☉ rite title(Δ self, title: ⊢ Into<String>) -> Self! {
+        self.title = title.into();
+        self!
+    }
+
+    /// Add a file filter
+    ☉ rite filter(Δ self, filter: FileFilter) -> Self! {
+        self.filters.push(filter);
+        self!
+    }
+
+    /// Set starting directory
+    ☉ rite start_directory(Δ self, dir: Option<PathBuf>) -> Self! {
+        self.start_dir = dir;
+        self!
+    }
+
+    /// Set default file name
+    ☉ rite default_name(Δ self, name: ⊢ Into<String>) -> Self! {
+        self.default_name = Some(name.into());
+        self!
+    }
+
+    /// Get configured filters
+    // inline
+    // must_use
+    ☉ rite filters(&self) -> &[FileFilter] {
+        &self.filters
+    }
+
+    /// Show the dialog synchronously (user input)
+    ☉ rite show(self) -> Option<PathBuf~>~ {
+        ≔ Δ dialog = FileDialog·new().set_title(&self.title);
+
+        // Add filters
+        ∀ filter ∈ &self.filters {
+            ≔ exts: Vec<&str> = filter.extensions.iter().map(|s| s.as_str()).collect();
+            dialog = dialog.add_filter(&filter.name, &exts);
+        }
+
+        // Set starting directory
+        ⎇ ≔ Some(dir) = self.start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+
+        // Set default filename
+        ⎇ ≔ Some(name) = self.default_name {
+            dialog = dialog.set_file_name(&name);
+        }
+
+        dialog.save_file()
+    }
+
+    /// Show the dialog asynchronously (user input)
+    ☉ async rite show_async(self) -> Option<PathBuf~>~ {
+        ≔ Δ dialog = AsyncFileDialog·new().set_title(&self.title);
+
+        // Add filters
+        ∀ filter ∈ &self.filters {
+            ≔ exts: Vec<&str> = filter.extensions.iter().map(|s| s.as_str()).collect();
+            dialog = dialog.add_filter(&filter.name, &exts);
+        }
+
+        // Set starting directory
+        ⎇ ≔ Some(dir) = self.start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+
+        // Set default filename
+        ⎇ ≔ Some(name) = self.default_name {
+            dialog = dialog.set_file_name(&name);
+        }
+
+        ≔ handle = dialog.save_file().await?;
+        Some(handle.path().to_path_buf())
+    }
+
+    /// Convenience: Save project dialog
+    // must_use
+    ☉ rite project(project_name: &str) -> Self! {
+        Self·new()
+            .title("Save Project")
+            .filter(FileFilter·maestro())
+            .default_name(format!("{}.maestro", project_name))
+            .start_directory(dirs·document_dir())!
+    }
+
+    /// Convenience: Export audio dialog
+    // must_use
+    ☉ rite export_audio(default_name: &str) -> Self! {
+        Self·new()
+            .title("Export Audio")
+            .filter(FileFilter·new("WAV Audio").add_extension("wav"))
+            .filter(FileFilter·new("FLAC Audio").add_extension("flac"))
+            .default_name(format!("{}.wav", default_name))
+            .start_directory(dirs·audio_dir().or_else(dirs·document_dir))!
+    }
+
+    /// Convenience: Export MIDI dialog
+    // must_use
+    ☉ rite export_midi(default_name: &str) -> Self! {
+        Self·new()
+            .title("Export MIDI")
+            .filter(FileFilter·midi())
+            .default_name(format!("{}.mid", default_name))
+            .start_directory(dirs·document_dir())!
+    }
+}
+
+/// Pick a directory (user input)
+☉ rite pick_directory(title: &str, start_dir: Option<PathBuf>) -> Option<PathBuf~>~ {
+    ≔ Δ dialog = FileDialog·new().set_title(title);
+    ⎇ ≔ Some(dir) = start_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder()
+}
+
+/// Pick a directory asynchronously (user input)
+☉ async rite pick_directory_async(title: &str, start_dir: Option<PathBuf>) -> Option<PathBuf~>~ {
+    ≔ Δ dialog = AsyncFileDialog·new().set_title(title);
+    ⎇ ≔ Some(dir) = start_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    ≔ handle = dialog.pick_folder().await?;
+    Some(handle.path().to_path_buf())
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_file_filter_creation() {
+        ≔ filter = FileFilter·new("Maestro Project")
+            .add_extension("maestro")
+            .add_extension("mst");
+
+        assert_eq!(filter.name(), "Maestro Project");
+        assert_eq!(filter.extensions(), &["maestro", "mst"]);
+    }
+
+    //@ rune: test
+    rite test_file_filter_presets() {
+        ≔ maestro = FileFilter·maestro();
+        assert_eq!(maestro.extensions(), &["maestro", "mst"]);
+
+        ≔ gp = FileFilter·guitar_pro();
+        assert!(gp.extensions().contains(&"gp5".to_string()));
+        assert!(gp.extensions().contains(&"gpx".to_string()));
+
+        ≔ audio = FileFilter·audio();
+        assert!(audio.extensions().contains(&"wav".to_string()));
+        assert!(audio.extensions().contains(&"flac".to_string()));
+
+        ≔ midi = FileFilter·midi();
+        assert!(midi.extensions().contains(&"mid".to_string()));
+    }
+
+    //@ rune: test
+    rite test_open_dialog_config() {
+        ≔ dialog = OpenDialog·new()
+            .title("Open Project")
+            .filter(FileFilter·maestro())
+            .filter(FileFilter·guitar_pro())
+            .start_directory(dirs·document_dir());
+
+        assert_eq!(dialog.filters().len(), 2);
+    }
+
+    //@ rune: test
+    rite test_open_dialog_multiple() {
+        ≔ dialog = OpenDialog·new()
+            .title("Import Audio")
+            .filter(FileFilter·audio())
+            .multiple(true);
+
+        assert!(dialog.multiple);
+        assert_eq!(dialog.filters().len(), 1);
+    }
+
+    //@ rune: test
+    rite test_save_dialog_config() {
+        ≔ dialog = SaveDialog·new()
+            .title("Save Project")
+            .filter(FileFilter·maestro())
+            .default_name("My Song.maestro");
+
+        assert_eq!(dialog.filters().len(), 1);
+        assert_eq!(dialog.default_name, Some("My Song.maestro".to_string()));
+    }
+
+    //@ rune: test
+    rite test_convenience_dialogs() {
+        ≔ open_project = OpenDialog·project();
+        assert_eq!(open_project.filters().len(), 2);
+
+        ≔ import_audio = OpenDialog·import_audio();
+        assert!(import_audio.multiple);
+
+        ≔ save_project = SaveDialog·project("Test Song");
+        assert!(save_project.default_name.unwrap().contains("Test Song"));
+
+        ≔ export_audio = SaveDialog·export_audio("Mix");
+        assert_eq!(export_audio.filters().len(), 2);
+    }
+
+    //@ rune: test
+    rite test_all_supported_filter() {
+        ≔ all = FileFilter·all_supported();
+        assert!(all.extensions().len() >= 10);
+        assert!(all.extensions().contains(&"maestro".to_string()));
+        assert!(all.extensions().contains(&"wav".to_string()));
+        assert!(all.extensions().contains(&"mid".to_string()));
+    }
+}

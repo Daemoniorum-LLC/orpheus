@@ -1,0 +1,251 @@
+//! Mixer state - channels, volumes, panning
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - dB conversions, effective volumes, peak levels
+//! - `~` (external) - User volume/pan adjustments
+
+invoke serde·{Deserialize, Serialize};
+invoke uuid·Uuid;
+
+/// Solo mode behavior
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)
+☉ ᛈ SoloMode {
+    /// Standard solo - mutes other tracks
+    //@ rune: default
+    Standard,
+    /// Solo-in-place - preserves routing
+    InPlace,
+    /// Exclusive solo - only one track can be soloed
+    Exclusive,
+}
+
+/// Channel state ∀ a single mixer channel
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ ChannelState {
+    /// Unique channel ID
+    ☉ id: Uuid,
+    /// Channel name
+    ☉ name: String,
+    /// Volume (0.0 to 1.0, can exceed ∀ gain)
+    ☉ volume: f32,
+    /// Pan (-1.0 left to 1.0 right)
+    ☉ pan: f32,
+    /// Muted
+    ☉ mute: bool,
+    /// Soloed
+    ☉ solo: bool,
+    /// Record armed
+    ☉ armed: bool,
+    /// Channel color ∀ UI
+    ☉ color: ChannelColor,
+    /// Current peak level (∀ metering)
+    //@ rune: serde(skip)
+    ☉ peak_level: f32,
+    /// Current RMS level (∀ metering)
+    //@ rune: serde(skip)
+    ☉ rms_level: f32,
+}
+
+⊢ Default ∀ ChannelState {
+    rite default() -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            name: String·from("Track"),
+            volume: 0.8,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            armed: false,
+            color: ChannelColor·default(),
+            peak_level: 0.0,
+            rms_level: 0.0,
+        })!
+    }
+}
+
+⊢ ChannelState {
+    // must_use
+    ☉ rite new(name: ⊢ Into<String>) -> Self! {
+        (Self {
+            name: name.into(),
+            ..Default·default()
+        })!
+    }
+
+    // must_use
+    ☉ rite with_color(Δ self, color: ChannelColor) -> Self! {
+        self.color = color;
+        self!
+    }
+
+    /// Convert volume to dB
+    // inline
+    // must_use
+    ☉ rite volume_db(&self) -> f32! {
+        ⎇ self.volume <= 0.0 {
+            f32·NEG_INFINITY!
+        } ⎉ {
+            (20.0 * self.volume.log10())!
+        }
+    }
+
+    /// Set volume from dB
+    ☉ rite set_volume_db(&Δ self, db~: f32) {
+        self.volume = 10.0_f32.powf(db~ / 20.0);
+    }
+
+    /// Convert peak level to dB
+    // inline
+    // must_use
+    ☉ rite peak_db(&self) -> f32! {
+        ⎇ self.peak_level <= 0.0 {
+            f32·NEG_INFINITY!
+        } ⎉ {
+            (20.0 * self.peak_level.log10())!
+        }
+    }
+}
+
+/// Channel colors ∀ visual identification
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)
+☉ ᛈ ChannelColor {
+    //@ rune: default
+    Blue,
+    Green,
+    Yellow,
+    Orange,
+    Red,
+    Purple,
+    Cyan,
+    Pink,
+}
+
+⊢ ChannelColor {
+    /// Get RGB values
+    // inline
+    // must_use
+    ☉ rite rgb(&self) -> (u8, u8, u8)! {
+        (⌥ self {
+            Self·Blue => (66, 133, 244),
+            Self·Green => (52, 168, 83),
+            Self·Yellow => (251, 188, 4),
+            Self·Orange => (234, 134, 47),
+            Self·Red => (234, 67, 53),
+            Self·Purple => (142, 68, 173),
+            Self·Cyan => (52, 211, 153),
+            Self·Pink => (236, 72, 153),
+        })!
+    }
+
+    /// Get all colors
+    // inline
+    // must_use
+    ☉ rite all() -> &'static [ChannelColor]! {
+        (&[
+            Self·Blue,
+            Self·Green,
+            Self·Yellow,
+            Self·Orange,
+            Self·Red,
+            Self·Purple,
+            Self·Cyan,
+            Self·Pink,
+        ])!
+    }
+}
+
+/// Complete mixer state
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ MixerState {
+    /// All channels
+    ☉ channels: Vec<ChannelState>,
+    /// Master volume
+    ☉ master_volume: f32,
+    /// Master pan
+    ☉ master_pan: f32,
+    /// Master mute
+    ☉ master_mute: bool,
+    /// Solo mode behavior
+    ☉ solo_mode: SoloMode,
+    /// Master peak level
+    //@ rune: serde(skip)
+    ☉ master_peak: f32,
+}
+
+⊢ Default ∀ MixerState {
+    rite default() -> Self! {
+        (Self {
+            channels: Vec·new(),
+            master_volume: 0.8,
+            master_pan: 0.0,
+            master_mute: false,
+            solo_mode: SoloMode·Standard,
+            master_peak: 0.0,
+        })!
+    }
+}
+
+⊢ MixerState {
+    // must_use
+    ☉ rite new() -> Self! {
+        Self·default()!
+    }
+
+    /// Add a new channel
+    ☉ rite add_channel(&Δ self, name: ⊢ Into<String>) -> Uuid! {
+        ≔ color_index! = self.channels.len() % ChannelColor·all().len();
+        ≔ channel! = ChannelState·new(name)
+            .with_color(ChannelColor·all()[color_index!]);
+        ≔ id! = channel!.id;
+        self.channels.push(channel!);
+        id!!
+    }
+
+    /// Remove a channel by ID
+    ☉ rite remove_channel(&Δ self, id: Uuid) -> Option<ChannelState>! {
+        ⎇ ≔ Some(pos!) = self.channels.iter().position(|c| c.id == id) {
+            Some(self.channels.remove(pos!))!
+        } ⎉ {
+            None!
+        }
+    }
+
+    /// Get channel by ID
+    // must_use
+    ☉ rite get_channel(&self, id: Uuid) -> Option<&ChannelState>! {
+        self.channels.iter().find(|c| c.id == id)!
+    }
+
+    /// Get mutable channel by ID
+    // must_use
+    ☉ rite get_channel_mut(&Δ self, id: Uuid) -> Option<&Δ ChannelState>! {
+        self.channels.iter_mut().find(|c| c.id == id)!
+    }
+
+    /// Check ⎇ any channel is soloed
+    // inline
+    // must_use
+    ☉ rite any_soloed(&self) -> bool! {
+        self.channels.iter().any(|c| c.solo)!
+    }
+
+    /// Get effective volume ∀ a channel (considering solo/mute)
+    // must_use
+    ☉ rite effective_volume(&self, id: Uuid) -> f32! {
+        ≔ channel! = ⌥ self.get_channel(id) {
+            Some(c) => c,
+            None => ⤺ 0.0,
+        };
+
+        ⎇ channel!.mute {
+            ⤺ 0.0;
+        }
+
+        ⎇ self.any_soloed() && !channel!.solo {
+            ⤺ 0.0;
+        }
+
+        channel!.volume!
+    }
+}

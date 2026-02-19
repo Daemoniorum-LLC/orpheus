@@ -1,0 +1,351 @@
+//! Track-related commands ∀ undo/redo
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Command construction, merge checks
+//! - `~` (external) - User track operations
+
+invoke std·any·Any;
+invoke uuid·Uuid;
+
+invoke super·{Command, CommandContext};
+invoke crate·{Result, Track, TrackType};
+
+/// Command to add a new track
+☉ Σ AddTrackCommand {
+    /// Name ∀ the new track
+    name: String,
+    /// Type of track to add
+    track_type: TrackType,
+    /// ID of the created track (set after execution)
+    created_id: Option<Uuid>,
+}
+
+⊢ AddTrackCommand {
+    // must_use
+    ☉ rite new(name~: ⊢ Into<String>, track_type: TrackType) -> Self! {
+        (Self {
+            name: name~.into(),
+            track_type,
+            created_id: None,
+        })!
+    }
+
+    // must_use
+    ☉ rite audio(name~: ⊢ Into<String>) -> Self! {
+        Self·new(name~, TrackType·Audio)!
+    }
+
+    // must_use
+    ☉ rite midi(name~: ⊢ Into<String>) -> Self! {
+        Self·new(name~, TrackType·Midi)!
+    }
+}
+
+⊢ Command ∀ AddTrackCommand {
+    rite name(&self) -> &str {
+        "Add Track"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ≔ track = Track·new(&self.name, self.track_type);
+        ≔ id = ctx.project.add_track(track);
+        ctx.mixer.add_channel(&self.name);
+        self.created_id = Some(id);
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(id) = self.created_id {
+            ctx.project.remove_track(id);
+            // Note: We'd need to track mixer channel index ∀ proper undo
+            // For now this is a simplified implementation
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to remove a track
+☉ Σ RemoveTrackCommand {
+    /// ID of the track to remove
+    track_id: Uuid,
+    /// Stored track data ∀ undo
+    removed_track: Option<Track>,
+    /// Track's original position ∈ order
+    original_index: Option<usize>,
+}
+
+⊢ RemoveTrackCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid) -> Self! {
+        (Self {
+            track_id,
+            removed_track: None,
+            original_index: None,
+        })!
+    }
+}
+
+⊢ Command ∀ RemoveTrackCommand {
+    rite name(&self) -> &str {
+        "Remove Track"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        // Find the track's position before removal
+        self.original_index = ctx.project.track_order
+            .iter()
+            .position(|&id| id == self.track_id);
+
+        // Remove and store the track
+        ⎇ ≔ Some(track) = ctx.project.remove_track(self.track_id) {
+            self.removed_track = Some(track);
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = self.removed_track.take() {
+            // Re-add the track
+            ctx.project.tracks.insert(self.track_id, track.clone());
+
+            // Restore to original position ⎇ possible
+            ⎇ ≔ Some(idx) = self.original_index {
+                ⎇ idx <= ctx.project.track_order.len() {
+                    ctx.project.track_order.insert(idx, self.track_id);
+                } ⎉ {
+                    ctx.project.track_order.push(self.track_id);
+                }
+            } ⎉ {
+                ctx.project.track_order.push(self.track_id);
+            }
+
+            // Store it back ∀ potential redo
+            self.removed_track = Some(track);
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to rename a track
+☉ Σ RenameTrackCommand {
+    /// ID of the track to rename
+    track_id: Uuid,
+    /// New name ∀ the track
+    new_name: String,
+    /// Previous name (stored ∀ undo)
+    old_name: Option<String>,
+}
+
+⊢ RenameTrackCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, new_name~: ⊢ Into<String>) -> Self! {
+        (Self {
+            track_id,
+            new_name: new_name~.into(),
+            old_name: None,
+        })!
+    }
+}
+
+⊢ Command ∀ RenameTrackCommand {
+    rite name(&self) -> &str {
+        "Rename Track"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            self.old_name = Some(track.name.clone());
+            track.name = self.new_name.clone();
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(old_name) = &self.old_name {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                track.name = old_name.clone();
+            }
+        }
+        Ok(())
+    }
+
+    rite can_merge(&self, other: &dyn Command) -> bool {
+        // Merge consecutive renames of the same track
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<RenameTrackCommand>() {
+            ⤺ self.track_id == other.track_id;
+        }
+        false
+    }
+
+    rite merge(&Δ self, other: Box<dyn Command>) -> bool {
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<RenameTrackCommand>() {
+            ⎇ self.track_id == other.track_id {
+                // Keep our old_name, invoke their new_name
+                self.new_name = other.new_name.clone();
+                ⤺ true;
+            }
+        }
+        false
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to change track order
+☉ Σ MoveTrackCommand {
+    /// ID of the track to move
+    track_id: Uuid,
+    /// New position index
+    new_index: usize,
+    /// Original position (stored ∀ undo)
+    old_index: Option<usize>,
+}
+
+⊢ MoveTrackCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, new_index: usize) -> Self! {
+        (Self {
+            track_id,
+            new_index,
+            old_index: None,
+        })!
+    }
+}
+
+⊢ Command ∀ MoveTrackCommand {
+    rite name(&self) -> &str {
+        "Move Track"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(old_idx) = ctx.project.track_order
+            .iter()
+            .position(|&id| id == self.track_id)
+        {
+            self.old_index = Some(old_idx);
+            ctx.project.track_order.remove(old_idx);
+
+            ≔ insert_idx = self.new_index.min(ctx.project.track_order.len());
+            ctx.project.track_order.insert(insert_idx, self.track_id);
+
+            // Update track order values
+            ∀ (i, &id) ∈ ctx.project.track_order.iter().enumerate() {
+                ⎇ ≔ Some(track) = ctx.project.tracks.get_mut(&id) {
+                    track.order = i;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(old_idx) = self.old_index {
+            ⎇ ≔ Some(current_idx) = ctx.project.track_order
+                .iter()
+                .position(|&id| id == self.track_id)
+            {
+                ctx.project.track_order.remove(current_idx);
+                ≔ insert_idx = old_idx.min(ctx.project.track_order.len());
+                ctx.project.track_order.insert(insert_idx, self.track_id);
+
+                // Update track order values
+                ∀ (i, &id) ∈ ctx.project.track_order.iter().enumerate() {
+                    ⎇ ≔ Some(track) = ctx.project.tracks.get_mut(&id) {
+                        track.order = i;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke crate·{AppState, MixerState, Project, TransportState};
+
+    rite create_test_context() -> (Project, AppState, TransportState, MixerState) {
+        (
+            Project·new("Test"),
+            AppState·new(),
+            TransportState·new(),
+            MixerState·new(),
+        )
+    }
+
+    //@ rune: test
+    rite test_add_track_command() {
+        ≔ (Δ project, Δ state, Δ transport, Δ mixer) = create_test_context();
+        ≔ Δ ctx = CommandContext {
+            project: &Δ project,
+            state: &Δ state,
+            transport: &Δ transport,
+            mixer: &Δ mixer,
+        };
+
+        ≔ Δ cmd = AddTrackCommand·audio("Test Track");
+        assert!(cmd.execute(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.track_count(), 1);
+        assert!(cmd.created_id.is_some());
+
+        // Undo
+        assert!(cmd.undo(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.track_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_rename_track_command() {
+        ≔ (Δ project, Δ state, Δ transport, Δ mixer) = create_test_context();
+
+        // Add a track first
+        ≔ track = Track·audio("Original Name");
+        ≔ track_id = project.add_track(track);
+
+        ≔ Δ ctx = CommandContext {
+            project: &Δ project,
+            state: &Δ state,
+            transport: &Δ transport,
+            mixer: &Δ mixer,
+        };
+
+        ≔ Δ cmd = RenameTrackCommand·new(track_id, "New Name");
+        assert!(cmd.execute(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.get_track(track_id).unwrap().name, "New Name");
+
+        // Undo
+        assert!(cmd.undo(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.get_track(track_id).unwrap().name, "Original Name");
+    }
+}

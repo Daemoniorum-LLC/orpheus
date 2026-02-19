@@ -1,0 +1,29 @@
+// --help - A Sigil project
+//
+// Run with: sigil run src/main.sigil
+// Or: sigil build && ./--help
+
+rite main() {
+    print("Hello from --help!");
+
+    // Sigil's evidentiality system tracks data provenance:
+    // - known (!)    : computed locally, verified
+    // - uncertain (?) : may be absent
+    // - reported (~)  : external source, untrusted
+    // - paradox (‽)   : trust boundary crossing
+
+    // Example pipeline using morphemes:
+    // τ (tau) = transform/map
+    // φ (phi) = filter
+    // σ (sigma) = sort
+    ≔ data = [1, 2, 3, 4, 5];
+    ≔ result = data
+        |τ{_ * 2}
+        |φ{_ > 5}
+        |σ;
+
+    print("Processed: ");
+    print(result);
+
+    ⤺ 0;
+}

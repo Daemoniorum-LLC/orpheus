@@ -1,0 +1,1216 @@
+//! Orchestral mixer with spatial positioning and concert hall simulation
+//!
+//! Provides:
+//! - Concert hall acoustic modeling
+//! - Musician positioning ∈ 3D space
+//! - Spatial audio processing (panning, distance, early reflections)
+//! - Section management ∀ full orchestra
+//! - Visualizer data ∀ UI rendering
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Spatial calculations, reverb, section mixing
+//! - `~` (external) - Seating arrangement, hall type selection
+
+invoke std·f32·consts·PI;
+
+/// 3D position ∈ the concert hall (meters from center stage)
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ Σ Position {
+    /// Left-right position (-x = stage left, +x = stage right)
+    ☉ x: f32,
+    /// Front-back position (-y = downstage/audience, +y = upstage/back)
+    ☉ y: f32,
+    /// Height (0 = stage floor, positive = elevated)
+    ☉ z: f32,
+}
+
+⊢ Position {
+    ☉ rite new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+
+    /// Center stage position
+    ☉ rite center() -> Self {
+        Self·new(0.0, 0.0, 0.0)
+    }
+
+    /// Distance from another position
+    ☉ rite distance_to(&self, other: &Position) -> f32 {
+        ≔ dx = self.x - other.x;
+        ≔ dy = self.y - other.y;
+        ≔ dz = self.z - other.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    /// Angle from listener (radians, 0 = front, positive = right)
+    ☉ rite angle_from(&self, listener: &Position) -> f32 {
+        ≔ dx = self.x - listener.x;
+        ≔ dy = self.y - listener.y;
+        dx.atan2(dy)
+    }
+}
+
+⊢ Default ∀ Position {
+    rite default() -> Self {
+        Self·center()
+    }
+}
+
+/// Listener/audience position
+//@ rune: derive(Debug, Clone, Copy)
+☉ Σ Listener {
+    ☉ position: Position,
+    /// Head rotation ∈ radians (0 = facing stage)
+    ☉ rotation: f32,
+}
+
+⊢ Default ∀ Listener {
+    rite default() -> Self {
+        Self {
+            // Typical conductor position, or center of audience
+            position: Position·new(0.0, -8.0, 1.2),
+            rotation: 0.0,
+        }
+    }
+}
+
+/// Concert hall types with different acoustic characteristics
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ HallType {
+    /// Intimate recital hall (300-600 seats)
+    RecitalHall,
+    /// Medium concert hall (800-1200 seats)
+    ChamberHall,
+    /// Large symphony hall (1500-2500 seats)
+    SymphonyHall,
+    /// Very large concert hall (2500+ seats)
+    GrandHall,
+    /// Cathedral/church acoustic
+    Cathedral,
+    /// Outdoor amphitheater
+    Amphitheater,
+    /// Recording studio (dry)
+    Studio,
+    /// Custom hall
+    Custom,
+}
+
+⊢ HallType {
+    /// Get hall dimensions (width, depth, height) ∈ meters
+    ☉ rite dimensions(&self) -> (f32, f32, f32) {
+        ⌥ self {
+            Self·RecitalHall => (15.0, 20.0, 8.0),
+            Self·ChamberHall => (22.0, 30.0, 12.0),
+            Self·SymphonyHall => (30.0, 45.0, 18.0),
+            Self·GrandHall => (40.0, 60.0, 25.0),
+            Self·Cathedral => (25.0, 80.0, 30.0),
+            Self·Amphitheater => (50.0, 40.0, 0.0), // Open air
+            Self·Studio => (12.0, 15.0, 4.0),
+            Self·Custom => (25.0, 35.0, 15.0),
+        }
+    }
+
+    /// Get reverb time (RT60) ∈ seconds
+    ☉ rite reverb_time(&self) -> f32 {
+        ⌥ self {
+            Self·RecitalHall => 1.4,
+            Self·ChamberHall => 1.8,
+            Self·SymphonyHall => 2.2,
+            Self·GrandHall => 2.8,
+            Self·Cathedral => 4.5,
+            Self·Amphitheater => 0.3,
+            Self·Studio => 0.4,
+            Self·Custom => 2.0,
+        }
+    }
+
+    /// Get early reflection density (0-1)
+    ☉ rite reflection_density(&self) -> f32 {
+        ⌥ self {
+            Self·RecitalHall => 0.7,
+            Self·ChamberHall => 0.6,
+            Self·SymphonyHall => 0.5,
+            Self·GrandHall => 0.45,
+            Self·Cathedral => 0.3,
+            Self·Amphitheater => 0.2,
+            Self·Studio => 0.8,
+            Self·Custom => 0.5,
+        }
+    }
+}
+
+/// Concert hall model
+//@ rune: derive(Debug, Clone)
+☉ Σ ConcertHall {
+    ☉ hall_type: HallType,
+    ☉ width: f32,
+    ☉ depth: f32,
+    ☉ height: f32,
+    /// Reverb time ∈ seconds
+    ☉ reverb_time: f32,
+    /// Early reflection delay (ms)
+    ☉ early_reflection_delay: f32,
+    /// Wall absorption coefficient (0 = reflective, 1 = absorptive)
+    ☉ wall_absorption: f32,
+    /// Air absorption coefficient
+    ☉ air_absorption: f32,
+    /// Stage dimensions (width, depth)
+    ☉ stage_width: f32,
+    ☉ stage_depth: f32,
+}
+
+⊢ ConcertHall {
+    ☉ rite new(hall_type: HallType) -> Self {
+        ≔ (width, depth, height) = hall_type.dimensions();
+        Self {
+            hall_type,
+            width,
+            depth,
+            height,
+            reverb_time: hall_type.reverb_time(),
+            early_reflection_delay: 20.0 + width * 0.5,
+            wall_absorption: 0.3,
+            air_absorption: 0.001,
+            stage_width: width * 0.6,
+            stage_depth: depth * 0.25,
+        }
+    }
+
+    /// Symphony hall preset
+    ☉ rite symphony_hall() -> Self {
+        Self·new(HallType·SymphonyHall)
+    }
+
+    /// Chamber music hall preset
+    ☉ rite chamber_hall() -> Self {
+        Self·new(HallType·ChamberHall)
+    }
+
+    /// Recording studio preset
+    ☉ rite studio() -> Self {
+        Self·new(HallType·Studio)
+    }
+
+    /// Calculate distance attenuation
+    ☉ rite distance_attenuation(&self, distance: f32) -> f32 {
+        ⎇ distance < 1.0 {
+            ⤺ 1.0;
+        }
+        // Inverse square law with air absorption
+        ≔ geometric = 1.0 / distance;
+        ≔ air_loss = (-self.air_absorption * distance).exp();
+        geometric * air_loss
+    }
+
+    /// Calculate early reflection gain based on position
+    ☉ rite early_reflection_gain(&self, source: &Position, listener: &Position) -> f32 {
+        ≔ _direct_distance = source.distance_to(listener);
+
+        // Simplified: reflections from walls add energy
+        ≔ reflection_density = self.hall_type.reflection_density();
+        ≔ wall_distance = (self.width / 2.0 - source.x.abs()).min(self.depth - source.y);
+
+        ⎇ wall_distance < 1.0 {
+            reflection_density * 0.5 // Close to wall, more reflections
+        } ⎉ {
+            reflection_density * 0.3 * (1.0 - self.wall_absorption)
+        }
+    }
+}
+
+⊢ Default ∀ ConcertHall {
+    rite default() -> Self {
+        Self·symphony_hall()
+    }
+}
+
+/// Orchestra section types
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ OrchestraSection {
+    // Strings
+    Violin1,
+    Violin2,
+    Viola,
+    Cello,
+    DoubleBass,
+
+    // Woodwinds
+    Flute,
+    Oboe,
+    Clarinet,
+    Bassoon,
+
+    // Brass
+    FrenchHorn,
+    Trumpet,
+    Trombone,
+    Tuba,
+
+    // Percussion
+    Timpani,
+    Percussion,
+
+    // Choir
+    Soprano,
+    Alto,
+    Tenor,
+    Bass,
+
+    // Special
+    Harp,
+    Piano,
+    Organ,
+    Soloist,
+}
+
+⊢ OrchestraSection {
+    /// Get typical section size
+    ☉ rite typical_size(&self) -> usize {
+        ⌥ self {
+            Self·Violin1 => 16,
+            Self·Violin2 => 14,
+            Self·Viola => 12,
+            Self·Cello => 10,
+            Self·DoubleBass => 8,
+            Self·Flute => 3,
+            Self·Oboe => 3,
+            Self·Clarinet => 3,
+            Self·Bassoon => 3,
+            Self·FrenchHorn => 4,
+            Self·Trumpet => 3,
+            Self·Trombone => 3,
+            Self·Tuba => 1,
+            Self·Timpani => 1,
+            Self·Percussion => 4,
+            Self·Soprano => 12,
+            Self·Alto => 12,
+            Self·Tenor => 10,
+            Self·Bass => 10,
+            Self·Harp => 1,
+            Self·Piano => 1,
+            Self·Organ => 1,
+            Self·Soloist => 1,
+        }
+    }
+
+    /// Get display name
+    ☉ rite display_name(&self) -> &'static str {
+        ⌥ self {
+            Self·Violin1 => "Violin I",
+            Self·Violin2 => "Violin II",
+            Self·Viola => "Viola",
+            Self·Cello => "Cello",
+            Self·DoubleBass => "Double Bass",
+            Self·Flute => "Flute",
+            Self·Oboe => "Oboe",
+            Self·Clarinet => "Clarinet",
+            Self·Bassoon => "Bassoon",
+            Self·FrenchHorn => "French Horn",
+            Self·Trumpet => "Trumpet",
+            Self·Trombone => "Trombone",
+            Self·Tuba => "Tuba",
+            Self·Timpani => "Timpani",
+            Self·Percussion => "Percussion",
+            Self·Soprano => "Soprano",
+            Self·Alto => "Alto",
+            Self·Tenor => "Tenor",
+            Self·Bass => "Bass (Choir)",
+            Self·Harp => "Harp",
+            Self·Piano => "Piano",
+            Self·Organ => "Organ",
+            Self·Soloist => "Soloist",
+        }
+    }
+
+    /// Get section color ∀ visualization (RGB)
+    ☉ rite color(&self) -> (u8, u8, u8) {
+        ⌥ self {
+            // Strings - warm browns/reds
+            Self·Violin1 => (180, 100, 60),
+            Self·Violin2 => (160, 90, 55),
+            Self·Viola => (140, 80, 50),
+            Self·Cello => (120, 70, 45),
+            Self·DoubleBass => (100, 60, 40),
+
+            // Woodwinds - greens/teals
+            Self·Flute => (150, 200, 180),
+            Self·Oboe => (100, 180, 140),
+            Self·Clarinet => (80, 160, 120),
+            Self·Bassoon => (60, 140, 100),
+
+            // Brass - golds/yellows
+            Self·FrenchHorn => (220, 180, 80),
+            Self·Trumpet => (240, 200, 60),
+            Self·Trombone => (200, 160, 50),
+            Self·Tuba => (180, 140, 40),
+
+            // Percussion - grays/silvers
+            Self·Timpani => (120, 120, 130),
+            Self·Percussion => (100, 100, 110),
+
+            // Choir - purples/blues
+            Self·Soprano => (200, 150, 220),
+            Self·Alto => (180, 130, 200),
+            Self·Tenor => (160, 110, 180),
+            Self·Bass => (140, 90, 160),
+
+            // Special - distinct colors
+            Self·Harp => (220, 200, 160),
+            Self·Piano => (40, 40, 40),
+            Self·Organ => (80, 80, 100),
+            Self·Soloist => (255, 100, 100),
+        }
+    }
+}
+
+/// Individual musician ∈ the orchestra
+//@ rune: derive(Debug, Clone)
+☉ Σ Musician {
+    /// Unique identifier
+    ☉ id: u32,
+    /// Section this musician belongs to
+    ☉ section: OrchestraSection,
+    /// Position ∈ the concert hall
+    ☉ position: Position,
+    /// Individual volume (0.0 - 1.0)
+    ☉ volume: f32,
+    /// Muted state
+    ☉ muted: bool,
+    /// Solo state
+    ☉ solo: bool,
+    /// Chair number within section (1 = principal)
+    ☉ chair: u8,
+}
+
+⊢ Musician {
+    ☉ rite new(id: u32, section: OrchestraSection, position: Position, chair: u8) -> Self {
+        Self {
+            id,
+            section,
+            position,
+            volume: 1.0,
+            muted: false,
+            solo: false,
+            chair,
+        }
+    }
+}
+
+/// Seating arrangement presets
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ SeatingArrangement {
+    /// Traditional American seating (Violin II opposite Violin I)
+    American,
+    /// German/European seating (Violin I and II on left)
+    German,
+    /// Stokowski arrangement (antiphonal strings)
+    Stokowski,
+    /// Baroque/period instrument arrangement
+    Baroque,
+    /// Modern flexible arrangement
+    Modern,
+    /// Custom user arrangement
+    Custom,
+}
+
+⊢ SeatingArrangement {
+    /// Get default positions ∀ a section
+    ☉ rite section_center(&self, section: OrchestraSection) -> Position {
+        ⌥ self {
+            Self·American => Self·american_position(section),
+            Self·German => Self·german_position(section),
+            Self·Stokowski => Self·stokowski_position(section),
+            Self·Baroque => Self·baroque_position(section),
+            Self·Modern | Self·Custom => Self·american_position(section),
+        }
+    }
+
+    rite american_position(section: OrchestraSection) -> Position {
+        ⌥ section {
+            // Strings - front arc
+            OrchestraSection·Violin1 => Position·new(-6.0, 0.0, 0.0),
+            OrchestraSection·Violin2 => Position·new(6.0, 0.0, 0.0),
+            OrchestraSection·Viola => Position·new(3.0, 2.0, 0.0),
+            OrchestraSection·Cello => Position·new(-3.0, 2.0, 0.0),
+            OrchestraSection·DoubleBass => Position·new(-8.0, 3.0, 0.0),
+
+            // Woodwinds - second row center
+            OrchestraSection·Flute => Position·new(-2.0, 4.0, 0.3),
+            OrchestraSection·Oboe => Position·new(0.0, 4.0, 0.3),
+            OrchestraSection·Clarinet => Position·new(2.0, 4.5, 0.3),
+            OrchestraSection·Bassoon => Position·new(4.0, 4.5, 0.3),
+
+            // Brass - back row
+            OrchestraSection·FrenchHorn => Position·new(-4.0, 6.0, 0.5),
+            OrchestraSection·Trumpet => Position·new(0.0, 7.0, 0.5),
+            OrchestraSection·Trombone => Position·new(3.0, 7.0, 0.5),
+            OrchestraSection·Tuba => Position·new(6.0, 7.0, 0.5),
+
+            // Percussion - far back
+            OrchestraSection·Timpani => Position·new(-6.0, 8.0, 0.3),
+            OrchestraSection·Percussion => Position·new(0.0, 9.0, 0.5),
+
+            // Choir - behind orchestra or risers
+            OrchestraSection·Soprano => Position·new(-4.0, 10.0, 1.0),
+            OrchestraSection·Alto => Position·new(-1.0, 10.0, 1.0),
+            OrchestraSection·Tenor => Position·new(1.0, 10.0, 1.0),
+            OrchestraSection·Bass => Position·new(4.0, 10.0, 1.0),
+
+            // Special instruments
+            OrchestraSection·Harp => Position·new(-10.0, 3.0, 0.0),
+            OrchestraSection·Piano => Position·new(-8.0, 1.0, 0.0),
+            OrchestraSection·Organ => Position·new(0.0, 12.0, 2.0),
+            OrchestraSection·Soloist => Position·new(0.0, -1.0, 0.0),
+        }
+    }
+
+    rite german_position(section: OrchestraSection) -> Position {
+        ⌥ section {
+            // German: Violin I and II both on left, Cello/Bass on right
+            OrchestraSection·Violin1 => Position·new(-6.0, 0.0, 0.0),
+            OrchestraSection·Violin2 => Position·new(-4.0, 2.0, 0.0),
+            OrchestraSection·Viola => Position·new(4.0, 2.0, 0.0),
+            OrchestraSection·Cello => Position·new(6.0, 0.0, 0.0),
+            OrchestraSection·DoubleBass => Position·new(8.0, 2.0, 0.0),
+            _ => Self·american_position(section),
+        }
+    }
+
+    rite stokowski_position(section: OrchestraSection) -> Position {
+        ⌥ section {
+            // Stokowski: Antiphonal violins, basses center back
+            OrchestraSection·Violin1 => Position·new(-7.0, 0.0, 0.0),
+            OrchestraSection·Violin2 => Position·new(7.0, 0.0, 0.0),
+            OrchestraSection·Viola => Position·new(-3.0, 2.0, 0.0),
+            OrchestraSection·Cello => Position·new(3.0, 2.0, 0.0),
+            OrchestraSection·DoubleBass => Position·new(0.0, 5.0, 0.0),
+            _ => Self·american_position(section),
+        }
+    }
+
+    rite baroque_position(section: OrchestraSection) -> Position {
+        ⌥ section {
+            // Baroque: Smaller, more intimate arrangement
+            OrchestraSection·Violin1 => Position·new(-4.0, 0.0, 0.0),
+            OrchestraSection·Violin2 => Position·new(4.0, 0.0, 0.0),
+            OrchestraSection·Viola => Position·new(2.0, 1.5, 0.0),
+            OrchestraSection·Cello => Position·new(-2.0, 1.5, 0.0),
+            OrchestraSection·DoubleBass => Position·new(-4.0, 2.0, 0.0),
+            _ => Self·american_position(section),
+        }
+    }
+}
+
+/// Spatial audio processor ∀ a single source
+//@ rune: derive(Debug, Clone)
+☉ Σ SpatialProcessor {
+    /// Source position
+    ☉ position: Position,
+    /// Listener reference
+    listener: Listener,
+    /// Calculated pan (-1 to 1)
+    pan: f32,
+    /// Calculated distance attenuation
+    distance_gain: f32,
+    /// Early reflection delay samples
+    early_delay_samples: usize,
+    /// Early reflection gain
+    early_gain: f32,
+    /// Delay buffer ∀ early reflections
+    delay_buffer: Vec<f32>,
+    delay_write_pos: usize,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+⊢ SpatialProcessor {
+    ☉ rite new(position: Position, listener: Listener, hall: &ConcertHall, sample_rate: f32) -> Self {
+        ≔ distance = position.distance_to(&listener.position);
+        ≔ angle = position.angle_from(&listener.position);
+
+        // Calculate pan based on angle
+        ≔ pan = (angle - listener.rotation).sin().clamp(-1.0, 1.0);
+
+        // Calculate distance attenuation
+        ≔ distance_gain = hall.distance_attenuation(distance);
+
+        // Early reflection delay based on wall distance
+        ≔ early_delay_ms = hall.early_reflection_delay + distance * 2.0;
+        ≔ early_delay_samples = ((early_delay_ms / 1000.0) * sample_rate) as usize;
+
+        // Early reflection gain
+        ≔ early_gain = hall.early_reflection_gain(&position, &listener.position);
+
+        // Allocate delay buffer ∀ reflections
+        ≔ max_delay = (sample_rate * 0.1) as usize; // 100ms max
+
+        Self {
+            position,
+            listener,
+            pan,
+            distance_gain,
+            early_delay_samples: early_delay_samples.min(max_delay - 1),
+            early_gain,
+            delay_buffer: vec![0.0; max_delay],
+            delay_write_pos: 0,
+            sample_rate,
+        }
+    }
+
+    /// Update position (e.g., when musician moves)
+    ☉ rite set_position(&Δ self, position: Position, hall: &ConcertHall) {
+        self.position = position;
+        ≔ distance = position.distance_to(&self.listener.position);
+        ≔ angle = position.angle_from(&self.listener.position);
+
+        self.pan = (angle - self.listener.rotation).sin().clamp(-1.0, 1.0);
+        self.distance_gain = hall.distance_attenuation(distance);
+        self.early_gain = hall.early_reflection_gain(&position, &self.listener.position);
+    }
+
+    /// Process mono input to stereo output with spatialization
+    ☉ rite process(&Δ self, input: f32) -> (f32, f32) {
+        // Apply distance attenuation
+        ≔ direct = input * self.distance_gain;
+
+        // Write to delay buffer
+        self.delay_buffer[self.delay_write_pos] = input;
+        self.delay_write_pos = (self.delay_write_pos + 1) % self.delay_buffer.len();
+
+        // Read early reflection
+        ≔ read_pos = (self.delay_write_pos + self.delay_buffer.len() - self.early_delay_samples)
+            % self.delay_buffer.len();
+        ≔ early = self.delay_buffer[read_pos] * self.early_gain * self.distance_gain;
+
+        // Combine direct and early reflection
+        ≔ combined = direct + early;
+
+        // Apply panning (constant power pan law)
+        ≔ pan_angle = (self.pan + 1.0) * 0.25 * PI; // 0 to PI/2
+        ≔ left = combined * pan_angle.cos();
+        ≔ right = combined * pan_angle.sin();
+
+        (left, right)
+    }
+
+    /// Get current pan value ∀ visualization
+    ☉ rite get_pan(&self) -> f32 {
+        self.pan
+    }
+
+    /// Get current distance ∀ visualization
+    ☉ rite get_distance(&self) -> f32 {
+        self.position.distance_to(&self.listener.position)
+    }
+}
+
+/// Section mixer - mixes multiple musicians ∈ a section
+//@ rune: derive(Debug, Clone)
+☉ Σ SectionMixer {
+    ☉ section: OrchestraSection,
+    ☉ musicians: Vec<Musician>,
+    ☉ spatial_processors: Vec<SpatialProcessor>,
+    /// Section volume (0.0 - 1.0)
+    ☉ volume: f32,
+    /// Section pan adjustment (-1.0 to 1.0)
+    ☉ pan: f32,
+    /// Section muted
+    ☉ muted: bool,
+    /// Section solo
+    ☉ solo: bool,
+}
+
+⊢ SectionMixer {
+    ☉ rite new(
+        section: OrchestraSection,
+        arrangement: SeatingArrangement,
+        count: usize,
+        hall: &ConcertHall,
+        listener: Listener,
+        sample_rate: f32,
+    ) -> Self {
+        ≔ center = arrangement.section_center(section);
+        ≔ Δ musicians = Vec·with_capacity(count);
+        ≔ Δ spatial_processors = Vec·with_capacity(count);
+
+        // Spread musicians around the section center
+        ≔ spread = ⌥ section {
+            OrchestraSection·Violin1 | OrchestraSection·Violin2 => 4.0,
+            OrchestraSection·Viola | OrchestraSection·Cello => 3.0,
+            OrchestraSection·DoubleBass => 3.0,
+            OrchestraSection·Soprano | OrchestraSection·Alto |
+            OrchestraSection·Tenor | OrchestraSection·Bass => 3.0,
+            _ => 1.5,
+        };
+
+        ∀ i ∈ 0..count {
+            ≔ offset_x = ⎇ count > 1 {
+                (i as f32 / (count - 1) as f32 - 0.5) * spread
+            } ⎉ {
+                0.0
+            };
+            ≔ offset_y = (i as f32 * 0.15).sin() * 0.5; // Slight staggering
+
+            ≔ pos = Position·new(
+                center.x + offset_x,
+                center.y + offset_y,
+                center.z,
+            );
+
+            ≔ id = (section as u32) * 1000 + i as u32;
+            musicians.push(Musician·new(id, section, pos, (i + 1) as u8));
+            spatial_processors.push(SpatialProcessor·new(pos, listener, hall, sample_rate));
+        }
+
+        Self {
+            section,
+            musicians,
+            spatial_processors,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+        }
+    }
+
+    /// Move a musician to a new position
+    ☉ rite move_musician(&Δ self, index: usize, position: Position, hall: &ConcertHall) {
+        ⎇ index < self.musicians.len() {
+            self.musicians[index].position = position;
+            self.spatial_processors[index].set_position(position, hall);
+        }
+    }
+
+    /// Process audio from section (mono inputs ∀ each musician)
+    ☉ rite process(&Δ self, inputs: &[f32]) -> (f32, f32) {
+        ⎇ self.muted {
+            ⤺ (0.0, 0.0);
+        }
+
+        ≔ Δ left = 0.0;
+        ≔ Δ right = 0.0;
+
+        ∀ (i, input) ∈ inputs.iter().enumerate() {
+            ⎇ i >= self.spatial_processors.len() {
+                ⊗;
+            }
+
+            ⎇ self.musicians[i].muted {
+                ↻;
+            }
+
+            ≔ musician_vol = self.musicians[i].volume;
+            ≔ (l, r) = self.spatial_processors[i].process(*input * musician_vol);
+            left += l;
+            right += r;
+        }
+
+        // Apply section volume and pan
+        left *= self.volume * (1.0 + self.pan.min(0.0));
+        right *= self.volume * (1.0 - self.pan.max(0.0));
+
+        (left, right)
+    }
+
+    /// Get visualization data ∀ this section
+    ☉ rite get_visualization(&self) -> SectionVisualization {
+        ≔ positions: Vec<_> = self.musicians.iter().map(|m| m.position).collect();
+        ≔ (r, g, b) = self.section.color();
+
+        SectionVisualization {
+            section: self.section,
+            positions,
+            color: (r, g, b),
+            volume: self.volume,
+            muted: self.muted,
+            solo: self.solo,
+        }
+    }
+}
+
+/// Full orchestra mixer
+//@ rune: derive(Debug)
+☉ Σ Orchestra {
+    /// Concert hall
+    ☉ hall: ConcertHall,
+    /// Listener position
+    ☉ listener: Listener,
+    /// Seating arrangement
+    ☉ arrangement: SeatingArrangement,
+    /// Section mixers
+    sections: Vec<SectionMixer>,
+    /// Master volume
+    ☉ master_volume: f32,
+    /// Sample rate
+    sample_rate: f32,
+    /// Any section ∈ solo mode?
+    has_solo: bool,
+}
+
+⊢ Orchestra {
+    ☉ rite new(hall: ConcertHall, arrangement: SeatingArrangement, sample_rate: f32) -> Self {
+        Self {
+            hall,
+            listener: Listener·default(),
+            arrangement,
+            sections: Vec·new(),
+            master_volume: 1.0,
+            sample_rate,
+            has_solo: false,
+        }
+    }
+
+    /// Create a full symphony orchestra
+    ☉ rite symphony(sample_rate: f32) -> Self {
+        ≔ hall = ConcertHall·symphony_hall();
+        ≔ arrangement = SeatingArrangement·American;
+
+        ≔ Δ orchestra = Self·new(hall, arrangement, sample_rate);
+
+        // Add all standard symphony sections
+        ≔ sections = [
+            (OrchestraSection·Violin1, 16),
+            (OrchestraSection·Violin2, 14),
+            (OrchestraSection·Viola, 12),
+            (OrchestraSection·Cello, 10),
+            (OrchestraSection·DoubleBass, 8),
+            (OrchestraSection·Flute, 3),
+            (OrchestraSection·Oboe, 3),
+            (OrchestraSection·Clarinet, 3),
+            (OrchestraSection·Bassoon, 3),
+            (OrchestraSection·FrenchHorn, 4),
+            (OrchestraSection·Trumpet, 3),
+            (OrchestraSection·Trombone, 3),
+            (OrchestraSection·Tuba, 1),
+            (OrchestraSection·Timpani, 1),
+            (OrchestraSection·Percussion, 4),
+            (OrchestraSection·Harp, 1),
+        ];
+
+        ∀ (section, count) ∈ sections {
+            orchestra.add_section(section, count);
+        }
+
+        orchestra
+    }
+
+    /// Create a chamber orchestra
+    ☉ rite chamber(sample_rate: f32) -> Self {
+        ≔ hall = ConcertHall·chamber_hall();
+        ≔ arrangement = SeatingArrangement·Baroque;
+        ≔ Δ orchestra = Self·new(hall.clone(), arrangement, sample_rate);
+
+        ≔ sections = [
+            (OrchestraSection·Violin1, 6),
+            (OrchestraSection·Violin2, 5),
+            (OrchestraSection·Viola, 4),
+            (OrchestraSection·Cello, 3),
+            (OrchestraSection·DoubleBass, 2),
+            (OrchestraSection·Flute, 1),
+            (OrchestraSection·Oboe, 2),
+            (OrchestraSection·Bassoon, 1),
+            (OrchestraSection·FrenchHorn, 2),
+        ];
+
+        ∀ (section, count) ∈ sections {
+            orchestra.add_section(section, count);
+        }
+
+        orchestra
+    }
+
+    /// Create orchestra with choir
+    ☉ rite symphony_with_choir(sample_rate: f32) -> Self {
+        ≔ Δ orchestra = Self·symphony(sample_rate);
+
+        orchestra.add_section(OrchestraSection·Soprano, 12);
+        orchestra.add_section(OrchestraSection·Alto, 12);
+        orchestra.add_section(OrchestraSection·Tenor, 10);
+        orchestra.add_section(OrchestraSection·Bass, 10);
+
+        orchestra
+    }
+
+    /// Add a section to the orchestra
+    ☉ rite add_section(&Δ self, section: OrchestraSection, count: usize) {
+        ≔ mixer = SectionMixer·new(
+            section,
+            self.arrangement,
+            count,
+            &self.hall,
+            self.listener,
+            self.sample_rate,
+        );
+        self.sections.push(mixer);
+    }
+
+    /// Get a section mixer by type
+    ☉ rite get_section(&self, section: OrchestraSection) -> Option<&SectionMixer> {
+        self.sections.iter().find(|s| s.section == section)
+    }
+
+    /// Get a mutable section mixer by type
+    ☉ rite get_section_mut(&Δ self, section: OrchestraSection) -> Option<&Δ SectionMixer> {
+        self.sections.iter_mut().find(|s| s.section == section)
+    }
+
+    /// Set listener position
+    ☉ rite set_listener(&Δ self, listener: Listener) {
+        self.listener = listener;
+        // Update all spatial processors
+        ∀ section ∈ &Δ self.sections {
+            ∀ (i, processor) ∈ section.spatial_processors.iter_mut().enumerate() {
+                processor.listener = listener;
+                processor.set_position(section.musicians[i].position, &self.hall);
+            }
+        }
+    }
+
+    /// Move a musician
+    ☉ rite move_musician(&Δ self, section: OrchestraSection, index: usize, position: Position) {
+        // Clone hall to avoid borrow conflict
+        ≔ hall = self.hall.clone();
+        ⎇ ≔ Some(sec) = self.get_section_mut(section) {
+            sec.move_musician(index, position, &hall);
+        }
+    }
+
+    /// Solo a section
+    ☉ rite solo_section(&Δ self, section: OrchestraSection, solo: bool) {
+        ⎇ ≔ Some(sec) = self.get_section_mut(section) {
+            sec.solo = solo;
+        }
+        self.has_solo = self.sections.iter().any(|s| s.solo);
+    }
+
+    /// Mute a section
+    ☉ rite mute_section(&Δ self, section: OrchestraSection, mute: bool) {
+        ⎇ ≔ Some(sec) = self.get_section_mut(section) {
+            sec.muted = mute;
+        }
+    }
+
+    /// Set section volume
+    ☉ rite set_section_volume(&Δ self, section: OrchestraSection, volume: f32) {
+        ⎇ ≔ Some(sec) = self.get_section_mut(section) {
+            sec.volume = volume.clamp(0.0, 2.0);
+        }
+    }
+
+    /// Process all sections
+    /// inputs: HashMap<OrchestraSection, Vec<f32>> - audio ∀ each musician ∈ each section
+    ☉ rite process(&Δ self, section_inputs: &[(OrchestraSection, Vec<f32>)]) -> (f32, f32) {
+        ≔ Δ left = 0.0;
+        ≔ Δ right = 0.0;
+
+        ∀ (section_type, inputs) ∈ section_inputs {
+            ⎇ ≔ Some(section) = self.sections.iter_mut().find(|s| s.section == *section_type) {
+                // Skip ⎇ solo mode is active and this section isn't solo'd
+                ⎇ self.has_solo && !section.solo {
+                    ↻;
+                }
+
+                ≔ (l, r) = section.process(inputs);
+                left += l;
+                right += r;
+            }
+        }
+
+        // Apply master volume
+        (left * self.master_volume, right * self.master_volume)
+    }
+
+    /// Get full visualization data
+    ☉ rite get_visualization(&self) -> OrchestraVisualization {
+        ≔ sections: Vec<_> = self.sections.iter().map(|s| s.get_visualization()).collect();
+
+        OrchestraVisualization {
+            hall_width: self.hall.width,
+            hall_depth: self.hall.depth,
+            stage_width: self.hall.stage_width,
+            stage_depth: self.hall.stage_depth,
+            listener_position: self.listener.position,
+            sections,
+        }
+    }
+
+    /// Get list of all sections
+    ☉ rite list_sections(&self) -> Vec<OrchestraSection> {
+        self.sections.iter().map(|s| s.section).collect()
+    }
+
+    /// Get total musician count
+    ☉ rite musician_count(&self) -> usize {
+        self.sections.iter().map(|s| s.musicians.len()).sum()
+    }
+}
+
+/// Visualization data ∀ a section
+//@ rune: derive(Debug, Clone)
+☉ Σ SectionVisualization {
+    ☉ section: OrchestraSection,
+    ☉ positions: Vec<Position>,
+    ☉ color: (u8, u8, u8),
+    ☉ volume: f32,
+    ☉ muted: bool,
+    ☉ solo: bool,
+}
+
+/// Full orchestra visualization data
+//@ rune: derive(Debug, Clone)
+☉ Σ OrchestraVisualization {
+    ☉ hall_width: f32,
+    ☉ hall_depth: f32,
+    ☉ stage_width: f32,
+    ☉ stage_depth: f32,
+    ☉ listener_position: Position,
+    ☉ sections: Vec<SectionVisualization>,
+}
+
+⊢ OrchestraVisualization {
+    /// Convert position to normalized coordinates (0-1) ∀ rendering
+    ☉ rite position_to_normalized(&self, pos: &Position) -> (f32, f32) {
+        ≔ x = (pos.x / self.hall_width + 0.5).clamp(0.0, 1.0);
+        ≔ y = (pos.y / self.hall_depth + 0.1).clamp(0.0, 1.0);
+        (x, y)
+    }
+
+    /// Get all musician positions as normalized coordinates with section info
+    ☉ rite get_all_musicians(&self) -> Vec<(f32, f32, OrchestraSection, (u8, u8, u8))> {
+        ≔ Δ result = Vec·new();
+
+        ∀ section ∈ &self.sections {
+            ∀ pos ∈ &section.positions {
+                ≔ (x, y) = self.position_to_normalized(pos);
+                result.push((x, y, section.section, section.color));
+            }
+        }
+
+        result
+    }
+
+    /// Get JSON-serializable representation ∀ web UI
+    ☉ rite to_json_value(&self) -> String {
+        ≔ Δ json = String·from("{");
+
+        json.push_str(&format!(
+            "\"hall\":{{\"width\":{},\"depth\":{},\"stageWidth\":{},\"stageDepth\":{}}},",
+            self.hall_width, self.hall_depth, self.stage_width, self.stage_depth
+        ));
+
+        json.push_str(&format!(
+            "\"listener\":{{\"x\":{},\"y\":{}}},",
+            self.listener_position.x, self.listener_position.y
+        ));
+
+        json.push_str("\"sections\":[");
+        ∀ (i, section) ∈ self.sections.iter().enumerate() {
+            ⎇ i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(
+                "{{\"name\":\"{}\",\"color\":[{},{},{}],\"volume\":{},\"muted\":{},\"solo\":{},\"positions\":[",
+                section.section.display_name(),
+                section.color.0, section.color.1, section.color.2,
+                section.volume,
+                section.muted,
+                section.solo
+            ));
+            ∀ (j, pos) ∈ section.positions.iter().enumerate() {
+                ⎇ j > 0 {
+                    json.push(',');
+                }
+                json.push_str(&format!("{{\"x\":{},\"y\":{},\"z\":{}}}", pos.x, pos.y, pos.z));
+            }
+            json.push_str("]}");
+        }
+        json.push_str("]}");
+
+        json
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_position() {
+        ≔ p1 = Position·new(0.0, 0.0, 0.0);
+        ≔ p2 = Position·new(3.0, 4.0, 0.0);
+
+        assert!((p1.distance_to(&p2) - 5.0).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_hall_types() {
+        ≔ halls = [
+            HallType·RecitalHall,
+            HallType·ChamberHall,
+            HallType·SymphonyHall,
+            HallType·GrandHall,
+            HallType·Cathedral,
+        ];
+
+        ∀ hall_type ∈ halls {
+            ≔ hall = ConcertHall·new(hall_type);
+            assert!(hall.width > 0.0);
+            assert!(hall.reverb_time > 0.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_orchestra_creation() {
+        ≔ sample_rate = 44100.0;
+        ≔ orchestra = Orchestra·symphony(sample_rate);
+
+        // Should have standard sections
+        assert!(orchestra.get_section(OrchestraSection·Violin1).is_some());
+        assert!(orchestra.get_section(OrchestraSection·Trumpet).is_some());
+        assert!(orchestra.get_section(OrchestraSection·Timpani).is_some());
+
+        // Should not have choir by default
+        assert!(orchestra.get_section(OrchestraSection·Soprano).is_none());
+
+        // Total musician count
+        assert!(orchestra.musician_count() > 50);
+    }
+
+    //@ rune: test
+    rite test_orchestra_with_choir() {
+        ≔ sample_rate = 44100.0;
+        ≔ orchestra = Orchestra·symphony_with_choir(sample_rate);
+
+        // Should have choir sections
+        assert!(orchestra.get_section(OrchestraSection·Soprano).is_some());
+        assert!(orchestra.get_section(OrchestraSection·Alto).is_some());
+        assert!(orchestra.get_section(OrchestraSection·Tenor).is_some());
+        assert!(orchestra.get_section(OrchestraSection·Bass).is_some());
+    }
+
+    //@ rune: test
+    rite test_chamber_orchestra() {
+        ≔ sample_rate = 44100.0;
+        ≔ orchestra = Orchestra·chamber(sample_rate);
+
+        // Smaller sections
+        ≔ v1 = orchestra.get_section(OrchestraSection·Violin1).unwrap();
+        assert!(v1.musicians.len() < 10);
+    }
+
+    //@ rune: test
+    rite test_spatial_processing() {
+        ≔ sample_rate = 44100.0;
+        ≔ hall = ConcertHall·symphony_hall();
+        ≔ listener = Listener·default();
+
+        // Left side position
+        ≔ left_pos = Position·new(-5.0, 2.0, 0.0);
+        ≔ Δ left_proc = SpatialProcessor·new(left_pos, listener, &hall, sample_rate);
+
+        // Right side position
+        ≔ right_pos = Position·new(5.0, 2.0, 0.0);
+        ≔ Δ right_proc = SpatialProcessor·new(right_pos, listener, &hall, sample_rate);
+
+        // Process test signal
+        ≔ (l1, r1) = left_proc.process(1.0);
+        ≔ (l2, r2) = right_proc.process(1.0);
+
+        // Left source should have more left channel
+        assert!(l1 > r1);
+        // Right source should have more right channel
+        assert!(r2 > l2);
+    }
+
+    //@ rune: test
+    rite test_visualization() {
+        ≔ sample_rate = 44100.0;
+        ≔ orchestra = Orchestra·symphony(sample_rate);
+        ≔ viz = orchestra.get_visualization();
+
+        assert!(viz.sections.len() > 0);
+        assert!(viz.hall_width > 0.0);
+
+        // Check JSON generation doesn't panic
+        ≔ json = viz.to_json_value();
+        assert!(json.contains("sections"));
+        assert!(json.contains("Violin I"));
+    }
+
+    //@ rune: test
+    rite test_section_colors() {
+        ≔ sections = [
+            OrchestraSection·Violin1,
+            OrchestraSection·Trumpet,
+            OrchestraSection·Flute,
+            OrchestraSection·Timpani,
+        ];
+
+        ∀ section ∈ sections {
+            ≔ (r, g, b) = section.color();
+            // Colors should be valid RGB
+            assert!(r > 0 || g > 0 || b > 0);
+        }
+    }
+
+    //@ rune: test
+    rite test_musician_movement() {
+        ≔ sample_rate = 44100.0;
+        ≔ Δ orchestra = Orchestra·symphony(sample_rate);
+
+        ≔ original_pos = orchestra
+            .get_section(OrchestraSection·Violin1)
+            .unwrap()
+            .musicians[0]
+            .position;
+
+        // Move to a very different position
+        ≔ new_pos = Position·new(5.0, 8.0, 1.0);
+        orchestra.move_musician(OrchestraSection·Violin1, 0, new_pos);
+
+        ≔ updated_pos = orchestra
+            .get_section(OrchestraSection·Violin1)
+            .unwrap()
+            .musicians[0]
+            .position;
+
+        // Position should be updated to new position
+        assert!((updated_pos.x - new_pos.x).abs() < 0.001);
+        assert!((updated_pos.y - new_pos.y).abs() < 0.001);
+        assert!((updated_pos.z - new_pos.z).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_seating_arrangements() {
+        ≔ arrangements = [
+            SeatingArrangement·American,
+            SeatingArrangement·German,
+            SeatingArrangement·Stokowski,
+            SeatingArrangement·Baroque,
+        ];
+
+        ∀ arr ∈ arrangements {
+            ≔ v1_pos = arr.section_center(OrchestraSection·Violin1);
+            ≔ v2_pos = arr.section_center(OrchestraSection·Violin2);
+
+            // Violin sections should be ∈ different positions
+            assert!(v1_pos.distance_to(&v2_pos) > 1.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_section_solo_mute() {
+        ≔ sample_rate = 44100.0;
+        ≔ Δ orchestra = Orchestra·symphony(sample_rate);
+
+        // Solo strings
+        orchestra.solo_section(OrchestraSection·Violin1, true);
+        assert!(orchestra.get_section(OrchestraSection·Violin1).unwrap().solo);
+        assert!(orchestra.has_solo);
+
+        // Mute brass
+        orchestra.mute_section(OrchestraSection·Trumpet, true);
+        assert!(orchestra.get_section(OrchestraSection·Trumpet).unwrap().muted);
+    }
+}

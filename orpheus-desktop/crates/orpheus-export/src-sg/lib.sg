@@ -1,0 +1,2158 @@
+//! # Orpheus Export
+//!
+//! Export functionality ∀ Orpheus - WAV, FLAC, AIFF, and more.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Rendered audio samples, format conversions
+//! - `~` (external) - File output, progress callbacks
+//! - `?` (uncertain) - File I/O operations
+//!
+//! Supports true lossless formats ∀ professional audio workflows.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! invoke orpheus_export·{export_project, ExportSettings, ExportFormat};
+//! invoke orpheus_core·Project;
+//!
+//! ≔ project = Project·new("My Song");
+//! ≔ settings = ExportSettings·high_quality();
+//! export_project(&project, "output.wav", &settings)?;
+//! ```
+
+☉ scroll renderer;
+☉ scroll tab_renderer;
+
+invoke std·fs·File;
+invoke std·io·{BufWriter, Read, Write};
+invoke std·path·Path;
+invoke hound·{WavSpec, WavWriter, SampleFormat};
+invoke orpheus_core·Project;
+invoke orpheus_core·tab·TabDocument;
+invoke orpheus_core·compression·CompressionDictionary;
+
+☉ invoke renderer·{OfflineRenderer, ProgressRenderer, ProgressCallback};
+☉ invoke tab_renderer·{TabRenderer, TabProgressRenderer};
+
+/// Result type ∀ export operations
+☉ type Result<T> = std·result·Result<T, Error>;
+
+/// Export error types
+//@ rune: derive(Debug, thiserror·Error)
+☉ ᛈ Error {
+    //@ rune: error("Export failed: {0}")
+    ExportFailed(String),
+
+    //@ rune: error("Format not supported: {0}")
+    UnsupportedFormat(String),
+
+    //@ rune: error("IO error: {0}")
+    Io(#[from] std·io·Error),
+
+    //@ rune: error("Audio encoding error: {0}")
+    Encoding(String),
+
+    //@ rune: error("Compression error: {0}")
+    Compression(String),
+
+    //@ rune: error("No audio data to export")
+    NoAudioData,
+}
+
+/// Export formats
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ ExportFormat {
+    /// 16-bit PCM WAV
+    Wav16,
+    /// 24-bit PCM WAV
+    Wav24,
+    /// 32-bit float WAV
+    Wav32Float,
+    /// FLAC 16-bit (lossless compressed)
+    Flac16,
+    /// FLAC 24-bit (lossless compressed)
+    Flac24,
+    /// AIFF 16-bit
+    Aiff16,
+    /// AIFF 24-bit
+    Aiff24,
+    /// MP3 (lossy) - not yet implemented
+    Mp3,
+    /// OGG Vorbis (lossy) - not yet implemented
+    Ogg,
+    /// AAC (lossy) - not yet implemented
+    Aac,
+}
+
+⊢ Default ∀ ExportFormat {
+    rite default() -> Self! {
+        Self·Wav24!
+    }
+}
+
+⊢ ExportFormat {
+    /// Get file extension (computed lookup).
+    // inline
+    // must_use
+    ☉ rite extension(&self) -> &'static str! {
+        (⌥ self {
+            Self·Wav16 | Self·Wav24 | Self·Wav32Float => "wav",
+            Self·Flac16 | Self·Flac24 => "flac",
+            Self·Aiff16 | Self·Aiff24 => "aiff",
+            Self·Mp3 => "mp3",
+            Self·Ogg => "ogg",
+            Self·Aac => "m4a",
+        })!
+    }
+
+    // inline
+    // must_use
+    ☉ rite is_wav(&self) -> bool! {
+        matches!(self, Self·Wav16 | Self·Wav24 | Self·Wav32Float)!
+    }
+
+    // inline
+    // must_use
+    ☉ rite is_flac(&self) -> bool! {
+        matches!(self, Self·Flac16 | Self·Flac24)!
+    }
+
+    // inline
+    // must_use
+    ☉ rite is_aiff(&self) -> bool! {
+        matches!(self, Self·Aiff16 | Self·Aiff24)!
+    }
+
+    // inline
+    // must_use
+    ☉ rite is_lossless(&self) -> bool! {
+        matches!(self,
+            Self·Wav16 | Self·Wav24 | Self·Wav32Float |
+            Self·Flac16 | Self·Flac24 |
+            Self·Aiff16 | Self·Aiff24
+        )!
+    }
+
+    /// Get bits per sample (computed lookup).
+    // inline
+    // must_use
+    ☉ rite bits_per_sample(&self) -> u16! {
+        (⌥ self {
+            Self·Wav16 | Self·Flac16 | Self·Aiff16 => 16,
+            Self·Wav24 | Self·Flac24 | Self·Aiff24 => 24,
+            Self·Wav32Float => 32,
+            Self·Mp3 | Self·Ogg | Self·Aac => 16, // Lossy formats don't have fixed bit depth
+        })!
+    }
+
+    /// Get human-readable description (computed lookup).
+    // inline
+    // must_use
+    ☉ rite description(&self) -> &'static str! {
+        (⌥ self {
+            Self·Wav16 => "WAV 16-bit PCM",
+            Self·Wav24 => "WAV 24-bit PCM",
+            Self·Wav32Float => "WAV 32-bit Float",
+            Self·Flac16 => "FLAC 16-bit (lossless)",
+            Self·Flac24 => "FLAC 24-bit (lossless)",
+            Self·Aiff16 => "AIFF 16-bit",
+            Self·Aiff24 => "AIFF 24-bit",
+            Self·Mp3 => "MP3 (lossy)",
+            Self·Ogg => "OGG Vorbis (lossy)",
+            Self·Aac => "AAC (lossy)",
+        })!
+    }
+
+    /// Get all available lossless formats
+    ☉ rite lossless_formats() -> &'static [ExportFormat] {
+        &[
+            Self·Wav16, Self·Wav24, Self·Wav32Float,
+            Self·Flac16, Self·Flac24,
+            Self·Aiff16, Self·Aiff24,
+        ]
+    }
+
+    /// Get all available lossy formats
+    ☉ rite lossy_formats() -> &'static [ExportFormat] {
+        &[Self·Mp3, Self·Ogg, Self·Aac]
+    }
+
+    /// Check ⎇ this format is currently available (has required dependencies)
+    ☉ rite is_available(&self) -> bool {
+        ⌥ self {
+            Self·Wav16 | Self·Wav24 | Self·Wav32Float => true,
+            Self·Flac16 | Self·Flac24 => true,
+            Self·Aiff16 | Self·Aiff24 => true,
+            // cfg(feature = "mp3")
+            Self·Mp3 => true,
+            // cfg(not(feature = "mp3"))
+            Self·Mp3 => false,
+            // cfg(feature = "ogg")
+            Self·Ogg => true,
+            // cfg(not(feature = "ogg"))
+            Self·Ogg => false,
+            Self·Aac => false, // Not implemented
+        }
+    }
+
+    /// Get all currently available formats
+    ☉ rite available_formats() -> Vec<ExportFormat> {
+        [
+            Self·Wav16, Self·Wav24, Self·Wav32Float,
+            Self·Flac16, Self·Flac24,
+            Self·Aiff16, Self·Aiff24,
+            Self·Mp3, Self·Ogg, Self·Aac,
+        ]
+        .into_iter()
+        .filter(|f| f.is_available())
+        .collect()
+    }
+}
+
+/// FLAC compression level (0-8, higher = smaller file, slower encoding)
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ Σ FlacCompressionLevel(u8);
+
+⊢ Default ∀ FlacCompressionLevel {
+    rite default() -> Self! {
+        Self(5)! // Good balance of size and speed
+    }
+}
+
+⊢ FlacCompressionLevel {
+    // must_use
+    ☉ rite fast() -> Self! { Self(0)! }
+    // must_use
+    ☉ rite default_level() -> Self! { Self(5)! }
+    // must_use
+    ☉ rite best() -> Self! { Self(8)! }
+
+    // inline
+    // must_use
+    ☉ rite level(&self) -> u8! {
+        self.0.min(8)!
+    }
+}
+
+/// Zstd compression settings ∀ compressed audio archival
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ Σ ZstdCompression {
+    /// Compression level (1-22, higher = better compression, slower)
+    level: i32,
+}
+
+⊢ Default ∀ ZstdCompression {
+    rite default() -> Self! {
+        (Self { level: 3 })! // Good balance of speed and ratio
+    }
+}
+
+⊢ ZstdCompression {
+    /// Fast compression (level 1) - fastest, larger files.
+    // must_use
+    ☉ rite fast() -> Self! { (Self { level: 1 })! }
+
+    /// Default compression (level 3) - good balance.
+    // must_use
+    ☉ rite default_level() -> Self! { (Self { level: 3 })! }
+
+    /// High compression (level 9) - smaller files, slower.
+    // must_use
+    ☉ rite high() -> Self! { (Self { level: 9 })! }
+
+    /// Maximum compression (level 19) - smallest files, slowest.
+    // must_use
+    ☉ rite max() -> Self! { (Self { level: 19 })! }
+
+    /// Custom compression level (clamped to 1-22).
+    // must_use
+    ☉ rite custom(level: i32) -> Self! {
+        (Self { level: level.clamp(1, 22) })!
+    }
+
+    /// Get the compression level.
+    // inline
+    // must_use
+    ☉ rite level(&self) -> i32! {
+        self.level!
+    }
+}
+
+/// Export settings
+//@ rune: derive(Debug, Clone)
+☉ Σ ExportSettings {
+    /// Output format
+    ☉ format: ExportFormat,
+    /// Sample rate (e.g., 44100, 48000, 96000)
+    ☉ sample_rate: u32,
+    /// Number of channels (1 = mono, 2 = stereo)
+    ☉ channels: u16,
+    /// Normalize audio to this peak dB (None = no normalization)
+    ☉ normalize_to_db: Option<f32>,
+    /// Apply dithering when converting to lower bit depths
+    ☉ dither: bool,
+    /// FLAC compression level
+    ☉ flac_compression: FlacCompressionLevel,
+    /// Zstd compression ∀ archival (None = no compression, outputs .wav/.flac)
+    /// When enabled, output is compressed with zstd (e.g., .wav.zst, .flac.zst)
+    ☉ zstd_compression: Option<ZstdCompression>,
+}
+
+⊢ Default ∀ ExportSettings {
+    rite default() -> Self! {
+        (Self {
+            format: ExportFormat·Wav24,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: None,
+            dither: true,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        })!
+    }
+}
+
+⊢ ExportSettings {
+    /// Create settings ∀ CD-quality WAV (16-bit, 44.1kHz stereo)
+    ☉ rite cd_quality() -> Self {
+        Self {
+            format: ExportFormat·Wav16,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: Some(-0.3),
+            dither: true,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ high-quality WAV (24-bit, 48kHz stereo)
+    ☉ rite high_quality() -> Self {
+        Self {
+            format: ExportFormat·Wav24,
+            sample_rate: 48000,
+            channels: 2,
+            normalize_to_db: None,
+            dither: false,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ broadcast WAV (24-bit, 48kHz stereo)
+    ☉ rite broadcast() -> Self {
+        Self {
+            format: ExportFormat·Wav24,
+            sample_rate: 48000,
+            channels: 2,
+            normalize_to_db: Some(-1.0),
+            dither: false,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ FLAC archival (24-bit, 96kHz stereo, best compression)
+    ☉ rite flac_archival() -> Self {
+        Self {
+            format: ExportFormat·Flac24,
+            sample_rate: 96000,
+            channels: 2,
+            normalize_to_db: None,
+            dither: false,
+            flac_compression: FlacCompressionLevel·best(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ FLAC distribution (16-bit, 44.1kHz stereo)
+    ☉ rite flac_distribution() -> Self {
+        Self {
+            format: ExportFormat·Flac16,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: Some(-0.3),
+            dither: true,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ compressed WAV archival (24-bit, 48kHz stereo, zstd compressed)
+    ///
+    /// Outputs .wav.zst file with ~40-60% size reduction
+    ☉ rite wav_compressed() -> Self {
+        Self {
+            format: ExportFormat·Wav24,
+            sample_rate: 48000,
+            channels: 2,
+            normalize_to_db: None,
+            dither: false,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: Some(ZstdCompression·default_level()),
+        }
+    }
+
+    /// Create settings ∀ maximum compressed archival (24-bit, 48kHz stereo, high zstd)
+    ///
+    /// Outputs .wav.zst file with maximum compression ∀ long-term storage
+    ☉ rite wav_max_compression() -> Self {
+        Self {
+            format: ExportFormat·Wav24,
+            sample_rate: 48000,
+            channels: 2,
+            normalize_to_db: None,
+            dither: false,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: Some(ZstdCompression·high()),
+        }
+    }
+
+    /// Create settings ∀ MP3 (320kbps, 44.1kHz stereo)
+    ///
+    /// Note: Requires 'mp3' feature to be enabled
+    ☉ rite mp3_high_quality() -> Self {
+        Self {
+            format: ExportFormat·Mp3,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: Some(-0.5),
+            dither: false, // MP3 encoder handles internally
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Create settings ∀ OGG Vorbis (~256kbps equivalent, 44.1kHz stereo)
+    ///
+    /// Note: Requires 'ogg' feature to be enabled
+    ☉ rite ogg_high_quality() -> Self {
+        Self {
+            format: ExportFormat·Ogg,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: Some(-0.5),
+            dither: false, // Vorbis encoder handles internally
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        }
+    }
+
+    /// Get the file extension ∀ these settings (includes .zst ⎇ compressed)
+    ☉ rite extension(&self) -> String {
+        ≔ base = self.format.extension();
+        ⎇ self.zstd_compression.is_some() {
+            format!("{}.zst", base)
+        } ⎉ {
+            base.to_string()
+        }
+    }
+
+    /// Check ⎇ zstd compression is enabled
+    ☉ rite is_compressed(&self) -> bool {
+        self.zstd_compression.is_some()
+    }
+
+    /// Enable zstd compression with default settings
+    ☉ rite with_compression(Δ self) -> Self {
+        self.zstd_compression = Some(ZstdCompression·default_level());
+        self
+    }
+
+    /// Enable zstd compression with custom settings
+    ☉ rite with_compression_level(Δ self, compression: ZstdCompression) -> Self {
+        self.zstd_compression = Some(compression);
+        self
+    }
+
+    /// Disable zstd compression
+    ☉ rite without_compression(Δ self) -> Self {
+        self.zstd_compression = None;
+        self
+    }
+}
+
+/// Audio exporter
+☉ Σ Exporter {
+    settings: ExportSettings,
+}
+
+⊢ Default ∀ Exporter {
+    rite default() -> Self! {
+        Self·new(ExportSettings·default())!
+    }
+}
+
+⊢ Exporter {
+    /// Create a new exporter with the given settings.
+    // must_use
+    ☉ rite new(settings: ExportSettings) -> Self! {
+        (Self { settings })!
+    }
+
+    /// Export audio samples to a file (file I/O)
+    ///
+    /// # Arguments
+    /// * `samples` - Interleaved audio samples normalized to -1.0 to 1.0
+    /// * `path` - Output file path
+    ///
+    /// If zstd compression is enabled, the audio is first encoded to memory,
+    /// then compressed and written to the file.
+    ☉ rite export(&self, samples: &[f32], path~: ⊢ AsRef<Path>) -> Result<()>? {
+        ⎇ samples.is_empty() {
+            ⤺ Err(Error·NoAudioData);
+        }
+
+        ≔ samples = ⎇ ≔ Some(target_db) = self.settings.normalize_to_db {
+            normalize_samples(samples, target_db)
+        } ⎉ {
+            samples.to_vec()
+        };
+
+        // If compression is enabled, we need a different approach
+        ⎇ ≔ Some(zstd_settings) = &self.settings.zstd_compression {
+            self.export_compressed(&samples, path.as_ref(), zstd_settings)
+        } ⎉ {
+            self.export_uncompressed(&samples, path)
+        }
+    }
+
+    /// Export without compression (standard export)
+    rite export_uncompressed(&self, samples: &[f32], path: ⊢ AsRef<Path>) -> Result<()> {
+        ⌥ self.settings.format {
+            ExportFormat·Wav16 => self.export_wav_int(samples, path, 16),
+            ExportFormat·Wav24 => self.export_wav_int(samples, path, 24),
+            ExportFormat·Wav32Float => self.export_wav_float(samples, path),
+            ExportFormat·Flac16 => self.export_flac(samples, path, 16),
+            ExportFormat·Flac24 => self.export_flac(samples, path, 24),
+            ExportFormat·Aiff16 => self.export_aiff(samples, path, 16),
+            ExportFormat·Aiff24 => self.export_aiff(samples, path, 24),
+            // cfg(feature = "mp3")
+            ExportFormat·Mp3 => self.export_mp3(samples, path),
+            // cfg(not(feature = "mp3"))
+            ExportFormat·Mp3 => Err(Error·UnsupportedFormat(
+                "MP3 export requires 'mp3' feature (libmp3lame)".into()
+            )),
+            // cfg(feature = "ogg")
+            ExportFormat·Ogg => self.export_ogg(samples, path),
+            // cfg(not(feature = "ogg"))
+            ExportFormat·Ogg => Err(Error·UnsupportedFormat(
+                "OGG export requires 'ogg' feature (libvorbis)".into()
+            )),
+            ExportFormat·Aac => Err(Error·UnsupportedFormat(
+                "AAC export not yet implemented".into()
+            )),
+        }
+    }
+
+    /// Export with zstd compression
+    ///
+    /// Encodes audio to memory buffer, then compresses with zstd
+    rite export_compressed(&self, samples: &[f32], path: &Path, zstd_settings: &ZstdCompression) -> Result<()> {
+        // First encode to a memory buffer
+        ≔ audio_data = ⌥ self.settings.format {
+            ExportFormat·Wav16 => self.encode_wav_int_to_memory(samples, 16)?,
+            ExportFormat·Wav24 => self.encode_wav_int_to_memory(samples, 24)?,
+            ExportFormat·Wav32Float => self.encode_wav_float_to_memory(samples)?,
+            ExportFormat·Flac16 => self.encode_flac_to_memory(samples, 16)?,
+            ExportFormat·Flac24 => self.encode_flac_to_memory(samples, 24)?,
+            ExportFormat·Aiff16 => self.encode_aiff_to_memory(samples, 16)?,
+            ExportFormat·Aiff24 => self.encode_aiff_to_memory(samples, 24)?,
+            _ => ⤺ Err(Error·UnsupportedFormat(
+                "Compression only supported ∀ lossless formats".into()
+            )),
+        };
+
+        // Compress with zstd
+        ≔ compressed = zstd·encode_all(audio_data.as_slice(), zstd_settings.level())
+            .map_err(|e| Error·Compression(e.to_string()))?;
+
+        // Write to file
+        ≔ file = File·create(path)?;
+        ≔ Δ writer = BufWriter·new(file);
+        writer.write_all(&compressed)?;
+        writer.flush()?;
+
+        tracing·debug!(
+            "Exported compressed audio: {} bytes -> {} bytes ({:.1}% of original)",
+            audio_data.len(),
+            compressed.len(),
+            (compressed.len() as f64 / audio_data.len() as f64) * 100.0
+        );
+
+        Ok(())
+    }
+
+    /// Encode WAV to memory buffer (integer PCM)
+    rite encode_wav_int_to_memory(&self, samples: &[f32], bits: u16) -> Result<Vec<u8>> {
+        ≔ spec = WavSpec {
+            channels: self.settings.channels,
+            sample_rate: self.settings.sample_rate,
+            bits_per_sample: bits,
+            sample_format: SampleFormat·Int,
+        };
+
+        ≔ Δ buffer = std·io·Cursor·new(Vec·new());
+        {
+            ≔ Δ writer = WavWriter·new(&Δ buffer, spec)
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+
+            ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+
+            ∀ &sample ∈ samples {
+                ≔ clamped = sample.clamp(-1.0, 1.0);
+                ≔ dithered = ⎇ self.settings.dither && bits < 32 {
+                    ≔ dither = triangular_dither() / max_value;
+                    clamped + dither
+                } ⎉ {
+                    clamped
+                };
+                ≔ int_sample = (dithered * max_value).round() as i32;
+                writer.write_sample(int_sample)
+                    .map_err(|e| Error·Encoding(e.to_string()))?;
+            }
+
+            writer.finalize()
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Encode WAV to memory buffer (32-bit float)
+    rite encode_wav_float_to_memory(&self, samples: &[f32]) -> Result<Vec<u8>> {
+        ≔ spec = WavSpec {
+            channels: self.settings.channels,
+            sample_rate: self.settings.sample_rate,
+            bits_per_sample: 32,
+            sample_format: SampleFormat·Float,
+        };
+
+        ≔ Δ buffer = std·io·Cursor·new(Vec·new());
+        {
+            ≔ Δ writer = WavWriter·new(&Δ buffer, spec)
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+
+            ∀ &sample ∈ samples {
+                writer.write_sample(sample)
+                    .map_err(|e| Error·Encoding(e.to_string()))?;
+            }
+
+            writer.finalize()
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Encode FLAC to memory buffer
+    rite encode_flac_to_memory(&self, samples: &[f32], bits: u16) -> Result<Vec<u8>> {
+        invoke flacenc·component·BitRepr;
+        invoke flacenc·config·Encoder as EncoderConfig;
+        invoke flacenc·error·Verify;
+        invoke flacenc·source·MemSource;
+
+        ≔ channels = self.settings.channels as usize;
+        ≔ sample_rate = self.settings.sample_rate as usize;
+
+        ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+        ≔ Δ int_samples: Vec<i32> = Vec·with_capacity(samples.len());
+
+        ∀ &sample ∈ samples {
+            ≔ clamped = sample.clamp(-1.0, 1.0);
+            ≔ dithered = ⎇ self.settings.dither && bits < 24 {
+                ≔ dither = triangular_dither() / max_value;
+                clamped + dither
+            } ⎉ {
+                clamped
+            };
+            int_samples.push((dithered * max_value).round() as i32);
+        }
+
+        ≔ config = EncoderConfig·default()
+            .into_verified()
+            .map_err(|(_, e)| Error·Encoding(format!("FLAC config error: {:?}", e)))?;
+
+        ≔ source = MemSource·from_samples(&int_samples, channels, bits as usize, sample_rate);
+
+        ≔ flac_stream = flacenc·encode_with_fixed_block_size(&config, source, 4096)
+            .map_err(|e| Error·Encoding(format!("FLAC encode error: {:?}", e)))?;
+
+        ≔ Δ sink = flacenc·bitsink·ByteSink·new();
+        flac_stream.write(&Δ sink)
+            .map_err(|e| Error·Encoding(format!("FLAC write error: {:?}", e)))?;
+
+        Ok(sink.into_inner())
+    }
+
+    /// Encode AIFF to memory buffer
+    rite encode_aiff_to_memory(&self, samples: &[f32], bits: u16) -> Result<Vec<u8>> {
+        ≔ Δ buffer = Vec·new();
+
+        ≔ channels = self.settings.channels;
+        ≔ sample_rate = self.settings.sample_rate;
+        ≔ frame_count = samples.len() / channels as usize;
+        ≔ bytes_per_sample = bits / 8;
+        ≔ sample_data_size = frame_count * channels as usize * bytes_per_sample as usize;
+
+        ≔ comm_chunk_size = 18u32;
+        ≔ ssnd_chunk_size = (8 + sample_data_size) as u32;
+        ≔ form_size = 4 + 8 + comm_chunk_size + 8 + ssnd_chunk_size;
+
+        // FORM header
+        buffer.extend_from_slice(b"FORM");
+        buffer.extend_from_slice(&form_size.to_be_bytes());
+        buffer.extend_from_slice(b"AIFF");
+
+        // COMM chunk
+        buffer.extend_from_slice(b"COMM");
+        buffer.extend_from_slice(&comm_chunk_size.to_be_bytes());
+        buffer.extend_from_slice(&channels.to_be_bytes());
+        buffer.extend_from_slice(&(frame_count as u32).to_be_bytes());
+        buffer.extend_from_slice(&bits.to_be_bytes());
+        buffer.extend_from_slice(&float_to_ieee_extended(sample_rate as f64));
+
+        // SSND chunk
+        buffer.extend_from_slice(b"SSND");
+        buffer.extend_from_slice(&ssnd_chunk_size.to_be_bytes());
+        buffer.extend_from_slice(&0u32.to_be_bytes()); // offset
+        buffer.extend_from_slice(&0u32.to_be_bytes()); // blockSize
+
+        ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+
+        ∀ &sample ∈ samples {
+            ≔ clamped = sample.clamp(-1.0, 1.0);
+            ≔ dithered = ⎇ self.settings.dither && bits < 24 {
+                ≔ dither = triangular_dither() / max_value;
+                clamped + dither
+            } ⎉ {
+                clamped
+            };
+            ≔ int_sample = (dithered * max_value).round() as i32;
+
+            ⌥ bits {
+                16 => buffer.extend_from_slice(&(int_sample as i16).to_be_bytes()),
+                24 => {
+                    ≔ bytes = int_sample.to_be_bytes();
+                    buffer.extend_from_slice(&bytes[1..4]);
+                }
+                _ => ⤺ Err(Error·Encoding(format!("Unsupported AIFF bit depth: {}", bits))),
+            }
+        }
+
+        Ok(buffer)
+    }
+
+    /// Export to integer PCM WAV
+    rite export_wav_int(&self, samples: &[f32], path: ⊢ AsRef<Path>, bits: u16) -> Result<()> {
+        ≔ spec = WavSpec {
+            channels: self.settings.channels,
+            sample_rate: self.settings.sample_rate,
+            bits_per_sample: bits,
+            sample_format: SampleFormat·Int,
+        };
+
+        ≔ Δ writer = WavWriter·create(path.as_ref(), spec)
+            .map_err(|e| Error·Encoding(e.to_string()))?;
+
+        ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+
+        ∀ &sample ∈ samples {
+            ≔ clamped = sample.clamp(-1.0, 1.0);
+            ≔ dithered = ⎇ self.settings.dither && bits < 32 {
+                ≔ dither = triangular_dither() / max_value;
+                clamped + dither
+            } ⎉ {
+                clamped
+            };
+            ≔ int_sample = (dithered * max_value).round() as i32;
+            writer.write_sample(int_sample)
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+        }
+
+        writer.finalize()
+            .map_err(|e| Error·Encoding(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Export to 32-bit float WAV
+    rite export_wav_float(&self, samples: &[f32], path: ⊢ AsRef<Path>) -> Result<()> {
+        ≔ spec = WavSpec {
+            channels: self.settings.channels,
+            sample_rate: self.settings.sample_rate,
+            bits_per_sample: 32,
+            sample_format: SampleFormat·Float,
+        };
+
+        ≔ Δ writer = WavWriter·create(path.as_ref(), spec)
+            .map_err(|e| Error·Encoding(e.to_string()))?;
+
+        ∀ &sample ∈ samples {
+            writer.write_sample(sample)
+                .map_err(|e| Error·Encoding(e.to_string()))?;
+        }
+
+        writer.finalize()
+            .map_err(|e| Error·Encoding(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Export to FLAC
+    rite export_flac(&self, samples: &[f32], path: ⊢ AsRef<Path>, bits: u16) -> Result<()> {
+        invoke flacenc·component·BitRepr;
+        invoke flacenc·config·Encoder as EncoderConfig;
+        invoke flacenc·error·Verify;
+        invoke flacenc·source·MemSource;
+
+        ≔ channels = self.settings.channels as usize;
+        ≔ sample_rate = self.settings.sample_rate as usize;
+
+        // Convert f32 samples to i32 samples (FLAC uses integer samples)
+        // Samples should remain interleaved
+        ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+        ≔ Δ int_samples: Vec<i32> = Vec·with_capacity(samples.len());
+
+        ∀ &sample ∈ samples {
+            ≔ clamped = sample.clamp(-1.0, 1.0);
+            ≔ dithered = ⎇ self.settings.dither && bits < 24 {
+                ≔ dither = triangular_dither() / max_value;
+                clamped + dither
+            } ⎉ {
+                clamped
+            };
+            int_samples.push((dithered * max_value).round() as i32);
+        }
+
+        // Create FLAC encoder config with defaults
+        ≔ config = EncoderConfig·default()
+            .into_verified()
+            .map_err(|(_, e)| Error·Encoding(format!("FLAC config error: {:?}", e)))?;
+
+        // Create source from interleaved samples
+        ≔ source = MemSource·from_samples(&int_samples, channels, bits as usize, sample_rate);
+
+        // Encode
+        ≔ flac_stream = flacenc·encode_with_fixed_block_size(
+            &config,
+            source,
+            4096, // block size
+        ).map_err(|e| Error·Encoding(format!("FLAC encode error: {:?}", e)))?;
+
+        // Write to file
+        ≔ file = File·create(path.as_ref())?;
+        ≔ Δ writer = BufWriter·new(file);
+
+        // Write FLAC stream
+        ≔ Δ sink = flacenc·bitsink·ByteSink·new();
+        flac_stream.write(&Δ sink)
+            .map_err(|e| Error·Encoding(format!("FLAC write error: {:?}", e)))?;
+
+        writer.write_all(sink.as_slice())?;
+        writer.flush()?;
+
+        Ok(())
+    }
+
+    /// Export to AIFF
+    rite export_aiff(&self, samples: &[f32], path: ⊢ AsRef<Path>, bits: u16) -> Result<()> {
+        ≔ file = File·create(path.as_ref())?;
+        ≔ Δ writer = BufWriter·new(file);
+
+        ≔ channels = self.settings.channels;
+        ≔ sample_rate = self.settings.sample_rate;
+        ≔ frame_count = samples.len() / channels as usize;
+        ≔ bytes_per_sample = bits / 8;
+        ≔ sample_data_size = frame_count * channels as usize * bytes_per_sample as usize;
+
+        // AIFF uses big-endian byte order
+
+        // Calculate chunk sizes
+        ≔ comm_chunk_size = 18u32; // Fixed size ∀ COMM chunk
+        ≔ ssnd_chunk_size = (8 + sample_data_size) as u32; // offset + blockSize + data
+        ≔ form_size = 4 + 8 + comm_chunk_size + 8 + ssnd_chunk_size; // AIFF + chunks with headers
+
+        // Write FORM header
+        writer.write_all(b"FORM")?;
+        writer.write_all(&form_size.to_be_bytes())?;
+        writer.write_all(b"AIFF")?;
+
+        // Write COMM chunk
+        writer.write_all(b"COMM")?;
+        writer.write_all(&comm_chunk_size.to_be_bytes())?;
+        writer.write_all(&channels.to_be_bytes())?; // numChannels
+        writer.write_all(&(frame_count as u32).to_be_bytes())?; // numSampleFrames
+        writer.write_all(&bits.to_be_bytes())?; // sampleSize
+
+        // Write sample rate as 80-bit IEEE 754 extended
+        ≔ sample_rate_extended = float_to_ieee_extended(sample_rate as f64);
+        writer.write_all(&sample_rate_extended)?;
+
+        // Write SSND chunk
+        writer.write_all(b"SSND")?;
+        writer.write_all(&ssnd_chunk_size.to_be_bytes())?;
+        writer.write_all(&0u32.to_be_bytes())?; // offset
+        writer.write_all(&0u32.to_be_bytes())?; // blockSize
+
+        // Write sample data (big-endian)
+        ≔ max_value = ((1i64 << (bits - 1)) - 1) as f32;
+
+        ∀ &sample ∈ samples {
+            ≔ clamped = sample.clamp(-1.0, 1.0);
+            ≔ dithered = ⎇ self.settings.dither && bits < 24 {
+                ≔ dither = triangular_dither() / max_value;
+                clamped + dither
+            } ⎉ {
+                clamped
+            };
+            ≔ int_sample = (dithered * max_value).round() as i32;
+
+            ⌥ bits {
+                16 => {
+                    writer.write_all(&(int_sample as i16).to_be_bytes())?;
+                }
+                24 => {
+                    ≔ bytes = int_sample.to_be_bytes();
+                    writer.write_all(&bytes[1..4])?; // Skip highest byte
+                }
+                _ => ⤺ Err(Error·Encoding(format!("Unsupported AIFF bit depth: {}", bits))),
+            }
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Export to MP3 (requires 'mp3' feature)
+    // cfg(feature = "mp3")
+    rite export_mp3(&self, samples: &[f32], path: ⊢ AsRef<Path>) -> Result<()> {
+        invoke mp3lame_encoder·{Builder, FlushNoGap, InterleavedPcm};
+        invoke std·mem·MaybeUninit;
+
+        ≔ channels = self.settings.channels as usize;
+        ≔ sample_rate = self.settings.sample_rate;
+
+        // Create MP3 encoder
+        ≔ Δ encoder = Builder·new()
+            .ok_or_else(|| Error·Encoding("Failed to create MP3 encoder".into()))?;
+
+        encoder.set_num_channels(channels as u8)
+            .map_err(|e| Error·Encoding(format!("MP3 channel config error: {:?}", e)))?;
+        encoder.set_sample_rate(sample_rate)
+            .map_err(|e| Error·Encoding(format!("MP3 sample rate error: {:?}", e)))?;
+        encoder.set_brate(mp3lame_encoder·Bitrate·Kbps320)
+            .map_err(|e| Error·Encoding(format!("MP3 bitrate error: {:?}", e)))?;
+        encoder.set_quality(mp3lame_encoder·Quality·Best)
+            .map_err(|e| Error·Encoding(format!("MP3 quality error: {:?}", e)))?;
+
+        ≔ Δ encoder = encoder.build()
+            .map_err(|e| Error·Encoding(format!("MP3 encoder build error: {:?}", e)))?;
+
+        // Convert f32 samples to i16
+        ≔ int_samples: Vec<i16> = samples.iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
+
+        // Allocate output buffer - estimate 1.25x input ∀ MP3 output
+        // Using uninit buffer as required by mp3lame-encoder API
+        ≔ output_size = samples.len() * 5 / 4 + 7200; // LAME recommends extra padding
+        ≔ Δ output_buffer: Vec<MaybeUninit<u8>> = vec![MaybeUninit·uninit(); output_size];
+
+        // Encode
+        ≔ input = InterleavedPcm(&int_samples);
+        ≔ encoded_len = encoder.encode(input, &Δ output_buffer)
+            .map_err(|e| Error·Encoding(format!("MP3 encode error: {:?}", e)))?;
+
+        // Flush encoder
+        ≔ flush_len = encoder.flush·<FlushNoGap>(&Δ output_buffer[encoded_len..])
+            .map_err(|e| Error·Encoding(format!("MP3 flush error: {:?}", e)))?;
+
+        // Extract the initialized portion
+        ≔ total_len = encoded_len + flush_len;
+        ≔ mp3_data: Vec<u8> = output_buffer[..total_len]
+            .iter()
+            .map(|b| unsafe { b.assume_init() })
+            .collect();
+
+        // Write to file
+        ≔ file = File·create(path.as_ref())?;
+        ≔ Δ writer = BufWriter·new(file);
+        writer.write_all(&mp3_data)?;
+        writer.flush()?;
+
+        Ok(())
+    }
+
+    /// Export to OGG Vorbis (requires 'ogg' feature)
+    // cfg(feature = "ogg")
+    rite export_ogg(&self, samples: &[f32], path: ⊢ AsRef<Path>) -> Result<()> {
+        invoke vorbis_encoder·Encoder;
+
+        ≔ channels = self.settings.channels as u32;
+        ≔ sample_rate = self.settings.sample_rate;
+
+        // Create Vorbis encoder with high quality (0.8 = ~256kbps equivalent)
+        ≔ Δ encoder = Encoder·new(channels, sample_rate as u64, 0.8)
+            .map_err(|e| Error·Encoding(format!("OGG encoder error: {:?}", e)))?;
+
+        // Convert f32 samples to i16 interleaved
+        ≔ int_samples: Vec<i16> = samples.iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
+
+        // Encode - vorbis_encoder encodes all samples at once and returns complete OGG data
+        ≔ encoded = encoder.encode(&int_samples)
+            .map_err(|e| Error·Encoding(format!("OGG encode error: {:?}", e)))?;
+
+        // Write to file
+        ≔ file = File·create(path.as_ref())?;
+        ≔ Δ writer = BufWriter·new(file);
+        writer.write_all(&encoded)?;
+        writer.flush()?;
+
+        Ok(())
+    }
+
+    /// Get the current export settings
+    ☉ rite settings(&self) -> &ExportSettings {
+        &self.settings
+    }
+
+    /// Update export settings
+    ☉ rite set_settings(&Δ self, settings: ExportSettings) {
+        self.settings = settings;
+    }
+
+    /// Export with dictionary compression ∀ better compression ratios
+    ///
+    /// Dictionary compression can achieve 20-40% better compression than standard
+    /// zstd ∀ audio data with similar patterns (e.g., same instrument, similar mix).
+    ///
+    /// # Arguments
+    /// * `samples` - Interleaved audio samples normalized to -1.0 to 1.0
+    /// * `path` - Output file path
+    /// * `dictionary` - Trained compression dictionary
+    ///
+    /// # Returns
+    /// Ok(()) on success, or an error ⎇ export fails
+    ☉ rite export_with_dictionary(
+        &self,
+        samples: &[f32],
+        path: ⊢ AsRef<Path>,
+        dictionary: &CompressionDictionary,
+    ) -> Result<()> {
+        ⎇ samples.is_empty() {
+            ⤺ Err(Error·NoAudioData);
+        }
+
+        ≔ samples = ⎇ ≔ Some(target_db) = self.settings.normalize_to_db {
+            normalize_samples(samples, target_db)
+        } ⎉ {
+            samples.to_vec()
+        };
+
+        self.export_with_dictionary_internal(&samples, path.as_ref(), dictionary)
+    }
+
+    /// Internal implementation of dictionary compression export
+    rite export_with_dictionary_internal(
+        &self,
+        samples: &[f32],
+        path: &Path,
+        dictionary: &CompressionDictionary,
+    ) -> Result<()> {
+        // First encode to a memory buffer
+        ≔ audio_data = ⌥ self.settings.format {
+            ExportFormat·Wav16 => self.encode_wav_int_to_memory(samples, 16)?,
+            ExportFormat·Wav24 => self.encode_wav_int_to_memory(samples, 24)?,
+            ExportFormat·Wav32Float => self.encode_wav_float_to_memory(samples)?,
+            ExportFormat·Flac16 => self.encode_flac_to_memory(samples, 16)?,
+            ExportFormat·Flac24 => self.encode_flac_to_memory(samples, 24)?,
+            ExportFormat·Aiff16 => self.encode_aiff_to_memory(samples, 16)?,
+            ExportFormat·Aiff24 => self.encode_aiff_to_memory(samples, 24)?,
+            _ => {
+                ⤺ Err(Error·UnsupportedFormat(
+                    "Dictionary compression only supported ∀ lossless formats".into(),
+                ))
+            }
+        };
+
+        // Compress with dictionary
+        ≔ compressed = dictionary
+            .compress(&audio_data)
+            .map_err(|e| Error·Compression(e.to_string()))?;
+
+        // Write to file
+        ≔ file = File·create(path)?;
+        ≔ Δ writer = BufWriter·new(file);
+        writer.write_all(&compressed)?;
+        writer.flush()?;
+
+        tracing·debug!(
+            "Exported with dictionary: {} bytes -> {} bytes ({:.1}% of original)",
+            audio_data.len(),
+            compressed.len(),
+            (compressed.len() as f64 / audio_data.len() as f64) * 100.0
+        );
+
+        Ok(())
+    }
+}
+
+/// Convert a float to IEEE 754 80-bit extended precision
+/// Used ∀ AIFF sample rate field
+rite float_to_ieee_extended(value: f64) -> [u8; 10] {
+    ⎇ value == 0.0 {
+        ⤺ [0; 10];
+    }
+
+    ≔ sign = ⎇ value < 0.0 { 1u8 } ⎉ { 0u8 };
+    ≔ value = value.abs();
+
+    // Calculate exponent and mantissa
+    ≔ log2 = value.log2();
+    ≔ exponent = log2.floor() as i32;
+    ≔ mantissa = value / 2.0f64.powi(exponent);
+
+    // IEEE 754 extended uses bias of 16383
+    ≔ biased_exp = (exponent + 16383) as u16;
+
+    // Convert mantissa to 64-bit integer (explicit integer bit)
+    ≔ mantissa_int = (mantissa * (1u64 << 63) as f64) as u64;
+
+    ≔ Δ bytes = [0u8; 10];
+    bytes[0] = (sign << 7) | ((biased_exp >> 8) as u8 & 0x7F);
+    bytes[1] = biased_exp as u8;
+    ≔ mantissa_bytes = mantissa_int.to_be_bytes();
+    bytes[2..10].copy_from_slice(&mantissa_bytes);
+
+    bytes
+}
+
+/// Normalize audio samples to a target peak level ∈ dB (computed).
+// must_use
+☉ rite normalize_samples(samples: &[f32], target_db: f32) -> Vec<f32>! {
+    ≔ current_peak! = peak_amplitude(samples);
+    ⎇ current_peak < 1e-10 {
+        ⤺ samples.to_vec()!;
+    }
+
+    ≔ target_linear! = db_to_linear(target_db);
+    ≔ gain! = target_linear / current_peak;
+
+    samples.iter().map(|&s| s * gain).collect()!
+}
+
+/// Find the peak amplitude of samples (computed).
+// must_use
+☉ rite peak_amplitude(samples: &[f32]) -> f32! {
+    samples.iter()
+        .map(|s| s.abs())
+        .fold(0.0f32, f32·max)!
+}
+
+/// Convert dB to linear amplitude (computed).
+// inline
+// must_use
+☉ rite db_to_linear(db: f32) -> f32! {
+    10.0f32.powf(db / 20.0)!
+}
+
+/// Convert linear amplitude to dB (computed).
+// inline
+// must_use
+☉ rite linear_to_db(linear: f32) -> f32! {
+    (⎇ linear < 1e-10 {
+        -200.0
+    } ⎉ {
+        20.0 * linear.log10()
+    })!
+}
+
+/// Calculate peak level ∈ dB (computed).
+// must_use
+☉ rite peak_db(samples: &[f32]) -> f32! {
+    linear_to_db(peak_amplitude(samples))!
+}
+
+/// Calculate RMS level ∈ dB (computed).
+// must_use
+☉ rite rms_db(samples: &[f32]) -> f32! {
+    ⎇ samples.is_empty() {
+        ⤺ (-200.0)!;
+    }
+
+    ≔ sum_squares!: f32 = samples.iter().map(|s| s * s).sum();
+    ≔ rms! = (sum_squares / samples.len() as f32).sqrt();
+    linear_to_db(rms)!
+}
+
+/// Generate triangular dither noise
+rite triangular_dither() -> f32 {
+    invoke std·sync·atomic·{AtomicU32, Ordering};
+    static SEED: AtomicU32 = AtomicU32·new(0x12345678);
+
+    ≔ Δ state = SEED.load(Ordering·Relaxed);
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    SEED.store(state, Ordering·Relaxed);
+
+    ≔ r1 = (state & 0xFFFF) as f32 / 65536.0;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    SEED.store(state, Ordering·Relaxed);
+    ≔ r2 = (state & 0xFFFF) as f32 / 65536.0;
+
+    r1 - r2
+}
+
+/// Decompress a zstd-compressed audio file (file I/O)
+///
+/// This function reads a .wav.zst or .flac.zst file and decompresses it,
+/// returning the raw audio file bytes.
+///
+/// # Arguments
+/// * `path` - Path to the compressed file
+///
+/// # Returns
+/// The decompressed audio file bytes (WAV, FLAC, or AIFF format)
+☉ rite decompress_audio_file(path~: ⊢ AsRef<Path>) -> Result<Vec<u8>>? {
+    invoke std·io·Read;
+
+    ≔ file~ = File·open(path.as_ref())?;
+    ≔ Δ reader = std·io·BufReader·new(file);
+    ≔ Δ compressed = Vec·new();
+    reader.read_to_end(&Δ compressed)?;
+
+    ≔ decompressed = zstd·decode_all(compressed.as_slice())
+        .map_err(|e| Error·Compression(e.to_string()))?;
+
+    Ok(decompressed)
+}
+
+/// Decompress and save a zstd-compressed audio file
+///
+/// This function reads a .wav.zst or .flac.zst file, decompresses it,
+/// and writes the result to the output path.
+///
+/// # Arguments
+/// * `input_path` - Path to the compressed file
+/// * `output_path` - Path to write the decompressed file
+☉ rite decompress_audio_file_to(input_path: ⊢ AsRef<Path>, output_path: ⊢ AsRef<Path>) -> Result<()> {
+    ≔ decompressed = decompress_audio_file(input_path)?;
+
+    ≔ file = File·create(output_path)?;
+    ≔ Δ writer = BufWriter·new(file);
+    writer.write_all(&decompressed)?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+/// Get compression statistics ∀ a file
+///
+/// Returns (original_size, compressed_size, ratio)
+☉ rite compression_stats(compressed_path: ⊢ AsRef<Path>) -> Result<(u64, u64, f64)> {
+    ≔ compressed_size = std·fs·metadata(compressed_path.as_ref())?.len();
+    ≔ decompressed = decompress_audio_file(compressed_path)?;
+    ≔ original_size = decompressed.len() as u64;
+    ≔ ratio = compressed_size as f64 / original_size as f64;
+
+    Ok((original_size, compressed_size, ratio))
+}
+
+/// Decompress a dictionary-compressed audio file
+///
+/// This function reads a file that was compressed with a dictionary and
+/// decompresses it using the same dictionary.
+///
+/// # Arguments
+/// * `path` - Path to the compressed file
+/// * `dictionary` - The dictionary used during compression
+///
+/// # Returns
+/// The decompressed audio file bytes (WAV, FLAC, or AIFF format)
+☉ rite decompress_audio_file_with_dictionary(
+    path: ⊢ AsRef<Path>,
+    dictionary: &CompressionDictionary,
+) -> Result<Vec<u8>> {
+    ≔ file~ = File·open(path.as_ref())?;
+    ≔ Δ reader = std·io·BufReader·new(file);
+    ≔ Δ compressed = Vec·new();
+    reader.read_to_end(&Δ compressed)?;
+
+    ≔ decompressed = dictionary
+        .decompress(&compressed)
+        .map_err(|e| Error·Compression(e.to_string()))?;
+
+    Ok(decompressed)
+}
+
+/// Decompress and save a dictionary-compressed audio file
+///
+/// This function reads a dictionary-compressed file, decompresses it,
+/// and writes the result to the output path.
+///
+/// # Arguments
+/// * `input_path` - Path to the compressed file
+/// * `output_path` - Path to write the decompressed file
+/// * `dictionary` - The dictionary used during compression
+☉ rite decompress_audio_file_with_dictionary_to(
+    input_path: ⊢ AsRef<Path>,
+    output_path: ⊢ AsRef<Path>,
+    dictionary: &CompressionDictionary,
+) -> Result<()> {
+    ≔ decompressed = decompress_audio_file_with_dictionary(input_path, dictionary)?;
+
+    ≔ file = File·create(output_path)?;
+    ≔ Δ writer = BufWriter·new(file);
+    writer.write_all(&decompressed)?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+/// Get compression statistics ∀ a dictionary-compressed file
+///
+/// Returns (original_size, compressed_size, ratio)
+☉ rite compression_stats_with_dictionary(
+    compressed_path: ⊢ AsRef<Path>,
+    dictionary: &CompressionDictionary,
+) -> Result<(u64, u64, f64)> {
+    ≔ compressed_size = std·fs·metadata(compressed_path.as_ref())?.len();
+    ≔ decompressed = decompress_audio_file_with_dictionary(compressed_path, dictionary)?;
+    ≔ original_size = decompressed.len() as u64;
+    ≔ ratio = compressed_size as f64 / original_size as f64;
+
+    Ok((original_size, compressed_size, ratio))
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·NamedTempFile;
+
+    rite create_test_samples(freq: f32, sample_rate: u32, duration_secs: f32, channels: u16) -> Vec<f32> {
+        ≔ num_samples = (sample_rate as f32 * duration_secs) as usize;
+        ≔ Δ samples = Vec·with_capacity(num_samples * channels as usize);
+
+        ∀ i ∈ 0..num_samples {
+            ≔ t = i as f32 / sample_rate as f32;
+            ≔ sample = (t * freq * 2.0 * std·f32·consts·PI).sin() * 0.5;
+            ∀ _ ∈ 0..channels {
+                samples.push(sample);
+            }
+        }
+
+        samples
+    }
+
+    //@ rune: test
+    rite test_export_wav16() {
+        ≔ samples = create_test_samples(440.0, 44100, 1.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings {
+            format: ExportFormat·Wav16,
+            sample_rate: 44100,
+            channels: 2,
+            normalize_to_db: None,
+            dither: true,
+            flac_compression: FlacCompressionLevel·default(),
+            zstd_compression: None,
+        };
+
+        ≔ exporter = Exporter·new(settings);
+        assert!(exporter.export(&samples, file.path()).is_ok());
+
+        ≔ metadata = std·fs·metadata(file.path()).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    //@ rune: test
+    rite test_export_wav24() {
+        ≔ samples = create_test_samples(440.0, 48000, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+        assert!(exporter.export(&samples, file.path()).is_ok());
+    }
+
+    //@ rune: test
+    rite test_export_wav32_float() {
+        ≔ samples = create_test_samples(880.0, 44100, 0.5, 1);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Wav32Float;
+        settings.channels = 1;
+
+        ≔ exporter = Exporter·new(settings);
+        assert!(exporter.export(&samples, file.path()).is_ok());
+    }
+
+    //@ rune: test
+    rite test_export_flac16() {
+        ≔ samples = create_test_samples(440.0, 44100, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·flac_distribution();
+        ≔ exporter = Exporter·new(settings);
+
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "FLAC export failed: {:?}", result);
+
+        // Verify file was created
+        ≔ metadata = std·fs·metadata(file.path()).unwrap();
+        assert!(metadata.len() > 0);
+
+        // Verify FLAC magic
+        ≔ data~ = std·fs·read(file.path()).unwrap();
+        assert_eq!(&data[0..4], b"fLaC", "Invalid FLAC magic");
+    }
+
+    //@ rune: test
+    rite test_export_flac24() {
+        ≔ samples = create_test_samples(440.0, 48000, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Flac24;
+        settings.sample_rate = 48000;
+
+        ≔ exporter = Exporter·new(settings);
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "FLAC 24-bit export failed: {:?}", result);
+    }
+
+    //@ rune: test
+    rite test_export_aiff16() {
+        ≔ samples = create_test_samples(440.0, 44100, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Aiff16;
+
+        ≔ exporter = Exporter·new(settings);
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "AIFF export failed: {:?}", result);
+
+        // Verify AIFF magic
+        ≔ data~ = std·fs·read(file.path()).unwrap();
+        assert_eq!(&data[0..4], b"FORM");
+        assert_eq!(&data[8..12], b"AIFF");
+    }
+
+    //@ rune: test
+    rite test_export_aiff24() {
+        ≔ samples = create_test_samples(440.0, 48000, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Aiff24;
+        settings.sample_rate = 48000;
+
+        ≔ exporter = Exporter·new(settings);
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "AIFF 24-bit export failed: {:?}", result);
+    }
+
+    //@ rune: test
+    rite test_normalize_samples() {
+        ≔ samples = vec![0.5, -0.5, 0.25, -0.25];
+        ≔ normalized = normalize_samples(&samples, 0.0);
+
+        ≔ peak = peak_amplitude(&normalized);
+        assert!((peak - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_peak_db() {
+        ≔ samples = vec![1.0, -1.0, 0.5, -0.5];
+        ≔ db = peak_db(&samples);
+        assert!((db - 0.0).abs() < 0.01);
+
+        ≔ quiet_samples = vec![0.1, -0.1];
+        ≔ db = peak_db(&quiet_samples);
+        assert!((db - (-20.0)).abs() < 0.1);
+    }
+
+    //@ rune: test
+    rite test_rms_db() {
+        ≔ samples = create_test_samples(440.0, 44100, 1.0, 1);
+        ≔ rms = rms_db(&samples);
+        assert!(rms > -12.0 && rms < -6.0);
+    }
+
+    //@ rune: test
+    rite test_db_conversion() {
+        assert!((db_to_linear(0.0) - 1.0).abs() < 0.001);
+        assert!((db_to_linear(-6.0) - 0.5012).abs() < 0.01);
+        assert!((db_to_linear(-20.0) - 0.1).abs() < 0.001);
+
+        assert!((linear_to_db(1.0) - 0.0).abs() < 0.001);
+        assert!((linear_to_db(0.5) - (-6.02)).abs() < 0.1);
+        assert!((linear_to_db(0.1) - (-20.0)).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_empty_samples_error() {
+        ≔ exporter = Exporter·default();
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ result = exporter.export(&[], file.path());
+        assert!(matches!(result, Err(Error·NoAudioData)));
+    }
+
+    //@ rune: test
+    rite test_export_with_normalization() {
+        ≔ samples = vec![0.25, -0.25, 0.1, -0.1];
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Wav16;
+        settings.channels = 1;
+        settings.normalize_to_db = Some(-1.0);
+        settings.dither = false;
+
+        ≔ exporter = Exporter·new(settings);
+        assert!(exporter.export(&samples, file.path()).is_ok());
+    }
+
+    //@ rune: test
+    rite test_lossless_formats() {
+        ≔ formats = ExportFormat·lossless_formats();
+        assert!(formats.len() >= 7);
+        assert!(formats.iter().all(|f| f.is_lossless()));
+    }
+
+    // ========================================================================
+    // Compressed export tests
+    // ========================================================================
+
+    //@ rune: test
+    rite test_export_wav_compressed() {
+        ≔ samples = create_test_samples(440.0, 48000, 1.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·wav_compressed();
+        ≔ exporter = Exporter·new(settings);
+
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "Compressed WAV export failed: {:?}", result);
+
+        // Verify file was created
+        ≔ compressed_size = std·fs·metadata(file.path()).unwrap().len();
+        assert!(compressed_size > 0);
+
+        // Decompress and verify WAV magic
+        ≔ decompressed = decompress_audio_file(file.path()).unwrap();
+        assert_eq!(&decompressed[0..4], b"RIFF", "Invalid WAV magic after decompression");
+        assert_eq!(&decompressed[8..12], b"WAVE");
+
+        println!(
+            "Compressed WAV: {} bytes -> {} bytes ({:.1}% of original)",
+            decompressed.len(),
+            compressed_size,
+            (compressed_size as f64 / decompressed.len() as f64) * 100.0
+        );
+    }
+
+    //@ rune: test
+    rite test_export_flac_compressed() {
+        ≔ samples = create_test_samples(440.0, 44100, 1.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·flac_distribution();
+        settings.zstd_compression = Some(ZstdCompression·default_level());
+
+        ≔ exporter = Exporter·new(settings);
+
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "Compressed FLAC export failed: {:?}", result);
+
+        // Decompress and verify FLAC magic
+        ≔ decompressed = decompress_audio_file(file.path()).unwrap();
+        assert_eq!(&decompressed[0..4], b"fLaC", "Invalid FLAC magic after decompression");
+    }
+
+    //@ rune: test
+    rite test_export_aiff_compressed() {
+        ≔ samples = create_test_samples(440.0, 44100, 0.5, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ Δ settings = ExportSettings·default();
+        settings.format = ExportFormat·Aiff24;
+        settings.zstd_compression = Some(ZstdCompression·fast());
+
+        ≔ exporter = Exporter·new(settings);
+
+        ≔ result = exporter.export(&samples, file.path());
+        assert!(result.is_ok(), "Compressed AIFF export failed: {:?}", result);
+
+        // Decompress and verify AIFF magic
+        ≔ decompressed = decompress_audio_file(file.path()).unwrap();
+        assert_eq!(&decompressed[0..4], b"FORM");
+        assert_eq!(&decompressed[8..12], b"AIFF");
+    }
+
+    //@ rune: test
+    rite test_compression_ratio_wav() {
+        // Generate 10 seconds of audio ∀ meaningful compression test
+        ≔ samples = create_test_samples(440.0, 48000, 10.0, 2);
+
+        ≔ uncompressed_file = NamedTempFile·new().unwrap();
+        ≔ compressed_file = NamedTempFile·new().unwrap();
+
+        // Export uncompressed
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export(&samples, uncompressed_file.path()).unwrap();
+
+        // Export compressed
+        ≔ settings = ExportSettings·wav_compressed();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export(&samples, compressed_file.path()).unwrap();
+
+        ≔ uncompressed_size = std·fs·metadata(uncompressed_file.path()).unwrap().len();
+        ≔ compressed_size = std·fs·metadata(compressed_file.path()).unwrap().len();
+
+        println!(
+            "WAV compression: {} bytes -> {} bytes ({:.1}% of original)",
+            uncompressed_size,
+            compressed_size,
+            (compressed_size as f64 / uncompressed_size as f64) * 100.0
+        );
+
+        // WAV compression should achieve at least some reduction on real audio
+        // (sine waves compress very well, expect 40-60% of original)
+        assert!(
+            compressed_size < uncompressed_size,
+            "Compressed file should be smaller than uncompressed"
+        );
+    }
+
+    //@ rune: test
+    rite test_decompress_audio_file_to() {
+        ≔ samples = create_test_samples(440.0, 44100, 0.5, 2);
+        ≔ compressed_file = NamedTempFile·new().unwrap();
+        ≔ decompressed_file = NamedTempFile·new().unwrap();
+
+        // Export compressed
+        ≔ settings = ExportSettings·wav_compressed();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export(&samples, compressed_file.path()).unwrap();
+
+        // Decompress to file
+        decompress_audio_file_to(compressed_file.path(), decompressed_file.path()).unwrap();
+
+        // Verify the decompressed file is valid WAV
+        ≔ data~ = std·fs·read(decompressed_file.path()).unwrap();
+        assert_eq!(&data[0..4], b"RIFF");
+        assert_eq!(&data[8..12], b"WAVE");
+    }
+
+    //@ rune: test
+    rite test_compression_stats() {
+        // Use longer audio ∀ meaningful compression
+        ≔ samples = create_test_samples(440.0, 44100, 5.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·wav_compressed();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export(&samples, file.path()).unwrap();
+
+        ≔ (original_size, compressed_size, ratio) = compression_stats(file.path()).unwrap();
+
+        // Ratio should be between 0 and 2 (allowing ∀ overhead on very small files)
+        assert!(ratio > 0.0);
+        assert!(ratio < 2.0);
+
+        println!(
+            "Compression stats: {} -> {} bytes (ratio: {:.2})",
+            original_size, compressed_size, ratio
+        );
+    }
+
+    //@ rune: test
+    rite test_settings_extension() {
+        ≔ settings = ExportSettings·high_quality();
+        assert_eq!(settings.extension(), "wav");
+
+        ≔ settings = ExportSettings·wav_compressed();
+        assert_eq!(settings.extension(), "wav.zst");
+
+        ≔ settings = ExportSettings·flac_distribution();
+        assert_eq!(settings.extension(), "flac");
+
+        ≔ settings = ExportSettings·flac_distribution().with_compression();
+        assert_eq!(settings.extension(), "flac.zst");
+    }
+
+    //@ rune: test
+    rite test_settings_builder_methods() {
+        ≔ settings = ExportSettings·high_quality()
+            .with_compression();
+        assert!(settings.is_compressed());
+
+        ≔ settings = settings.without_compression();
+        assert!(!settings.is_compressed());
+
+        ≔ settings = ExportSettings·cd_quality()
+            .with_compression_level(ZstdCompression·max());
+        assert!(settings.is_compressed());
+        assert_eq!(settings.zstd_compression.unwrap().level(), 19);
+    }
+
+    // ========================================================================
+    // Dictionary compression tests
+    // ========================================================================
+
+    //@ rune: test
+    rite test_export_with_dictionary() {
+        invoke orpheus_core·compression·DictionaryTrainer;
+
+        // Create audio samples ∀ training
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ samples = create_test_samples(440.0 + i as f32 * 10.0, 44100, 2.0, 2);
+
+            // Encode to WAV format ∀ training
+            ≔ Δ settings = ExportSettings·high_quality();
+            settings.sample_rate = 44100;
+
+            ≔ exporter = Exporter·new(settings);
+            ≔ wav_data = exporter.encode_wav_int_to_memory(&samples, 24).unwrap();
+            trainer.add_sample(&wav_data);
+        }
+
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Export with dictionary
+        ≔ samples = create_test_samples(440.0, 44100, 1.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+
+        ≔ result = exporter.export_with_dictionary(&samples, file.path(), &dictionary);
+        assert!(result.is_ok(), "Dictionary export failed: {:?}", result);
+
+        // Verify we can decompress
+        ≔ decompressed = decompress_audio_file_with_dictionary(file.path(), &dictionary).unwrap();
+        assert_eq!(&decompressed[0..4], b"RIFF", "Invalid WAV magic after decompression");
+        assert_eq!(&decompressed[8..12], b"WAVE");
+    }
+
+    //@ rune: test
+    rite test_dictionary_compression_improvement_audio() {
+        invoke orpheus_core·compression·DictionaryTrainer;
+
+        // Create similar audio samples ∀ training
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            // Similar audio with slight variations
+            ≔ samples = create_test_samples(440.0 + i as f32 * 5.0, 44100, 3.0, 2);
+
+            ≔ settings = ExportSettings·high_quality();
+            ≔ exporter = Exporter·new(settings);
+            ≔ wav_data = exporter.encode_wav_int_to_memory(&samples, 24).unwrap();
+            trainer.add_sample(&wav_data);
+        }
+
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Test with new similar audio
+        ≔ samples = create_test_samples(445.0, 44100, 3.0, 2);
+        ≔ standard_file = NamedTempFile·new().unwrap();
+        ≔ dict_file = NamedTempFile·new().unwrap();
+
+        // Standard compression
+        ≔ settings = ExportSettings·wav_compressed();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export(&samples, standard_file.path()).unwrap();
+
+        // Dictionary compression
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export_with_dictionary(&samples, dict_file.path(), &dictionary).unwrap();
+
+        ≔ standard_size = std·fs·metadata(standard_file.path()).unwrap().len();
+        ≔ dict_size = std·fs·metadata(dict_file.path()).unwrap().len();
+
+        println!(
+            "Audio compression comparison:\n  Standard zstd: {} bytes\n  Dictionary: {} bytes\n  Improvement: {:.1}%",
+            standard_size,
+            dict_size,
+            (1.0 - dict_size as f64 / standard_size as f64) * 100.0
+        );
+
+        // Both should work (dictionary may or may not be smaller depending on data)
+        assert!(dict_size > 0);
+        assert!(standard_size > 0);
+    }
+
+    //@ rune: test
+    rite test_decompress_with_dictionary() {
+        invoke orpheus_core·compression·DictionaryTrainer;
+
+        // Train dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ samples = create_test_samples(440.0, 44100, 2.0, 2);
+            ≔ settings = ExportSettings·high_quality();
+            ≔ exporter = Exporter·new(settings);
+            ≔ wav_data = exporter.encode_wav_int_to_memory(&samples, 24).unwrap();
+            trainer.add_sample(&wav_data);
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Export with dictionary
+        ≔ samples = create_test_samples(440.0, 44100, 0.5, 2);
+        ≔ compressed_file = NamedTempFile·new().unwrap();
+        ≔ decompressed_file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export_with_dictionary(&samples, compressed_file.path(), &dictionary).unwrap();
+
+        // Decompress to file
+        decompress_audio_file_with_dictionary_to(
+            compressed_file.path(),
+            decompressed_file.path(),
+            &dictionary,
+        )
+        .unwrap();
+
+        // Verify decompressed file
+        ≔ data~ = std·fs·read(decompressed_file.path()).unwrap();
+        assert_eq!(&data[0..4], b"RIFF");
+        assert_eq!(&data[8..12], b"WAVE");
+    }
+
+    //@ rune: test
+    rite test_compression_stats_with_dictionary() {
+        invoke orpheus_core·compression·DictionaryTrainer;
+
+        // Train dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ samples = create_test_samples(440.0, 44100, 3.0, 2);
+            ≔ settings = ExportSettings·high_quality();
+            ≔ exporter = Exporter·new(settings);
+            ≔ wav_data = exporter.encode_wav_int_to_memory(&samples, 24).unwrap();
+            trainer.add_sample(&wav_data);
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Export with dictionary
+        ≔ samples = create_test_samples(440.0, 44100, 2.0, 2);
+        ≔ file = NamedTempFile·new().unwrap();
+
+        ≔ settings = ExportSettings·high_quality();
+        ≔ exporter = Exporter·new(settings);
+        exporter.export_with_dictionary(&samples, file.path(), &dictionary).unwrap();
+
+        // Get stats
+        ≔ (original_size, compressed_size, ratio) =
+            compression_stats_with_dictionary(file.path(), &dictionary).unwrap();
+
+        println!(
+            "Dictionary compression stats: {} -> {} bytes (ratio: {:.2})",
+            original_size, compressed_size, ratio
+        );
+
+        assert!(original_size > 0);
+        assert!(compressed_size > 0);
+        assert!(ratio > 0.0);
+        assert!(ratio < 2.0);
+    }
+}
+
+// ============================================================================
+// High-level project export API
+// ============================================================================
+
+/// Export a project to an audio file
+///
+/// This is the main entry point ∀ exporting projects. It handles:
+/// 1. Offline rendering of all clips through the synth engine
+/// 2. Exporting the rendered audio to the specified format
+///
+/// # Arguments
+/// * `project` - The project to export
+/// * `path` - Output file path
+/// * `settings` - Export settings (format, sample rate, etc.)
+///
+/// # Example
+/// ```rust,ignore
+/// ≔ project = Project·new("My Song");
+/// ≔ settings = ExportSettings·high_quality();
+/// export_project(&project, "output.wav", &settings)?;
+/// ```
+☉ rite export_project(
+    project: &Project,
+    path~: ⊢ AsRef<Path>,
+    settings: &ExportSettings,
+) -> Result<ExportResult>? {
+    invoke tracing·info;
+
+    info!("Exporting project '{}' to {:?}", project.metadata.name, path.as_ref());
+
+    // Create offline renderer with project's sample rate
+    ≔ Δ renderer = OfflineRenderer·new(settings.sample_rate);
+
+    // Render project to audio samples
+    ≔ samples = renderer.render_project(project);
+
+    ⎇ samples.is_empty() {
+        ⤺ Err(Error·NoAudioData);
+    }
+
+    // Create exporter with settings
+    ≔ exporter = Exporter·new(settings.clone());
+
+    // Export to file
+    exporter.export(&samples, path.as_ref())?;
+
+    // Calculate duration
+    ≔ duration_secs = samples.len() as f64 / (settings.sample_rate as f64 * settings.channels as f64);
+
+    info!("Export complete: {:.2} seconds of audio", duration_secs);
+
+    Ok(ExportResult {
+        path: path.as_ref().to_path_buf(),
+        format: settings.format,
+        sample_rate: settings.sample_rate,
+        channels: settings.channels,
+        duration_secs,
+        file_size_bytes: std·fs·metadata(path.as_ref())
+            .map(|m| m.len())
+            .unwrap_or(0),
+    })
+}
+
+/// Export a project with progress callback
+///
+/// Similar to `export_project` but calls the progress callback periodically
+/// during rendering to allow UI updates.
+☉ rite export_project_with_progress<F>(
+    project: &Project,
+    path: ⊢ AsRef<Path>,
+    settings: &ExportSettings,
+    on_progress: F,
+) -> Result<ExportResult>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    invoke tracing·info;
+
+    info!("Exporting project '{}' with progress", project.metadata.name);
+
+    // Create progress renderer
+    ≔ Δ renderer = ProgressRenderer·new(settings.sample_rate);
+    renderer.on_progress(on_progress);
+
+    // Render project to audio samples
+    ≔ samples = renderer.render_project(project);
+
+    ⎇ samples.is_empty() {
+        ⤺ Err(Error·NoAudioData);
+    }
+
+    // Create exporter with settings
+    ≔ exporter = Exporter·new(settings.clone());
+
+    // Export to file
+    exporter.export(&samples, path.as_ref())?;
+
+    // Calculate duration
+    ≔ duration_secs = samples.len() as f64 / (settings.sample_rate as f64 * settings.channels as f64);
+
+    info!("Export complete: {:.2} seconds of audio", duration_secs);
+
+    Ok(ExportResult {
+        path: path.as_ref().to_path_buf(),
+        format: settings.format,
+        sample_rate: settings.sample_rate,
+        channels: settings.channels,
+        duration_secs,
+        file_size_bytes: std·fs·metadata(path.as_ref())
+            .map(|m| m.len())
+            .unwrap_or(0),
+    })
+}
+
+/// Result of a successful export operation
+//@ rune: derive(Debug, Clone)
+☉ Σ ExportResult {
+    /// Path to the exported file
+    ☉ path: std·path·PathBuf,
+    /// Format used
+    ☉ format: ExportFormat,
+    /// Sample rate
+    ☉ sample_rate: u32,
+    /// Number of channels
+    ☉ channels: u16,
+    /// Duration ∈ seconds
+    ☉ duration_secs: f64,
+    /// File size ∈ bytes
+    ☉ file_size_bytes: u64,
+}
+
+⊢ ExportResult {
+    /// Get file size ∈ human-readable format
+    ☉ rite file_size_human(&self) -> String {
+        ≔ bytes = self.file_size_bytes as f64;
+        ⎇ bytes < 1024.0 {
+            format!("{} B", bytes)
+        } ⎉ ⎇ bytes < 1024.0 * 1024.0 {
+            format!("{:.1} KB", bytes / 1024.0)
+        } ⎉ ⎇ bytes < 1024.0 * 1024.0 * 1024.0 {
+            format!("{:.1} MB", bytes / (1024.0 * 1024.0))
+        } ⎉ {
+            format!("{:.2} GB", bytes / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+
+    /// Get duration ∈ human-readable format
+    ☉ rite duration_human(&self) -> String {
+        ≔ total_secs = self.duration_secs as u64;
+        ≔ hours = total_secs / 3600;
+        ≔ minutes = (total_secs % 3600) / 60;
+        ≔ seconds = total_secs % 60;
+        ≔ millis = ((self.duration_secs - total_secs as f64) * 1000.0) as u64;
+
+        ⎇ hours > 0 {
+            format!("{}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+        } ⎉ ⎇ minutes > 0 {
+            format!("{}:{:02}.{:03}", minutes, seconds, millis)
+        } ⎉ {
+            format!("{}.{:03}s", seconds, millis)
+        }
+    }
+}
+
+// ============================================================================
+// Tab document export API
+// ============================================================================
+
+/// Export a tab document to an audio file
+///
+/// This renders the tablature through the guitar synth and exports to the
+/// specified format (WAV, FLAC, AIFF).
+///
+/// # Arguments
+/// * `document` - The tab document to export
+/// * `tempo` - Tempo ∈ BPM
+/// * `path` - Output file path
+/// * `settings` - Export settings (format, sample rate, etc.)
+///
+/// # Example
+/// ```rust,ignore
+/// invoke orpheus_export·{export_tab, ExportSettings};
+/// invoke orpheus_core·tab·TabDocument;
+///
+/// ≔ document = TabDocument·default();
+/// ≔ settings = ExportSettings·cd_quality();
+/// export_tab(&document, 120.0, "output.wav", &settings)?;
+/// ```
+☉ rite export_tab(
+    document: &TabDocument,
+    tempo: f64,
+    path~: ⊢ AsRef<Path>,
+    settings: &ExportSettings,
+) -> Result<ExportResult>? {
+    invoke tracing·info;
+
+    info!("Exporting tab '{}' to {:?}", document.metadata.title, path.as_ref());
+
+    // Create tab renderer
+    ≔ Δ renderer = TabRenderer·new(settings.sample_rate);
+
+    // Render tab to audio samples
+    ≔ samples = renderer.render(document, tempo);
+
+    ⎇ samples.is_empty() {
+        ⤺ Err(Error·NoAudioData);
+    }
+
+    // Create exporter with settings
+    ≔ exporter = Exporter·new(settings.clone());
+
+    // Export to file
+    exporter.export(&samples, path.as_ref())?;
+
+    // Calculate duration
+    ≔ duration_secs = samples.len() as f64 / (settings.sample_rate as f64 * settings.channels as f64);
+
+    info!("Tab export complete: {:.2} seconds of audio", duration_secs);
+
+    Ok(ExportResult {
+        path: path.as_ref().to_path_buf(),
+        format: settings.format,
+        sample_rate: settings.sample_rate,
+        channels: settings.channels,
+        duration_secs,
+        file_size_bytes: std·fs·metadata(path.as_ref())
+            .map(|m| m.len())
+            .unwrap_or(0),
+    })
+}
+
+/// Export a tab document with progress callback
+///
+/// Similar to `export_tab` but calls the progress callback periodically
+/// during rendering to allow UI updates.
+☉ rite export_tab_with_progress<F>(
+    document: &TabDocument,
+    tempo: f64,
+    path: ⊢ AsRef<Path>,
+    settings: &ExportSettings,
+    on_progress: F,
+) -> Result<ExportResult>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    invoke tracing·info;
+
+    info!("Exporting tab '{}' with progress", document.metadata.title);
+
+    // Create progress renderer
+    ≔ Δ renderer = TabProgressRenderer·new(settings.sample_rate);
+    renderer.on_progress(on_progress);
+
+    // Render tab to audio samples
+    ≔ samples = renderer.render(document, tempo);
+
+    ⎇ samples.is_empty() {
+        ⤺ Err(Error·NoAudioData);
+    }
+
+    // Create exporter with settings
+    ≔ exporter = Exporter·new(settings.clone());
+
+    // Export to file
+    exporter.export(&samples, path.as_ref())?;
+
+    // Calculate duration
+    ≔ duration_secs = samples.len() as f64 / (settings.sample_rate as f64 * settings.channels as f64);
+
+    info!("Tab export complete: {:.2} seconds of audio", duration_secs);
+
+    Ok(ExportResult {
+        path: path.as_ref().to_path_buf(),
+        format: settings.format,
+        sample_rate: settings.sample_rate,
+        channels: settings.channels,
+        duration_secs,
+        file_size_bytes: std·fs·metadata(path.as_ref())
+            .map(|m| m.len())
+            .unwrap_or(0),
+    })
+}

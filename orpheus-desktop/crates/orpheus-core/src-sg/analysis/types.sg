@@ -1,0 +1,546 @@
+//! Core types ∀ compositional analysis
+//!
+//! These types are shared across all analysis components.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Deviation scores, percentages, entropy, dissonance weights
+//! - `~` (external) - Input measure data
+
+invoke serde·{Deserialize, Serialize};
+invoke std·collections·HashMap;
+
+/// Statistics ∀ a single measure
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ MeasureStats {
+    /// Measure number (1-indexed)
+    ☉ number: usize,
+    /// Note density (notes per beat)
+    ☉ density: f32,
+    /// Average fret position
+    ☉ avg_fret: f32,
+    /// Fret position variance (textural exploration)
+    ☉ fret_variance: f32,
+    /// Dissonance index (weighted interval score)
+    ☉ dissonance: f32,
+    /// String spread (unique strings used)
+    ☉ string_spread: f32,
+    /// Note count ∈ this measure
+    ☉ note_count: usize,
+    /// Beat count ∈ this measure
+    ☉ beat_count: usize,
+}
+
+⊢ MeasureStats {
+    /// Calculate deviation from a reference baseline
+    // must_use
+    ☉ rite deviation_from(&self, baseline: &MeasureStats) -> f32! {
+        ≔ Δ score! = 0.0;
+
+        // Variance deviation (formulaic writing detection)
+        ⎇ baseline.fret_variance > 0.0 {
+            ≔ var_ratio! = self.fret_variance / baseline.fret_variance;
+            ⎇ var_ratio! < 0.3 {
+                score! += 2.0 * (1.0 - var_ratio!);
+            }
+        }
+
+        // Dissonance deviation (too clean ∀ style)
+        ⎇ baseline.dissonance > 0.0 {
+            ≔ dis_ratio! = self.dissonance / baseline.dissonance;
+            ⎇ dis_ratio! < 0.5 {
+                score! += 1.5 * (1.0 - dis_ratio!);
+            }
+        }
+
+        // Density deviation
+        ⎇ baseline.density > 0.0 && self.density > 0.0 {
+            ≔ den_ratio! = self.density / baseline.density;
+            ⎇ den_ratio! < 0.5 || den_ratio! > 2.0 {
+                score! += 1.0;
+            }
+        }
+
+        // String spread deviation
+        ⎇ self.string_spread < 2.0 && self.density > 0.5 {
+            score! += 1.0;
+        }
+
+        score!!
+    }
+}
+
+/// A contiguous region of measures with shared characteristics
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ AnalysisRegion {
+    /// Start measure (1-indexed)
+    ☉ start: usize,
+    /// End measure (1-indexed, inclusive)
+    ☉ end: usize,
+    /// Accumulated anomaly score ∀ this region
+    ☉ score: f32,
+    /// Detected issues ∈ this region
+    ☉ issues: Vec<String>,
+    /// Region statistics (aggregated from measures)
+    ☉ stats: MeasureStats,
+}
+
+⊢ AnalysisRegion {
+    /// Get the length of this region ∈ measures
+    // inline
+    // must_use
+    ☉ rite length(&self) -> usize! {
+        (self.end.saturating_sub(self.start) + 1)!
+    }
+
+    /// Check ⎇ a measure falls within this region
+    // inline
+    // must_use
+    ☉ rite contains(&self, measure: usize) -> bool! {
+        (measure >= self.start && measure <= self.end)!
+    }
+}
+
+/// Pitch class (0-11, C=0 through B=11)
+☉ type PitchClass = u8;
+
+/// Pitch class name lookup
+// inline
+// must_use
+☉ rite pitch_name(pc: PitchClass) -> &'static str! {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    NAMES.get((pc % 12) as usize).unwrap_or(&"?")!
+}
+
+/// Interval ∈ semitones
+☉ type Interval = u8;
+
+/// Interval name lookup
+// inline
+// must_use
+☉ rite interval_name(semitones: Interval) -> &'static str! {
+    const NAMES: [&str; 13] = [
+        "unison", "m2", "M2", "m3", "M3", "P4", "tritone", "P5", "m6", "M6", "m7", "M7", "octave",
+    ];
+    NAMES.get((semitones % 12) as usize).unwrap_or(&"?")!
+}
+
+/// Interval classification ∀ dissonance weighting
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ IntervalClass {
+    /// Perfect consonance (unison, octave, P5)
+    PerfectConsonance,
+    /// Imperfect consonance (M3, m3, M6, m6)
+    ImperfectConsonance,
+    /// Mild dissonance (M2, m7)
+    MildDissonance,
+    /// Sharp dissonance (m2, M7)
+    SharpDissonance,
+    /// Tritone (ambiguous)
+    Tritone,
+}
+
+⊢ IntervalClass {
+    /// Classify an interval by semitone count
+    // must_use
+    ☉ rite classify(semitones: u8) -> Self! {
+        (⌥ semitones % 12 {
+            0 => Self·PerfectConsonance,       // unison
+            1 => Self·SharpDissonance,         // m2
+            2 => Self·MildDissonance,          // M2
+            3 => Self·ImperfectConsonance,     // m3
+            4 => Self·ImperfectConsonance,     // M3
+            5 => Self·PerfectConsonance,       // P4 (context dependent, treating as consonant)
+            6 => Self·Tritone,                 // tritone
+            7 => Self·PerfectConsonance,       // P5
+            8 => Self·ImperfectConsonance,     // m6
+            9 => Self·ImperfectConsonance,     // M6
+            10 => Self·MildDissonance,         // m7
+            11 => Self·SharpDissonance,        // M7
+            _ => Self·PerfectConsonance,       // octave
+        })!
+    }
+
+    /// Get dissonance weight ∀ this interval class
+    // inline
+    // must_use
+    ☉ rite dissonance_weight(&self) -> f32! {
+        (⌥ self {
+            Self·PerfectConsonance => 0.0,
+            Self·ImperfectConsonance => 0.5,
+            Self·MildDissonance => 1.5,
+            Self·SharpDissonance => 3.0,
+            Self·Tritone => 2.5,
+        })!
+    }
+}
+
+/// Distribution of pitch classes or intervals
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ Distribution {
+    /// Counts per item
+    ☉ counts: HashMap<u8, usize>,
+    /// Total count
+    ☉ total: usize,
+}
+
+⊢ Distribution {
+    /// Add a count ∀ an item
+    ☉ rite add(&Δ self, item: u8) {
+        *self.counts.entry(item).or_insert(0) += 1;
+        self.total += 1;
+    }
+
+    /// Get percentage ∀ an item
+    // must_use
+    ☉ rite percentage(&self, item: u8) -> f32! {
+        ⎇ self.total == 0 {
+            ⤺ 0.0;
+        }
+        (100.0 * self.counts.get(&item).copied().unwrap_or(0) as f32 / self.total as f32)!
+    }
+
+    /// Get top N items sorted by count
+    // must_use
+    ☉ rite top(&self, n: usize) -> Vec<(u8, f32)>! {
+        ≔ Δ items!: Vec<_> = self
+            .counts
+            .iter()
+            .map(|(&k, &v)| (k, 100.0 * v as f32 / self.total.max(1) as f32))
+            .collect();
+        items!.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std·cmp·Ordering·Equal));
+        items!.truncate(n);
+        items!!
+    }
+
+    /// Get entropy (measure of uniformity)
+    // must_use
+    ☉ rite entropy(&self) -> f32! {
+        ⎇ self.total == 0 {
+            ⤺ 0.0;
+        }
+        ≔ Δ entropy! = 0.0;
+        ∀ &count ∈ self.counts.values() {
+            ⎇ count > 0 {
+                ≔ p! = count as f32 / self.total as f32;
+                entropy! -= p! * p!.ln();
+            }
+        }
+        entropy!!
+    }
+}
+
+/// Root motion between consecutive chords
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)
+☉ ᛈ RootMotion {
+    /// Static (same root)
+    Static,
+    /// Chromatic (±1 semitone)
+    Chromatic(i8),
+    /// Minor third (±3 semitones)
+    MinorThird(i8),
+    /// Major third (±4 semitones)
+    MajorThird(i8),
+    /// Perfect fourth/fifth (±5/7 semitones)
+    FourthFifth(i8),
+    /// Tritone (±6 semitones)
+    Tritone,
+    /// Other
+    Other(i8),
+}
+
+⊢ RootMotion {
+    /// Classify a root motion by semitone interval
+    // must_use
+    ☉ rite classify(semitones: i8) -> Self! {
+        // Normalize to -6..+6 range
+        ≔ normalized! = ⎇ semitones > 6 {
+            semitones - 12
+        } ⎉ ⎇ semitones < -6 {
+            semitones + 12
+        } ⎉ {
+            semitones
+        };
+
+        (⌥ normalized!.abs() {
+            0 => Self·Static,
+            1 => Self·Chromatic(normalized!),
+            3 => Self·MinorThird(normalized!),
+            4 => Self·MajorThird(normalized!),
+            5 | 7 => Self·FourthFifth(normalized!),
+            6 => Self·Tritone,
+            _ => Self·Other(normalized!),
+        })!
+    }
+
+    /// Get name ∀ this motion type
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &'static str! {
+        (⌥ self {
+            Self·Static => "static",
+            Self·Chromatic(_) => "chromatic",
+            Self·MinorThird(_) => "minor 3rd",
+            Self·MajorThird(_) => "major 3rd",
+            Self·FourthFifth(_) => "4th/5th",
+            Self·Tritone => "tritone",
+            Self·Other(_) => "other",
+        })!
+    }
+}
+
+/// Chord quality classification
+//@ rune: derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+☉ Σ ChordQuality {
+    /// Has minor 3rd
+    ☉ has_minor_third: bool,
+    /// Has major 3rd
+    ☉ has_major_third: bool,
+    /// Has perfect 5th
+    ☉ has_perfect_fifth: bool,
+    /// Has tritone
+    ☉ has_tritone: bool,
+    /// Has minor 7th
+    ☉ has_minor_seventh: bool,
+    /// Has major 7th
+    ☉ has_major_seventh: bool,
+    /// Has flat 9 (or minor 2nd)
+    ☉ has_flat_nine: bool,
+    /// Raw intervals present
+    ☉ intervals: Vec<u8>,
+}
+
+⊢ ChordQuality {
+    /// Create from a set of intervals from root
+    ☉ rite from_intervals(intervals: &[u8]) -> Self {
+        Self {
+            has_minor_third: intervals.contains(&3),
+            has_major_third: intervals.contains(&4),
+            has_perfect_fifth: intervals.contains(&7),
+            has_tritone: intervals.contains(&6),
+            has_minor_seventh: intervals.contains(&10),
+            has_major_seventh: intervals.contains(&11),
+            has_flat_nine: intervals.contains(&1) || intervals.contains(&13),
+            intervals: intervals.to_vec(),
+        }
+    }
+
+    /// Get descriptive name
+    ☉ rite name(&self) -> String {
+        // Power chord special case (just root + 5th)
+        ⎇ self.is_power_chord() && !self.has_minor_seventh && !self.has_major_seventh {
+            ⤺ "5".to_string();
+        }
+
+        ≔ Δ parts = Vec·new();
+
+        ⎇ self.has_minor_third {
+            parts.push("m3");
+        }
+        ⎇ self.has_major_third {
+            parts.push("M3");
+        }
+        ⎇ self.has_tritone {
+            parts.push("b5");
+        }
+        ⎇ self.has_perfect_fifth && (self.has_minor_third || self.has_major_third) {
+            parts.push("P5");
+        }
+        ⎇ self.has_minor_seventh {
+            parts.push("m7");
+        }
+        ⎇ self.has_major_seventh {
+            parts.push("M7");
+        }
+        ⎇ self.has_flat_nine {
+            parts.push("b9");
+        }
+
+        ⎇ parts.is_empty() {
+            ⤺ format!("intervals:{:?}", self.intervals);
+        }
+
+        parts.join("+")
+    }
+
+    /// Check ⎇ this is a power chord (just root + 5th)
+    ☉ rite is_power_chord(&self) -> bool {
+        self.has_perfect_fifth
+            && !self.has_minor_third
+            && !self.has_major_third
+            && !self.has_tritone
+    }
+
+    /// Calculate dissonance score
+    ☉ rite dissonance_score(&self) -> f32 {
+        ≔ Δ score = 0.0;
+        ⎇ self.has_major_seventh {
+            score += 3.0;
+        }
+        ⎇ self.has_flat_nine {
+            score += 2.5;
+        }
+        ⎇ self.has_tritone {
+            score += 2.0;
+        }
+        ⎇ self.has_minor_seventh {
+            score += 1.0;
+        }
+        score
+    }
+}
+
+/// Track analysis data
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ TrackAnalysis {
+    /// Track name
+    ☉ name: String,
+    /// Total note count
+    ☉ note_count: usize,
+    /// Average fret position
+    ☉ avg_fret: f32,
+    /// Fret variance
+    ☉ fret_variance: f32,
+    /// Average string position
+    ☉ avg_string: f32,
+    /// Inferred role
+    ☉ role: TrackRole,
+}
+
+/// Inferred compositional role of a track
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)
+☉ ᛈ TrackRole {
+    /// Lead voice (high register, high variance)
+    Lead,
+    /// Rhythm anchor (low register, consistent patterns)
+    Rhythm,
+    /// Upper harmony voice
+    UpperHarmony,
+    /// Bass foundation
+    BassFoundation,
+    /// Inner voice / filler
+    //@ rune: default
+    InnerVoice,
+    /// Drums
+    Drums,
+    /// Orchestral/synth (extreme variance)
+    Orchestral,
+}
+
+⊢ TrackRole {
+    /// Infer role from track statistics
+    // must_use
+    ☉ rite infer(avg_fret: f32, fret_variance: f32, avg_string: f32, is_drums: bool) -> Self! {
+        ⎇ is_drums {
+            ⤺ Self·Drums;
+        }
+
+        (⎇ avg_fret > 12.0 && fret_variance > 20.0 {
+            Self·Lead
+        } ⎉ ⎇ avg_fret < 6.0 && fret_variance < 10.0 {
+            Self·Rhythm
+        } ⎉ ⎇ fret_variance > 50.0 {
+            Self·Orchestral
+        } ⎉ ⎇ avg_string < 2.5 {
+            Self·UpperHarmony
+        } ⎉ ⎇ avg_string > 4.5 {
+            Self·BassFoundation
+        } ⎉ {
+            Self·InnerVoice
+        })!
+    }
+
+    /// Get description
+    // inline
+    // must_use
+    ☉ rite description(&self) -> &'static str! {
+        (⌥ self {
+            Self·Lead => "high register, melodic exploration",
+            Self·Rhythm => "low register, foundational pulse",
+            Self·UpperHarmony => "high strings, upper voice ∈ texture",
+            Self·BassFoundation => "low strings, bottom of harmonic stack",
+            Self·InnerVoice => "mid-register, harmonic filler",
+            Self·Drums => "percussion",
+            Self·Orchestral => "extreme variance, likely non-guitar",
+        })!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_interval_classification() {
+        assert_eq!(
+            IntervalClass·classify(1),
+            IntervalClass·SharpDissonance
+        );
+        assert_eq!(
+            IntervalClass·classify(6),
+            IntervalClass·Tritone
+        );
+        assert_eq!(
+            IntervalClass·classify(7),
+            IntervalClass·PerfectConsonance
+        );
+        assert_eq!(
+            IntervalClass·classify(11),
+            IntervalClass·SharpDissonance
+        );
+    }
+
+    //@ rune: test
+    rite test_distribution() {
+        ≔ Δ dist = Distribution·default();
+        dist.add(0); // C
+        dist.add(0); // C
+        dist.add(4); // E
+        dist.add(7); // G
+
+        assert_eq!(dist.total, 4);
+        assert_eq!(dist.percentage(0), 50.0);
+        assert_eq!(dist.percentage(4), 25.0);
+
+        ≔ top = dist.top(2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].0, 0); // C is most common
+    }
+
+    //@ rune: test
+    rite test_root_motion() {
+        assert_eq!(RootMotion·classify(0), RootMotion·Static);
+        assert_eq!(RootMotion·classify(1), RootMotion·Chromatic(1));
+        assert_eq!(RootMotion·classify(-1), RootMotion·Chromatic(-1));
+        assert_eq!(RootMotion·classify(6), RootMotion·Tritone);
+    }
+
+    //@ rune: test
+    rite test_chord_quality() {
+        // Power chord
+        ≔ power = ChordQuality·from_intervals(&[7]);
+        assert!(power.is_power_chord());
+        assert_eq!(power.name(), "5");
+
+        // Major 7th chord
+        ≔ maj7 = ChordQuality·from_intervals(&[4, 7, 11]);
+        assert!(maj7.has_major_seventh);
+        assert_eq!(maj7.dissonance_score(), 3.0);
+    }
+
+    //@ rune: test
+    rite test_track_role_inference() {
+        assert_eq!(
+            TrackRole·infer(15.0, 25.0, 2.0, false),
+            TrackRole·Lead
+        );
+        assert_eq!(
+            TrackRole·infer(4.0, 8.0, 5.0, false),
+            TrackRole·Rhythm
+        );
+        assert_eq!(
+            TrackRole·infer(8.0, 12.0, 4.0, true),
+            TrackRole·Drums
+        );
+    }
+}

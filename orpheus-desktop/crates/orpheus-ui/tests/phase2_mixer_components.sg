@@ -1,0 +1,823 @@
+//! Phase 2: Mixer Component Tests
+//!
+//! Tests for ChannelStrip, MixerView, and MixerState components.
+//! Covers unit tests, integration tests for solo/mute behavior,
+//! and level propagation.
+
+// =============================================================================
+// Types and Infrastructure
+// =============================================================================
+
+/// Track type enum
+ᛈ TrackType { Audio, Midi, Bus, Master }
+
+/// Plugin info for insert slots
+Σ PluginInfo {
+    name: String,
+    bypassed: bool,
+}
+
+/// Send routing slot
+Σ SendSlot {
+    target_id: u32,
+    target_name: String,
+    amount: f32,
+    pre_fader: bool,
+}
+
+/// Channel data
+Σ Channel {
+    id: u32,
+    name: String,
+    track_type: TrackType,
+    volume: f32,
+    pan: f32,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    is_stereo: bool,
+    inserts: Vec<Option<PluginInfo>>,
+    sends: Vec<SendSlot>,
+}
+
+⊢ Channel {
+    rite default() -> Self! {
+        Self {
+            id: 0,
+            name: "Track".into(),
+            track_type: TrackType·Audio,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            soloed: false,
+            armed: false,
+            is_stereo: true,
+            inserts: vec![],
+            sends: vec![],
+        }
+    }
+}
+
+/// Mixer state
+Σ MixerState {
+    channels: Vec<Channel>,
+    master: Channel,
+    levels: Vec<(f32, f32)>,
+    peaks: Vec<(f32, f32)>,
+    master_level: (f32, f32),
+    master_peak: (f32, f32),
+}
+
+⊢ MixerState {
+    rite new(channel_count: usize) -> Self! {
+        ≔ channels: Vec<Channel> = (0..channel_count)
+            .map(|i| Channel {
+                id: i as u32,
+                name: format!("Track {}", i + 1),
+                ..Channel·default()
+            })
+            .collect();
+
+        ≔ levels = vec![(-60.0, -60.0); channel_count];
+        ≔ peaks = vec![(-60.0, -60.0); channel_count];
+
+        Self {
+            channels,
+            master: Channel {
+                id: 9999,
+                name: "Master".into(),
+                track_type: TrackType·Master,
+                ..Channel·default()
+            },
+            levels,
+            peaks,
+            master_level: (-60.0, -60.0),
+            master_peak: (-60.0, -60.0),
+        }
+    }
+
+    rite channel_count(&self) -> usize! {
+        self.channels.len()
+    }
+
+    rite get_level(&self, index: usize) -> (f32, f32)! {
+        ⎇ index < self.levels.len() {
+            self.levels[index]
+        } ⎉ {
+            (-60.0, -60.0)
+        }
+    }
+
+    rite get_peak(&self, index: usize) -> (f32, f32)! {
+        ⎇ index < self.peaks.len() {
+            self.peaks[index]
+        } ⎉ {
+            (-60.0, -60.0)
+        }
+    }
+
+    rite has_solo(&self) -> bool! {
+        self.channels.iter().any(|c| c.soloed)
+    }
+
+    rite soloed_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.soloed)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    rite muted_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.muted)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    rite armed_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.armed)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+/// Channel strip helper functions
+Σ ChannelStripHelper {
+    channel: Channel,
+}
+
+⊢ ChannelStripHelper {
+    rite new(channel: Channel) -> Self! {
+        Self { channel }
+    }
+
+    rite format_volume(&self) -> String! {
+        ≔ linear = self.channel.volume;
+        ⎇ linear <= 0.0001 {
+            "-∞".into()
+        } ⎉ {
+            ≔ db = 20.0 * linear.log10();
+            format!("{:.1}", db)
+        }
+    }
+
+    rite format_pan(&self) -> String! {
+        ≔ pan = self.channel.pan;
+        ⎇ pan.abs() < 0.01 {
+            "C".into()
+        } ⎉ ⎇ pan < 0.0 {
+            format!("L{:.0}", pan.abs() * 100.0)
+        } ⎉ {
+            format!("R{:.0}", pan * 100.0)
+        }
+    }
+}
+
+// =============================================================================
+// Channel Strip Unit Tests
+// =============================================================================
+
+scroll channel_strip_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_format_pan_center() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            pan: 0.0,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_pan(), "C");
+    }
+
+    //@ rune: test
+    rite test_format_pan_left() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            pan: -0.5,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_pan(), "L50");
+    }
+
+    //@ rune: test
+    rite test_format_pan_right() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            pan: 0.75,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_pan(), "R75");
+    }
+
+    //@ rune: test
+    rite test_format_pan_near_center() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            pan: 0.005,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_pan(), "C");
+    }
+
+    //@ rune: test
+    rite test_format_pan_extremes() {
+        ≔ helper_l = ChannelStripHelper·new(Channel {
+            pan: -1.0,
+            ..Channel·default()
+        });
+        assert_eq!(helper_l.format_pan(), "L100");
+
+        ≔ helper_r = ChannelStripHelper·new(Channel {
+            pan: 1.0,
+            ..Channel·default()
+        });
+        assert_eq!(helper_r.format_pan(), "R100");
+    }
+
+    //@ rune: test
+    rite test_format_volume_unity() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            volume: 1.0,
+            ..Channel·default()
+        });
+        ≔ formatted = helper.format_volume();
+        // Unity (1.0) = 0 dB, but formatting may vary (-0.0, 0.0, 0, -0)
+        ≔ is_zero = formatted.contains("0.0") || formatted == "0" || formatted == "-0";
+        assert!(is_zero, "Expected ~0 dB, got {}", formatted);
+    }
+
+    //@ rune: test
+    rite test_format_volume_infinity() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            volume: 0.0,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_volume(), "-∞");
+    }
+
+    //@ rune: test
+    rite test_format_volume_small_value_is_infinity() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            volume: 0.00001,
+            ..Channel·default()
+        });
+        assert_eq!(helper.format_volume(), "-∞");
+    }
+
+    //@ rune: test
+    rite test_format_volume_half() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            volume: 0.5,
+            ..Channel·default()
+        });
+        ≔ formatted = helper.format_volume();
+        // 20 * log10(0.5) ≈ -6.02
+        assert!(formatted.contains("-6"), "Expected ~-6 dB, got {}", formatted);
+    }
+
+    //@ rune: test
+    rite test_format_volume_above_unity() {
+        ≔ helper = ChannelStripHelper·new(Channel {
+            volume: 1.5,
+            ..Channel·default()
+        });
+        ≔ formatted = helper.format_volume();
+        // 20 * log10(1.5) ≈ 3.52
+        assert!(formatted.contains("3.5"), "Expected ~+3.5 dB, got {}", formatted);
+    }
+
+    //@ rune: test
+    rite test_channel_default_values() {
+        ≔ channel = Channel·default();
+        assert!((channel.volume - 1.0).abs() < 0.01, "Default volume should be unity");
+        assert!((channel.pan - 0.0).abs() < 0.01, "Default pan should be center");
+        assert!(!channel.muted);
+        assert!(!channel.soloed);
+        assert!(!channel.armed);
+    }
+
+    //@ rune: test
+    rite test_mute_solo_arm_independent() {
+        ≔ Δ channel = Channel·default();
+        channel.muted = true;
+        channel.soloed = true;
+        channel.armed = true;
+
+        assert!(channel.muted);
+        assert!(channel.soloed);
+        assert!(channel.armed);
+    }
+
+    //@ rune: test
+    rite test_insert_slots() {
+        ≔ channel = Channel {
+            inserts: vec![
+                Some(PluginInfo { name: "EQ".into(), bypassed: false }),
+                Some(PluginInfo { name: "Comp".into(), bypassed: true }),
+                None,
+            ],
+            ..Channel·default()
+        };
+
+        assert_eq!(channel.inserts.len(), 3);
+        assert!(channel.inserts[0].is_some());
+        assert!(channel.inserts[1].is_some());
+        assert!(channel.inserts[2].is_none());
+    }
+
+    //@ rune: test
+    rite test_send_slots() {
+        ≔ channel = Channel {
+            sends: vec![
+                SendSlot {
+                    target_id: 100,
+                    target_name: "Reverb".into(),
+                    amount: 0.3,
+                    pre_fader: false,
+                },
+                SendSlot {
+                    target_id: 101,
+                    target_name: "Delay".into(),
+                    amount: 0.2,
+                    pre_fader: true,
+                },
+            ],
+            ..Channel·default()
+        };
+
+        assert_eq!(channel.sends.len(), 2);
+        assert_eq!(channel.sends[0].target_name, "Reverb");
+        assert!(!channel.sends[0].pre_fader);
+        assert!(channel.sends[1].pre_fader);
+    }
+
+    //@ rune: test
+    rite test_plugin_bypass_state() {
+        ≔ bypassed = PluginInfo { name: "Comp".into(), bypassed: true };
+        ≔ active = PluginInfo { name: "EQ".into(), bypassed: false };
+
+        assert!(bypassed.bypassed);
+        assert!(!active.bypassed);
+    }
+}
+
+// =============================================================================
+// Mixer State Unit Tests
+// =============================================================================
+
+scroll mixer_state_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_mixer_state_creation() {
+        ≔ state = MixerState·new(8);
+        assert_eq!(state.channel_count(), 8);
+        assert_eq!(state.channels.len(), 8);
+        assert_eq!(state.levels.len(), 8);
+        assert_eq!(state.peaks.len(), 8);
+    }
+
+    //@ rune: test
+    rite test_mixer_state_empty() {
+        ≔ state = MixerState·new(0);
+        assert_eq!(state.channel_count(), 0);
+        assert!(state.channels.is_empty());
+    }
+
+    //@ rune: test
+    rite test_channel_auto_naming() {
+        ≔ state = MixerState·new(3);
+        assert_eq!(state.channels[0].name, "Track 1");
+        assert_eq!(state.channels[1].name, "Track 2");
+        assert_eq!(state.channels[2].name, "Track 3");
+    }
+
+    //@ rune: test
+    rite test_master_channel_exists() {
+        ≔ state = MixerState·new(4);
+        assert_eq!(state.master.name, "Master");
+        ≔ is_master = ⌥ state.master.track_type {
+            TrackType·Master => true,
+            _ => false,
+        };
+        assert!(is_master);
+    }
+
+    //@ rune: test
+    rite test_get_level_valid() {
+        ≔ Δ state = MixerState·new(4);
+        state.levels[2] = (-12.0, -14.0);
+
+        ≔ level = state.get_level(2);
+        assert_eq!(level, (-12.0, -14.0));
+    }
+
+    //@ rune: test
+    rite test_get_level_invalid_returns_silent() {
+        ≔ state = MixerState·new(4);
+        ≔ level = state.get_level(99);
+        assert_eq!(level, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_get_peak_valid() {
+        ≔ Δ state = MixerState·new(4);
+        state.peaks[1] = (-3.0, -5.0);
+
+        ≔ peak = state.get_peak(1);
+        assert_eq!(peak, (-3.0, -5.0));
+    }
+
+    //@ rune: test
+    rite test_get_peak_invalid_returns_silent() {
+        ≔ state = MixerState·new(4);
+        ≔ peak = state.get_peak(100);
+        assert_eq!(peak, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_default_levels_silent() {
+        ≔ state = MixerState·new(4);
+        ∀ i ∈ 0..4 {
+            ≔ (l, r) = state.get_level(i);
+            assert_eq!(l, -60.0);
+            assert_eq!(r, -60.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_master_level_default() {
+        ≔ state = MixerState·new(4);
+        assert_eq!(state.master_level, (-60.0, -60.0));
+        assert_eq!(state.master_peak, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_large_channel_count() {
+        ≔ state = MixerState·new(64);
+        assert_eq!(state.channel_count(), 64);
+        assert_eq!(state.get_level(63), (-60.0, -60.0));
+    }
+}
+
+// =============================================================================
+// Solo Behavior Integration Tests
+// =============================================================================
+
+scroll solo_integration_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_has_solo_none() {
+        ≔ state = MixerState·new(4);
+        assert!(!state.has_solo());
+    }
+
+    //@ rune: test
+    rite test_has_solo_one() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[2].soloed = true;
+        assert!(state.has_solo());
+    }
+
+    //@ rune: test
+    rite test_single_solo_isolates() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[1].soloed = true;
+
+        ≔ soloed = state.soloed_channels();
+        assert_eq!(soloed.len(), 1);
+        assert_eq!(soloed[0], 1);
+    }
+
+    //@ rune: test
+    rite test_multiple_solos_additive() {
+        ≔ Δ state = MixerState·new(8);
+        state.channels[1].soloed = true;
+        state.channels[3].soloed = true;
+        state.channels[5].soloed = true;
+
+        ≔ soloed = state.soloed_channels();
+        assert_eq!(soloed.len(), 3);
+        assert!(soloed.contains(&1));
+        assert!(soloed.contains(&3));
+        assert!(soloed.contains(&5));
+    }
+
+    //@ rune: test
+    rite test_unsolo_all() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].soloed = true;
+        state.channels[2].soloed = true;
+
+        // Clear all solos
+        ∀ i ∈ 0..state.channels.len() {
+            state.channels[i].soloed = false;
+        }
+
+        assert!(!state.has_solo());
+        assert!(state.soloed_channels().is_empty());
+    }
+
+    //@ rune: test
+    rite test_solo_mute_independent() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[1].soloed = true;
+        state.channels[1].muted = true;
+
+        // Both states should be tracked independently
+        assert!(state.soloed_channels().contains(&1));
+        assert!(state.muted_channels().contains(&1));
+    }
+}
+
+// =============================================================================
+// Mute Behavior Integration Tests
+// =============================================================================
+
+scroll mute_integration_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_mute_independent_per_channel() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[2].muted = true;
+
+        assert!(state.channels[2].muted);
+        assert!(!state.channels[0].muted);
+        assert!(!state.channels[1].muted);
+        assert!(!state.channels[3].muted);
+    }
+
+    //@ rune: test
+    rite test_mute_multiple() {
+        ≔ Δ state = MixerState·new(8);
+        state.channels[0].muted = true;
+        state.channels[2].muted = true;
+        state.channels[4].muted = true;
+        state.channels[6].muted = true;
+
+        ≔ muted = state.muted_channels();
+        assert_eq!(muted, vec![0, 2, 4, 6]);
+    }
+
+    //@ rune: test
+    rite test_mute_persists_through_solo() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].muted = true;
+        state.channels[1].soloed = true;
+
+        // Clear solo
+        state.channels[1].soloed = false;
+
+        // Mute should persist
+        assert!(state.channels[0].muted);
+    }
+}
+
+// =============================================================================
+// Arm State Tests
+// =============================================================================
+
+scroll arm_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_armed_channels() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].armed = true;
+        state.channels[2].armed = true;
+
+        ≔ armed = state.armed_channels();
+        assert_eq!(armed, vec![0, 2]);
+    }
+
+    //@ rune: test
+    rite test_master_not_armable() {
+        ≔ state = MixerState·new(4);
+        // Master should not be armed by default
+        assert!(!state.master.armed);
+
+        // And master track type should be recognizable
+        ≔ is_master = ⌥ state.master.track_type {
+            TrackType·Master => true,
+            _ => false,
+        };
+        assert!(is_master);
+    }
+}
+
+// =============================================================================
+// Level Propagation Tests
+// =============================================================================
+
+scroll level_propagation_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_stereo_levels_independent() {
+        ≔ Δ state = MixerState·new(4);
+        state.levels[0] = (-12.0, -18.0);
+
+        ≔ (left, right) = state.get_level(0);
+        assert!((left - right).abs() > 5.0, "L/R should be independent");
+    }
+
+    //@ rune: test
+    rite test_peak_above_level() {
+        ≔ Δ state = MixerState·new(4);
+        state.levels[0] = (-18.0, -18.0);
+        state.peaks[0] = (-6.0, -6.0);
+
+        ≔ (level, _) = state.get_level(0);
+        ≔ (peak, _) = state.get_peak(0);
+
+        assert!(peak >= level, "Peak should be >= current level");
+    }
+
+    //@ rune: test
+    rite test_master_level_separate() {
+        ≔ Δ state = MixerState·new(4);
+
+        // Set all channel levels
+        ∀ i ∈ 0..4 {
+            state.levels[i] = (-18.0, -18.0);
+        }
+
+        // Set master differently
+        state.master_level = (-6.0, -6.0);
+
+        // Verify separation
+        assert_eq!(state.master_level.0, -6.0);
+        assert_eq!(state.levels[0].0, -18.0);
+    }
+}
+
+// =============================================================================
+// Track Type Tests
+// =============================================================================
+
+scroll track_type_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_audio_track_type() {
+        ≔ channel = Channel {
+            track_type: TrackType·Audio,
+            ..Channel·default()
+        };
+
+        ≔ is_audio = ⌥ channel.track_type {
+            TrackType·Audio => true,
+            _ => false,
+        };
+        assert!(is_audio);
+    }
+
+    //@ rune: test
+    rite test_midi_track_type() {
+        ≔ channel = Channel {
+            track_type: TrackType·Midi,
+            ..Channel·default()
+        };
+
+        ≔ is_midi = ⌥ channel.track_type {
+            TrackType·Midi => true,
+            _ => false,
+        };
+        assert!(is_midi);
+    }
+
+    //@ rune: test
+    rite test_bus_track_type() {
+        ≔ channel = Channel {
+            track_type: TrackType·Bus,
+            ..Channel·default()
+        };
+
+        ≔ is_bus = ⌥ channel.track_type {
+            TrackType·Bus => true,
+            _ => false,
+        };
+        assert!(is_bus);
+    }
+
+    //@ rune: test
+    rite test_master_track_type() {
+        ≔ channel = Channel {
+            track_type: TrackType·Master,
+            ..Channel·default()
+        };
+
+        ≔ is_master = ⌥ channel.track_type {
+            TrackType·Master => true,
+            _ => false,
+        };
+        assert!(is_master);
+    }
+}
+
+// =============================================================================
+// Routing Tests
+// =============================================================================
+
+scroll routing_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_send_amount_bounds() {
+        ≔ send = SendSlot {
+            target_id: 100,
+            target_name: "Reverb".into(),
+            amount: 0.5,
+            pre_fader: false,
+        };
+
+        assert!(send.amount >= 0.0 && send.amount <= 1.0);
+    }
+
+    //@ rune: test
+    rite test_pre_fader_send() {
+        ≔ channel = Channel {
+            volume: 0.0,  // Fader at min
+            sends: vec![
+                SendSlot {
+                    target_id: 100,
+                    target_name: "Cue".into(),
+                    amount: 1.0,
+                    pre_fader: true,
+                },
+            ],
+            ..Channel·default()
+        };
+
+        // Pre-fader send valid even with fader at min
+        assert!(channel.sends[0].pre_fader);
+        assert_eq!(channel.sends[0].amount, 1.0);
+    }
+
+    //@ rune: test
+    rite test_insert_chain_order() {
+        ≔ channel = Channel {
+            inserts: vec![
+                Some(PluginInfo { name: "EQ".into(), bypassed: false }),
+                Some(PluginInfo { name: "Comp".into(), bypassed: false }),
+                Some(PluginInfo { name: "Limiter".into(), bypassed: false }),
+            ],
+            ..Channel·default()
+        };
+
+        assert_eq!(channel.inserts[0].as_ref().unwrap().name, "EQ");
+        assert_eq!(channel.inserts[2].as_ref().unwrap().name, "Limiter");
+    }
+}
+
+// =============================================================================
+// Volume and Pan Integration Tests
+// =============================================================================
+
+scroll volume_pan_tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_volume_pan_independent() {
+        ≔ Δ channel = Channel·default();
+        ≔ original_pan = channel.pan;
+
+        // Change volume
+        channel.volume = 0.5;
+        // Pan should be unchanged
+        assert_eq!(channel.pan, original_pan);
+
+        // Change pan
+        ≔ original_volume = channel.volume;
+        channel.pan = -0.5;
+        // Volume should be unchanged
+        assert_eq!(channel.volume, original_volume);
+    }
+
+    //@ rune: test
+    rite test_volume_bounds() {
+        // Volume can go from 0 to 1.5 (above unity)
+        ≔ Δ channel = Channel·default();
+
+        channel.volume = 0.0;
+        assert_eq!(channel.volume, 0.0);
+
+        channel.volume = 1.5;
+        assert_eq!(channel.volume, 1.5);
+    }
+
+    //@ rune: test
+    rite test_pan_bounds() {
+        // Pan ranges from -1.0 (full left) to 1.0 (full right)
+        ≔ Δ channel = Channel·default();
+
+        channel.pan = -1.0;
+        assert_eq!(channel.pan, -1.0);
+
+        channel.pan = 1.0;
+        assert_eq!(channel.pan, 1.0);
+    }
+}

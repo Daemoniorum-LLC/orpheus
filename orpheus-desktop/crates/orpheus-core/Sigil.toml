@@ -1,0 +1,106 @@
+# Sigil manifest for orpheus-core
+#
+# Core types, state management, commands, and events for the Orpheus desktop application.
+
+[package]
+name = "orpheus-core"
+version = "0.1.0"
+description = "Core types, state management, and event system for Orpheus"
+
+[rust-dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Compression
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    # Root
+    "src-sg/lib.sg",
+    "src-sg/playback.sg",
+    "src-sg/recording.sg",
+
+    # State management
+    "src-sg/state/mod.sg",
+    "src-sg/state/app_state.sg",
+    "src-sg/state/transport.sg",
+    "src-sg/state/mixer.sg",
+    "src-sg/state/selection.sg",
+
+    # Commands
+    "src-sg/commands/mod.sg",
+    "src-sg/commands/command.sg",
+    "src-sg/commands/history.sg",
+    "src-sg/commands/registry.sg",
+    "src-sg/commands/track_commands.sg",
+    "src-sg/commands/clip_commands.sg",
+
+    # Events
+    "src-sg/events/mod.sg",
+    "src-sg/events/event.sg",
+    "src-sg/events/bus.sg",
+
+    # Project
+    "src-sg/project/mod.sg",
+
+    # Config
+    "src-sg/config/mod.sg",
+
+    # Compression
+    "src-sg/compression/mod.sg",
+
+    # Tab notation
+    "src-sg/tab/mod.sg",
+    "src-sg/tab/instrument.sg",
+    "src-sg/tab/technique.sg",
+    "src-sg/tab/notation.sg",
+    "src-sg/tab/rhythm.sg",
+    "src-sg/tab/drums.sg",
+
+    # Analysis
+    "src-sg/analysis/mod.sg",
+    "src-sg/analysis/types.sg",
+    "src-sg/analysis/fingerprint.sg",
+    "src-sg/analysis/anomaly.sg",
+    "src-sg/analysis/harmony.sg",
+    "src-sg/analysis/surgical.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error", "ignore"]
+
+[build]
+# Transpile to Rust for compilation
+target = "rust"
+output-dir = "src"
+
+[metadata]
+# Migration tracking
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 10562
+file-count = 32

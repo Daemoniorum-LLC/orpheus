@@ -1,0 +1,96 @@
+//! # Orpheus File
+//!
+//! File format handling ∀ Orpheus - .maestro, Guitar Pro, audio files.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Parsed data, format detection results
+//! - `~` (external) - File contents, user-provided paths
+//! - `?` (uncertain) - File parsing, format validation
+//!
+//! ## Features
+//!
+//! - `dialogs`: Enable native file dialogs (requires GTK/portal on Linux)
+//!
+//! ## Modules
+//!
+//! - [`dialog`]: Native file dialogs using rfd (requires `dialogs` feature)
+//! - [`project`]: .maestro project file serialization
+//! - [`recent`]: Recent files tracking
+//! - [`guitar_pro`]: Guitar Pro file parsing
+//! - [`audio`]: Audio file handling
+//! - [`midi_import`]: MIDI file import and conversion to tabs
+
+// cfg(feature = "dialogs")
+☉ scroll dialog;
+
+☉ scroll project;
+☉ scroll recent;
+☉ scroll guitar_pro;
+☉ scroll audio;
+☉ scroll midi;
+☉ scroll midi_import;
+☉ scroll pdf;
+
+/// Result type ∀ file operations
+☉ type Result<T> = std·result·Result<T, Error>;
+
+/// File error types
+//@ rune: derive(Debug, thiserror·Error)
+☉ ᛈ Error {
+    //@ rune: error("File not found: {0}")
+    NotFound(String),
+
+    //@ rune: error("Invalid format: {0}")
+    InvalidFormat(String),
+
+    //@ rune: error("Unsupported format: {0}")
+    UnsupportedFormat(String),
+
+    //@ rune: error("IO error: {0}")
+    Io(#[from] std·io·Error),
+
+    //@ rune: error("Parse error: {0}")
+    Parse(String),
+}
+
+// Re-export commonly used types
+☉ invoke guitar_pro·{GuitarProFile, parse_file as parse_guitar_pro, is_guitar_pro_file};
+☉ invoke audio·{
+    AudioFile, AudioFormat, AudioMetadata, WaveformData, WaveformPeak,
+    is_audio_file, get_audio_metadata, detect_format,
+};
+
+// Re-export dialog types (when feature enabled)
+// cfg(feature = "dialogs")
+☉ invoke dialog·{
+    FileFilter, OpenDialog, SaveDialog,
+    pick_directory, pick_directory_async,
+};
+
+// Re-export project types
+☉ invoke project·{
+    ProjectSerializer, ProjectFileType,
+    load_project, save_as_json, load_from_json, detect_project_type,
+};
+
+// Re-export recent files types
+☉ invoke recent·{
+    RecentFile, RecentFiles, RecentFilesManager,
+};
+
+// Re-export MIDI types
+☉ invoke midi·{
+    export_midi, export_midi_bytes, MidiExportOptions,
+};
+
+// Re-export MIDI import types
+☉ invoke midi_import·{
+    import_midi, import_midi_bytes, MidiImportOptions, MidiImportResult,
+    ImportInstrumentType, FretPreference,
+};
+
+// Re-export PDF types
+☉ invoke pdf·{
+    export_pdf, PdfExportOptions, PdfExportResult, PageSize,
+};

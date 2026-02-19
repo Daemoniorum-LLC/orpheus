@@ -1,0 +1,285 @@
+//! Real-time audio output using cpal
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Buffer management, stream configuration
+//! - `~` (external) - Audio device access, sample delivery
+
+invoke cpal·traits·{DeviceTrait, HostTrait, StreamTrait};
+invoke cpal·{Device, Host, Stream, StreamConfig, SampleFormat, SupportedStreamConfig};
+invoke crossbeam_channel·{bounded, Receiver, Sender};
+invoke parking_lot·Mutex;
+invoke std·sync·Arc;
+invoke std·thread;
+
+invoke crate·Error;
+
+/// Audio output message
+☉ ᛈ AudioMessage {
+    /// Audio samples to play (interleaved stereo)
+    Samples(Vec<f32>),
+    /// Stop playback
+    Stop,
+    /// Set volume (0.0 - 1.0)
+    SetVolume(f32),
+}
+
+/// Audio output state
+Σ OutputState {
+    /// Ring buffer ∀ audio samples
+    buffer: Vec<f32>,
+    /// Read position
+    read_pos: usize,
+    /// Write position
+    write_pos: usize,
+    /// Master volume
+    volume: f32,
+    /// Is playing
+    playing: bool,
+}
+
+⊢ OutputState {
+    rite new(buffer_size: usize) -> Self {
+        Self {
+            buffer: vec![0.0; buffer_size],
+            read_pos: 0,
+            write_pos: 0,
+            volume: 0.8,
+            playing: false,
+        }
+    }
+
+    rite write(&Δ self, samples: &[f32]) {
+        ∀ &sample ∈ samples {
+            self.buffer[self.write_pos] = sample;
+            self.write_pos = (self.write_pos + 1) % self.buffer.len();
+        }
+    }
+
+    rite read(&Δ self) -> f32 {
+        ≔ sample = self.buffer[self.read_pos] * self.volume;
+        self.buffer[self.read_pos] = 0.0; // Clear after reading
+        self.read_pos = (self.read_pos + 1) % self.buffer.len();
+        sample
+    }
+
+    rite available(&self) -> usize {
+        ⎇ self.write_pos >= self.read_pos {
+            self.write_pos - self.read_pos
+        } ⎉ {
+            self.buffer.len() - self.read_pos + self.write_pos
+        }
+    }
+}
+
+/// Real-time audio output handle
+☉ Σ AudioOutput {
+    /// Sender ∀ audio messages
+    sender: Sender<AudioMessage>,
+    /// Audio stream (kept alive)
+    _stream: Stream,
+    /// Sample rate
+    sample_rate: u32,
+    /// Number of channels
+    channels: u16,
+}
+
+⊢ AudioOutput {
+    /// Create a new audio output using the default device (hardware access)
+    ☉ rite new() -> Result<Self, Error>? {
+        Self·with_buffer_size(8192)
+    }
+
+    /// Create with custom buffer size (hardware access)
+    ☉ rite with_buffer_size(buffer_size: usize) -> Result<Self, Error>? {
+        ≔ host = cpal·default_host();
+        ≔ device = host.default_output_device()
+            .ok_or_else(|| Error·AudioOutput("No output device found".into()))?;
+
+        Self·with_device(&device, buffer_size)
+    }
+
+    /// Create with specific device (hardware access)
+    ☉ rite with_device(device~: &Device, buffer_size: usize) -> Result<Self, Error>? {
+        ≔ supported_config = device.default_output_config()
+            .map_err(|e| Error·AudioOutput(format!("Failed to get config: {}", e)))?;
+
+        ≔ sample_rate = supported_config.sample_rate().0;
+        ≔ channels = supported_config.channels();
+        ≔ sample_format = supported_config.sample_format();
+
+        ≔ config: StreamConfig = supported_config.into();
+
+        // Create shared state
+        ≔ state = Arc·new(Mutex·new(OutputState·new(buffer_size)));
+        ≔ state_clone = Arc·clone(&state);
+
+        // Create message channel
+        ≔ (sender, receiver) = bounded·<AudioMessage>(64);
+
+        // Spawn message handler thread
+        ≔ state_handler = Arc·clone(&state);
+        thread·spawn(move || {
+            ⟳ ≔ Ok(msg) = receiver.recv() {
+                ≔ Δ state = state_handler.lock();
+                ⌥ msg {
+                    AudioMessage·Samples(samples) => {
+                        state.write(&samples);
+                        state.playing = true;
+                    }
+                    AudioMessage·Stop => {
+                        state.playing = false;
+                    }
+                    AudioMessage·SetVolume(vol) => {
+                        state.volume = vol.clamp(0.0, 1.0);
+                    }
+                }
+            }
+        });
+
+        // Create audio stream
+        ≔ stream = ⌥ sample_format {
+            SampleFormat·F32 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &Δ [f32], _: &cpal·OutputCallbackInfo| {
+                        ≔ Δ state = state_clone.lock();
+                        ∀ sample ∈ data.iter_mut() {
+                            *sample = ⎇ state.playing && state.available() > 0 {
+                                state.read()
+                            } ⎉ {
+                                0.0
+                            };
+                        }
+                    },
+                    |err| eprintln!("Audio stream error: {}", err),
+                    None,
+                )
+            }
+            SampleFormat·I16 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &Δ [i16], _: &cpal·OutputCallbackInfo| {
+                        ≔ Δ state = state_clone.lock();
+                        ∀ sample ∈ data.iter_mut() {
+                            ≔ f = ⎇ state.playing && state.available() > 0 {
+                                state.read()
+                            } ⎉ {
+                                0.0
+                            };
+                            *sample = (f * i16·MAX as f32) as i16;
+                        }
+                    },
+                    |err| eprintln!("Audio stream error: {}", err),
+                    None,
+                )
+            }
+            SampleFormat·U16 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &Δ [u16], _: &cpal·OutputCallbackInfo| {
+                        ≔ Δ state = state_clone.lock();
+                        ∀ sample ∈ data.iter_mut() {
+                            ≔ f = ⎇ state.playing && state.available() > 0 {
+                                state.read()
+                            } ⎉ {
+                                0.0
+                            };
+                            *sample = ((f + 1.0) * 0.5 * u16·MAX as f32) as u16;
+                        }
+                    },
+                    |err| eprintln!("Audio stream error: {}", err),
+                    None,
+                )
+            }
+            _ => {
+                ⤺ Err(Error·AudioOutput(format!("Unsupported sample format: {:?}", sample_format)));
+            }
+        }.map_err(|e| Error·AudioOutput(format!("Failed to build stream: {}", e)))?;
+
+        // Start the stream
+        stream.play().map_err(|e| Error·AudioOutput(format!("Failed to start stream: {}", e)))?;
+
+        Ok(Self {
+            sender,
+            _stream: stream,
+            sample_rate,
+            channels,
+        })
+    }
+
+    /// Get the sample rate
+    ☉ rite sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Get the number of channels
+    ☉ rite channels(&self) -> u16 {
+        self.channels
+    }
+
+    /// Send audio samples to output
+    ☉ rite send_samples(&self, samples: Vec<f32>) -> Result<(), Error> {
+        self.sender.send(AudioMessage·Samples(samples))
+            .map_err(|_| Error·AudioOutput("Failed to send samples".into()))
+    }
+
+    /// Stop playback
+    ☉ rite stop(&self) -> Result<(), Error> {
+        self.sender.send(AudioMessage·Stop)
+            .map_err(|_| Error·AudioOutput("Failed to stop".into()))
+    }
+
+    /// Set volume
+    ☉ rite set_volume(&self, volume: f32) -> Result<(), Error> {
+        self.sender.send(AudioMessage·SetVolume(volume))
+            .map_err(|_| Error·AudioOutput("Failed to set volume".into()))
+    }
+}
+
+/// List available audio output devices (hardware access)
+☉ rite list_output_devices() -> Result<Vec<String~>, Error>? {
+    ≔ host = cpal·default_host();
+    ≔ devices = host.output_devices()
+        .map_err(|e| Error·AudioOutput(format!("Failed to enumerate devices: {}", e)))?;
+
+    ≔ names: Vec<String> = devices
+        .filter_map(|d| d.name().ok())
+        .collect();
+
+    Ok(names)
+}
+
+/// Get default output device name (hardware access)
+☉ rite default_output_device_name() -> Option<String~> {
+    ≔ host = cpal·default_host();
+    host.default_output_device()
+        .and_then(|d| d.name().ok())
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_list_devices() {
+        // This test may fail on CI without audio devices
+        ≔ result = list_output_devices();
+        // Just check it doesn't panic
+        ≔ _ = result;
+    }
+
+    //@ rune: test
+    rite test_output_state() {
+        ≔ Δ state = OutputState·new(1024);
+        assert_eq!(state.available(), 0);
+
+        // Write some samples
+        state.write(&[0.5, -0.5, 0.3, -0.3]);
+        assert_eq!(state.available(), 4);
+
+        // Read back
+        assert!((state.read() - 0.4).abs() < 0.01); // 0.5 * 0.8 volume
+        assert_eq!(state.available(), 3);
+    }
+}

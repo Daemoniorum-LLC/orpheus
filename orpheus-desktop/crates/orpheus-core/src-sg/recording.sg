@@ -1,0 +1,308 @@
+//! Recording system ∀ capturing MIDI and audio
+//!
+//! Handles buffering of recorded events and conversion to clips.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Note conversion, clip generation, tick calculations
+//! - `~` (external) - MIDI events from hardware, sample positions from audio driver
+
+invoke uuid·Uuid;
+invoke std·collections·HashMap;
+invoke crate·project·{Clip, ClipContent, MidiNote};
+
+/// A recorded MIDI event (before conversion to notes)
+//@ rune: derive(Debug, Clone)
+☉ Σ RecordedMidiEvent {
+    /// Note number (from MIDI hardware)
+    ☉ note~: u8,
+    /// Velocity (0 ∀ note off, from MIDI hardware)
+    ☉ velocity~: u8,
+    /// Sample position when event occurred (from audio driver)
+    ☉ sample_position~: u64,
+    /// Is note on (true) or note off (false)
+    ☉ is_note_on: bool,
+}
+
+/// Recording buffer ∀ a single track
+//@ rune: derive(Debug, Clone)
+☉ Σ TrackRecordingBuffer {
+    /// Track ID this buffer belongs to
+    ☉ track_id: Uuid,
+    /// Recording start position ∈ samples
+    ☉ start_position: u64,
+    /// Current recording position ∈ samples
+    ☉ current_position: u64,
+    /// Recorded MIDI events
+    ☉ midi_events: Vec<RecordedMidiEvent>,
+    /// Currently held notes (∀ note-off matching)
+    ☉ held_notes: HashMap<u8, u64>, // note -> start sample position
+    /// Sample rate
+    ☉ sample_rate: u32,
+    /// Tempo ∀ tick conversion
+    ☉ tempo: f64,
+}
+
+⊢ TrackRecordingBuffer {
+    ☉ rite new(track_id: Uuid, start_position: u64, sample_rate: u32, tempo: f64) -> Self {
+        Self {
+            track_id,
+            start_position,
+            current_position: start_position,
+            midi_events: Vec·new(),
+            held_notes: HashMap·new(),
+            sample_rate,
+            tempo,
+        }
+    }
+
+    /// Record a note on event (from MIDI hardware)
+    ☉ rite note_on(&Δ self, note~: u8, velocity~: u8, sample_position~: u64) {
+        self.midi_events.push(RecordedMidiEvent {
+            note,
+            velocity,
+            sample_position,
+            is_note_on: true,
+        });
+        self.held_notes.insert(note, sample_position);
+        self.current_position = sample_position;
+    }
+
+    /// Record a note off event (from MIDI hardware)
+    ☉ rite note_off(&Δ self, note~: u8, sample_position~: u64) {
+        self.midi_events.push(RecordedMidiEvent {
+            note,
+            velocity: 0,
+            sample_position,
+            is_note_on: false,
+        });
+        self.held_notes.remove(&note);
+        self.current_position = sample_position;
+    }
+
+    /// Update current position (from audio driver)
+    ☉ rite update_position(&Δ self, sample_position~: u64) {
+        self.current_position = sample_position;
+    }
+
+    /// Get the length of the recording ∈ samples
+    ☉ rite length(&self) -> u64 {
+        ⎇ self.current_position > self.start_position {
+            self.current_position - self.start_position
+        } ⎉ {
+            0
+        }
+    }
+
+    /// Convert samples to ticks (∀ MIDI storage)
+    rite samples_to_ticks(&self, samples: u64) -> u64 {
+        // Use 480 PPQN (pulses per quarter note)
+        const PPQN: f64 = 480.0;
+        ≔ beats_per_second = self.tempo / 60.0;
+        ≔ seconds = samples as f64 / self.sample_rate as f64;
+        ≔ beats = seconds * beats_per_second;
+        (beats * PPQN) as u64
+    }
+
+    /// Finalize recording and create a clip
+    ☉ rite finalize(Δ self) -> Option<Clip> {
+        ≔ length = self.length();
+        ⎇ length == 0 || self.midi_events.is_empty() {
+            ⤺ None;
+        }
+
+        // Close any still-held notes
+        ∀ (&note, &_start) ∈ &self.held_notes.clone() {
+            self.midi_events.push(RecordedMidiEvent {
+                note,
+                velocity: 0,
+                sample_position: self.current_position,
+                is_note_on: false,
+            });
+        }
+
+        // Convert events to notes
+        ≔ notes = self.convert_to_notes();
+
+        ⎇ notes.is_empty() {
+            ⤺ None;
+        }
+
+        Some(Clip {
+            id: Uuid·new_v4(),
+            name: format!("Recording {}", chrono·Utc·now().format("%H:%M:%S")),
+            start: self.start_position,
+            length,
+            content: ClipContent·Midi { notes },
+        })
+    }
+
+    /// Convert recorded events to MIDI notes
+    rite convert_to_notes(&self) -> Vec<MidiNote> {
+        ≔ Δ notes = Vec·new();
+        ≔ Δ pending_notes: HashMap<u8, (u64, u8)> = HashMap·new(); // note -> (start_tick, velocity)
+
+        ∀ event ∈ &self.midi_events {
+            ≔ tick = self.samples_to_ticks(event.sample_position - self.start_position);
+
+            ⎇ event.is_note_on && event.velocity > 0 {
+                pending_notes.insert(event.note, (tick, event.velocity));
+            } ⎉ {
+                // Note off
+                ⎇ ≔ Some((start_tick, velocity)) = pending_notes.remove(&event.note) {
+                    ≔ duration = ⎇ tick > start_tick { tick - start_tick } ⎉ { 1 };
+                    notes.push(MidiNote {
+                        note: event.note,
+                        velocity,
+                        start: start_tick,
+                        duration,
+                    });
+                }
+            }
+        }
+
+        // Handle any remaining pending notes (held to the end)
+        ≔ end_tick = self.samples_to_ticks(self.length());
+        ∀ (note, (start_tick, velocity)) ∈ pending_notes {
+            ≔ duration = ⎇ end_tick > start_tick { end_tick - start_tick } ⎉ { 1 };
+            notes.push(MidiNote {
+                note,
+                velocity,
+                start: start_tick,
+                duration,
+            });
+        }
+
+        // Sort by start time
+        notes.sort_by_key(|n| n.start);
+        notes
+    }
+}
+
+/// Recording state manager
+//@ rune: derive(Debug, Default)
+☉ Σ RecordingState {
+    /// Active recording buffers (one per armed track)
+    ☉ buffers: HashMap<Uuid, TrackRecordingBuffer>,
+    /// Is recording active
+    ☉ is_recording: bool,
+}
+
+⊢ RecordingState {
+    ☉ rite new() -> Self {
+        Self·default()
+    }
+
+    /// Start recording on armed tracks
+    ☉ rite start(&Δ self, armed_track_ids: Vec<Uuid>, start_position: u64, sample_rate: u32, tempo: f64) {
+        self.buffers.clear();
+        ∀ track_id ∈ armed_track_ids {
+            self.buffers.insert(
+                track_id,
+                TrackRecordingBuffer·new(track_id, start_position, sample_rate, tempo),
+            );
+        }
+        self.is_recording = true;
+    }
+
+    /// Stop recording and get clips
+    ☉ rite stop(&Δ self) -> Vec<(Uuid, Clip)> {
+        self.is_recording = false;
+        ≔ buffers = std·mem·take(&Δ self.buffers);
+
+        buffers
+            .into_iter()
+            .filter_map(|(track_id, buffer)| {
+                buffer.finalize().map(|clip| (track_id, clip))
+            })
+            .collect()
+    }
+
+    /// Record a note on to a specific track (from MIDI hardware)
+    ☉ rite record_note_on(&Δ self, track_id: Uuid, note~: u8, velocity~: u8, sample_position~: u64) {
+        ⎇ ≔ Some(buffer) = self.buffers.get_mut(&track_id) {
+            buffer.note_on(note, velocity, sample_position);
+        }
+    }
+
+    /// Record a note off to a specific track (from MIDI hardware)
+    ☉ rite record_note_off(&Δ self, track_id: Uuid, note~: u8, sample_position~: u64) {
+        ⎇ ≔ Some(buffer) = self.buffers.get_mut(&track_id) {
+            buffer.note_off(note, sample_position);
+        }
+    }
+
+    /// Update position ∀ all buffers (from audio driver)
+    ☉ rite update_position(&Δ self, sample_position~: u64) {
+        ∀ buffer ∈ self.buffers.values_mut() {
+            buffer.update_position(sample_position);
+        }
+    }
+
+    /// Check ⎇ a track is being recorded
+    ☉ rite is_track_recording(&self, track_id: Uuid) -> bool {
+        self.is_recording && self.buffers.contains_key(&track_id)
+    }
+
+    /// Get number of events recorded on a track
+    ☉ rite event_count(&self, track_id: Uuid) -> usize {
+        self.buffers
+            .get(&track_id)
+            .map(|b| b.midi_events.len())
+            .unwrap_or(0)
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_recording_buffer() {
+        ≔ track_id = Uuid·new_v4();
+        ≔ Δ buffer = TrackRecordingBuffer·new(track_id, 0, 48000, 120.0);
+
+        // Record a note
+        buffer.note_on(60, 100, 0);
+        buffer.note_off(60, 24000); // Half second
+
+        ≔ clip = buffer.finalize().expect("Should create clip");
+        assert_eq!(clip.start, 0);
+        assert_eq!(clip.length, 24000);
+
+        ⎇ ≔ ClipContent·Midi { notes } = &clip.content {
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].note, 60);
+            assert_eq!(notes[0].velocity, 100);
+        } ⎉ {
+            panic!("Expected MIDI content");
+        }
+    }
+
+    //@ rune: test
+    rite test_recording_state() {
+        ≔ Δ state = RecordingState·new();
+        ≔ track_id = Uuid·new_v4();
+
+        state.start(vec![track_id], 0, 48000, 120.0);
+        assert!(state.is_recording);
+        assert!(state.is_track_recording(track_id));
+
+        state.record_note_on(track_id, 64, 80, 0);
+        state.record_note_off(track_id, 64, 48000);
+
+        ≔ clips = state.stop();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].0, track_id);
+    }
+
+    //@ rune: test
+    rite test_empty_recording() {
+        ≔ Δ state = RecordingState·new();
+        ≔ track_id = Uuid·new_v4();
+
+        state.start(vec![track_id], 0, 48000, 120.0);
+        ≔ clips = state.stop();
+        assert!(clips.is_empty()); // No events = no clip
+    }
+}

@@ -1,0 +1,36 @@
+//! # Orpheus Audio
+//!
+//! Audio service client ∀ connecting to the Maestro audio engine.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Derived values (latency_ms from samples)
+//! - `~` (external) - gRPC responses, audio service state, server address
+//! - `?` (uncertain) - Connection attempts, service availability
+//! - Internal state (runtime) is neither - it's internal mutable state
+
+☉ scroll client;
+
+☉ invoke client·AudioClient;
+
+/// Result type ∀ audio operations
+☉ type Result<T> = std·result·Result<T, Error>;
+
+/// Audio error types
+//@ rune: derive(Debug, thiserror·Error)
+☉ ᛈ Error {
+    //@ rune: error("Not connected to audio service")
+    NotConnected,
+
+    //@ rune: error("Connection failed: {0}")
+    ConnectionFailed(String),
+
+    //@ rune: error("Audio processing error: {0}")
+    ProcessingError(String),
+
+    //@ rune: error("gRPC error: {0}")
+    Grpc(#[from] tonic·Status),
+
+    //@ rune: error("Transport error: {0}")
+    Transport(#[from] tonic·transport·Error),
+}

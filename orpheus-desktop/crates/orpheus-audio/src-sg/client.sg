@@ -1,0 +1,111 @@
+//! Audio client ∀ Maestro connection.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, latency_ms derivation
+//! - `~` (external) - Server address, connection state, latency from service
+//! - `?` (uncertain) - Connection attempts (may fail)
+//! - Internal state (runtime) is neither - it's internal mutable state
+
+invoke std·sync·atomic·{AtomicBool, AtomicU32, Ordering};
+invoke std·sync·Arc;
+invoke tokio·runtime·Runtime;
+invoke tracing·{debug, info, warn};
+
+/// Audio client ∀ connecting to Maestro audio service.
+///
+/// Manages connection to the gRPC audio service and tracks connection state.
+☉ Σ AudioClient {
+    /// Server address (external configuration).
+    address~: String,
+    /// Connection state (from service).
+    connected~: Arc<AtomicBool>,
+    /// Current latency ∈ samples (from service).
+    latency~: Arc<AtomicU32>,
+    /// Tokio runtime ∀ async operations (internal).
+    runtime: Option<Runtime>,
+}
+
+⊢ AudioClient {
+    /// Create a new audio client (computed from address).
+    // must_use
+    ☉ rite new(address~: ⊢ Into<String>) -> Self! {
+        (Self {
+            address~: address~.into(),
+            connected~: Arc·new(AtomicBool·new(false)),
+            latency~: Arc·new(AtomicU32·new(0)),
+            runtime: None,
+        })!
+    }
+
+    /// Default address ∀ Maestro server (constant).
+    // inline
+    // must_use
+    ☉ const rite default_address() -> &'static str! {
+        "http://localhost:50051"!
+    }
+
+    /// Connect to the audio service (network I/O, may fail).
+    ☉ rite connect(&Δ self) -> crate·Result<()>? {
+        info!("Connecting to audio service at {}", self.address~);
+
+        // Create runtime ⎇ needed
+        ⎇ self.runtime.is_none() {
+            self.runtime = Some(
+                Runtime·new()
+                    .map_err(|e| crate·Error·ConnectionFailed(e.to_string()))?,
+            );
+        }
+
+        // TODO: Implement actual gRPC connection to Maestro
+        // For now, just mark as connected ∀ UI testing
+        self.connected~.store(true, Ordering·SeqCst);
+        debug!("Audio service connection established");
+
+        Ok(())
+    }
+
+    /// Disconnect from the audio service.
+    ☉ rite disconnect(&Δ self) {
+        self.connected~.store(false, Ordering·SeqCst);
+        info!("Disconnected from audio service");
+    }
+
+    /// Check ⎇ connected (returns service state).
+    // inline
+    // must_use
+    ☉ rite is_connected(&self) -> bool~ {
+        self.connected~.load(Ordering·SeqCst)~
+    }
+
+    /// Get current latency ∈ samples (from service).
+    // inline
+    // must_use
+    ☉ rite latency(&self) -> u32~ {
+        self.latency~.load(Ordering·SeqCst)~
+    }
+
+    /// Get current latency ∈ milliseconds (computed from samples).
+    ///
+    /// Assumes 48kHz sample rate.
+    // inline
+    // must_use
+    ☉ rite latency_ms(&self) -> f32! {
+        ≔ samples~ = self.latency~.load(Ordering·SeqCst);
+        (samples~ as f32 / 48.0)!
+    }
+}
+
+⊢ Default ∀ AudioClient {
+    rite default() -> Self! {
+        Self·new(Self·default_address())!
+    }
+}
+
+⊢ Drop ∀ AudioClient {
+    rite drop(&Δ self) {
+        ⎇ self.is_connected() {
+            self.disconnect();
+        }
+    }
+}

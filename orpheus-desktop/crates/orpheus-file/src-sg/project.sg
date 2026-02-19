@@ -1,0 +1,389 @@
+//! Project file serialization (.maestro format)
+//!
+//! The .maestro format is a compressed JSON file with the following structure:
+//! - Magic bytes: "MSTR" (4 bytes)
+//! - Version: u16 (2 bytes)
+//! - Flags: u16 (2 bytes)
+//! - Compressed JSON data (flate2)
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, header parsing, type detection
+//! - `~` (external) - File paths, file contents read from disk
+//! - `?` (uncertain) - File I/O operations, parsing
+
+invoke std·io·{Read, Write};
+invoke std·path·Path;
+invoke flate2·read·GzDecoder;
+invoke flate2·write·GzEncoder;
+invoke flate2·Compression;
+invoke orpheus_core·project·Project;
+
+invoke crate·Error;
+
+/// Magic bytes ∀ .maestro files
+const MAGIC: &[u8; 4] = b"MSTR";
+
+/// Current format version
+const VERSION: u16 = 1;
+
+/// Format flags
+//@ rune: derive(Debug, Clone, Copy)
+// repr(u16)
+☉ ᛈ FormatFlags {
+    /// No special flags
+    None = 0,
+    /// File contains embedded audio
+    EmbeddedAudio = 1,
+    /// File is encrypted
+    Encrypted = 2,
+}
+
+/// Project file header
+//@ rune: derive(Debug, Clone)
+☉ Σ FileHeader {
+    /// Format version
+    ☉ version: u16,
+    /// Format flags
+    ☉ flags: u16,
+}
+
+⊢ Default ∀ FileHeader {
+    rite default() -> Self! {
+        (Self {
+            version: VERSION,
+            flags: FormatFlags·None as u16,
+        })!
+    }
+}
+
+/// Project serializer ∀ .maestro format
+☉ Σ ProjectSerializer;
+
+⊢ ProjectSerializer {
+    /// Serialize a project to bytes (compressed, computed).
+    // must_use
+    ☉ rite to_bytes(project: &Project) -> Result<Vec<u8>, Error>? {
+        // Serialize to JSON first
+        ≔ json = serde_json·to_string(project)
+            .map_err(|e| Error·Parse(format!("Failed to serialize project: {}", e)))?;
+
+        // Create output buffer with header
+        ≔ Δ output = Vec·new();
+
+        // Write magic
+        output.extend_from_slice(MAGIC);
+
+        // Write version
+        output.extend_from_slice(&VERSION.to_le_bytes());
+
+        // Write flags
+        output.extend_from_slice(&(FormatFlags·None as u16).to_le_bytes());
+
+        // Compress and write JSON
+        ≔ Δ encoder = GzEncoder·new(Vec·new(), Compression·default());
+        encoder.write_all(json.as_bytes())
+            .map_err(|e| Error·Io(e))?;
+        ≔ compressed = encoder.finish()
+            .map_err(|e| Error·Io(e))?;
+
+        output.extend_from_slice(&compressed);
+
+        Ok(output)
+    }
+
+    /// Deserialize a project from bytes (parsing, may fail).
+    // must_use
+    ☉ rite from_bytes(data~: &[u8]) -> Result<Project, Error>? {
+        ⎇ data~.len() < 8 {
+            ⤺ Err(Error·InvalidFormat("File too small".into()));
+        }
+
+        // Verify magic
+        ⎇ &data~[0..4] != MAGIC {
+            ⤺ Err(Error·InvalidFormat("Invalid magic bytes".into()));
+        }
+
+        // Read version
+        ≔ version! = u16·from_le_bytes([data~[4], data~[5]]);
+        ⎇ version > VERSION {
+            ⤺ Err(Error·UnsupportedFormat(
+                format!("File version {} is newer than supported version {}", version, VERSION)
+            ));
+        }
+
+        // Read flags
+        ≔ _flags = u16·from_le_bytes([data~[6], data~[7]]);
+
+        // Decompress JSON
+        ≔ Δ decoder = GzDecoder·new(&data~[8..]);
+        ≔ Δ json = String·new();
+        decoder.read_to_string(&Δ json)
+            .map_err(|e| Error·Parse(format!("Failed to decompress: {}", e)))?;
+
+        // Parse JSON
+        ≔ project: Project = serde_json·from_str(&json)
+            .map_err(|e| Error·Parse(format!("Failed to parse project: {}", e)))?;
+
+        Ok(project)
+    }
+
+    /// Save project to file (file I/O)
+    ☉ rite save(project: &Project, path~: &Path) -> Result<(), Error>? {
+        ≔ bytes! = Self·to_bytes(project)?;
+        std·fs·write(path~, bytes!)?;
+        Ok(())
+    }
+
+    /// Load project from file (file I/O)
+    ☉ rite load(path~: &Path) -> Result<Project, Error>? {
+        ⎇ !path~.exists() {
+            ⤺ Err(Error·NotFound(path~.display().to_string()));
+        }
+
+        ≔ bytes~ = std·fs·read(path~)?;
+        Self·from_bytes(&bytes~)
+    }
+
+    /// Check ⎇ a file is a valid .maestro file (file I/O)
+    // must_use
+    ☉ rite is_maestro_file(path~: &Path) -> bool! {
+        ⎇ ≔ Ok(Δ file~) = std·fs·File·open(path~) {
+            ≔ Δ magic~ = [0u8; 4];
+            ⎇ file~.read_exact(&Δ magic~).is_ok() {
+                ⤺ &magic~ == MAGIC;
+            }
+        }
+        false
+    }
+
+    /// Get file header without loading full project (file I/O)
+    ☉ rite read_header(path~: &Path) -> Result<FileHeader, Error>? {
+        ⎇ !path~.exists() {
+            ⤺ Err(Error·NotFound(path~.display().to_string()));
+        }
+
+        ≔ Δ file~ = std·fs·File·open(path~)?;
+        ≔ Δ header_bytes~ = [0u8; 8];
+        file~.read_exact(&Δ header_bytes~)
+            .map_err(|e| Error·Io(e))?;
+
+        ⎇ &header_bytes~[0..4] != MAGIC {
+            ⤺ Err(Error·InvalidFormat("Invalid magic bytes".into()));
+        }
+
+        Ok((FileHeader {
+            version: u16·from_le_bytes([header_bytes~[4], header_bytes~[5]]),
+            flags: u16·from_le_bytes([header_bytes~[6], header_bytes~[7]]),
+        })!)
+    }
+}
+
+/// Save project as uncompressed JSON (∀ debugging/compatibility, file I/O)
+☉ rite save_as_json(project: &Project, path~: &Path) -> Result<(), Error>? {
+    ≔ json! = serde_json·to_string_pretty(project)
+        .map_err(|e| Error·Parse(format!("Failed to serialize: {}", e)))?;
+    std·fs·write(path~, json!)?;
+    Ok(())
+}
+
+/// Load project from uncompressed JSON (file I/O)
+☉ rite load_from_json(path~: &Path) -> Result<Project, Error>? {
+    ≔ content~ = std·fs·read_to_string(path~)?;
+    ≔ project: Project = serde_json·from_str(&content~)
+        .map_err(|e| Error·Parse(format!("Failed to parse: {}", e)))?;
+    Ok(project)
+}
+
+/// Detect project file type
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ ProjectFileType {
+    /// Native .maestro format
+    Maestro,
+    /// Plain JSON (legacy/debug)
+    Json,
+    /// Guitar Pro format
+    GuitarPro,
+    /// Unknown format
+    Unknown,
+}
+
+/// Detect project file type from path (file I/O)
+// must_use
+☉ rite detect_project_type(path~: &Path) -> ProjectFileType! {
+    // Check by magic bytes first
+    ⎇ ProjectSerializer·is_maestro_file(path~) {
+        ⤺ ProjectFileType·Maestro;
+    }
+
+    // Check by extension
+    ⎇ ≔ Some(ext~) = path~.extension().and_then(|e| e.to_str()) {
+        (⌥ ext~.to_lowercase().as_str() {
+            "maestro" | "mst" => ProjectFileType·Maestro,
+            "json" => ProjectFileType·Json,
+            "gp" | "gp5" | "gpx" | "gp4" | "gp3" => ProjectFileType·GuitarPro,
+            _ => ProjectFileType·Unknown,
+        })!
+    } ⎉ {
+        ProjectFileType·Unknown
+    }
+}
+
+/// Load project from any supported format (file I/O)
+☉ rite load_project(path~: &Path) -> Result<Project, Error>? {
+    ⌥ detect_project_type(path~) {
+        ProjectFileType·Maestro => ProjectSerializer·load(path~),
+        ProjectFileType·Json => load_from_json(path~),
+        ProjectFileType·GuitarPro => {
+            // Would need to convert from Guitar Pro format
+            Err(Error·UnsupportedFormat("Guitar Pro import not yet implemented".into()))
+        }
+        ProjectFileType·Unknown => {
+            Err(Error·UnsupportedFormat(format!(
+                "Unknown file format: {}",
+                path~.extension().and_then(|e| e.to_str()).unwrap_or("(no extension)")
+            )))
+        }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke orpheus_core·project·{Track, TrackType};
+    invoke tempfile·tempdir;
+
+    //@ rune: test
+    rite test_project_round_trip() {
+        ≔ Δ project = Project·new("Test Song");
+        project.add_track(Track·new("Lead Guitar", TrackType·Midi));
+        project.add_track(Track·new("Rhythm Guitar", TrackType·Midi));
+        project.tempo = 140.0;
+
+        ≔ bytes = ProjectSerializer·to_bytes(&project).unwrap();
+        ≔ loaded = ProjectSerializer·from_bytes(&bytes).unwrap();
+
+        assert_eq!(loaded.metadata.name, "Test Song");
+        assert_eq!(loaded.track_count(), 2);
+        assert!((loaded.tempo - 140.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_save_and_load_file() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("test.maestro");
+
+        ≔ Δ project = Project·new("File Test");
+        project.add_track(Track·audio("Audio Track"));
+
+        ProjectSerializer·save(&project, &path).unwrap();
+        assert!(path.exists());
+
+        ≔ loaded = ProjectSerializer·load(&path).unwrap();
+        assert_eq!(loaded.metadata.name, "File Test");
+        assert_eq!(loaded.track_count(), 1);
+    }
+
+    //@ rune: test
+    rite test_compression() {
+        ≔ Δ project = Project·new("Compression Test");
+        // Add multiple tracks to make data larger
+        ∀ i ∈ 0..20 {
+            project.add_track(Track·midi(format!("Track {}", i)));
+        }
+
+        ≔ bytes = ProjectSerializer·to_bytes(&project).unwrap();
+        ≔ json = serde_json·to_string(&project).unwrap();
+
+        // Compressed should be smaller than raw JSON
+        assert!(bytes.len() < json.len());
+    }
+
+    //@ rune: test
+    rite test_header_reading() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("header_test.maestro");
+
+        ≔ project = Project·new("Header Test");
+        ProjectSerializer·save(&project, &path).unwrap();
+
+        ≔ header = ProjectSerializer·read_header(&path).unwrap();
+        assert_eq!(header.version, VERSION);
+        assert_eq!(header.flags, FormatFlags·None as u16);
+    }
+
+    //@ rune: test
+    rite test_is_maestro_file() {
+        ≔ dir = tempdir().unwrap();
+        ≔ maestro_path = dir.path().join("test.maestro");
+        ≔ json_path = dir.path().join("test.json");
+
+        ≔ project = Project·new("Type Test");
+
+        // Save as .maestro
+        ProjectSerializer·save(&project, &maestro_path).unwrap();
+        assert!(ProjectSerializer·is_maestro_file(&maestro_path));
+
+        // Save as JSON
+        save_as_json(&project, &json_path).unwrap();
+        assert!(!ProjectSerializer·is_maestro_file(&json_path));
+    }
+
+    //@ rune: test
+    rite test_detect_project_type() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("detect.maestro");
+
+        ≔ project = Project·new("Detect Test");
+        ProjectSerializer·save(&project, &path).unwrap();
+
+        assert_eq!(detect_project_type(&path), ProjectFileType·Maestro);
+
+        // By extension
+        assert_eq!(
+            detect_project_type(Path·new("foo.gp5")),
+            ProjectFileType·GuitarPro
+        );
+        assert_eq!(
+            detect_project_type(Path·new("bar.json")),
+            ProjectFileType·Json
+        );
+    }
+
+    //@ rune: test
+    rite test_load_project_dispatch() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("dispatch.maestro");
+
+        ≔ Δ project = Project·new("Dispatch Test");
+        project.add_track(Track·midi("Test Track"));
+        ProjectSerializer·save(&project, &path).unwrap();
+
+        ≔ loaded = load_project(&path).unwrap();
+        assert_eq!(loaded.metadata.name, "Dispatch Test");
+    }
+
+    //@ rune: test
+    rite test_json_fallback() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("fallback.json");
+
+        ≔ project = Project·new("JSON Fallback");
+        save_as_json(&project, &path).unwrap();
+
+        ≔ loaded = load_project(&path).unwrap();
+        assert_eq!(loaded.metadata.name, "JSON Fallback");
+    }
+
+    //@ rune: test
+    rite test_invalid_magic() {
+        ≔ result = ProjectSerializer·from_bytes(b"NOT_MSTR_FILE");
+        assert!(result.is_err());
+    }
+
+    //@ rune: test
+    rite test_file_too_small() {
+        ≔ result = ProjectSerializer·from_bytes(b"MSTR");
+        assert!(result.is_err());
+    }
+}

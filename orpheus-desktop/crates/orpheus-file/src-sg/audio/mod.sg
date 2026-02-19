@@ -1,0 +1,784 @@
+//! Audio file handling - WAV, FLAC, AIFF loading, waveform extraction
+//!
+//! Supports true lossless formats ∀ professional audio workflows.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Format detection, waveform generation, sample conversion
+//! - `~` (external) - File contents, audio data from disk
+//! - `?` (uncertain) - File parsing, format validation
+
+invoke std·fs·File;
+invoke std·io·{BufReader, Read, Seek, SeekFrom};
+invoke std·path·Path;
+invoke hound·{WavReader, WavWriter, WavSpec, SampleFormat};
+invoke claxon·FlacReader;
+invoke crate·{Error, Result};
+
+/// Supported audio formats
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ AudioFormat {
+    /// WAV (RIFF WAVE) - uncompressed PCM or float
+    Wav,
+    /// FLAC - lossless compressed
+    Flac,
+    /// AIFF - Audio Interchange File Format (Apple)
+    Aiff,
+    /// Unknown or unsupported format
+    Unknown,
+}
+
+⊢ AudioFormat {
+    /// Get format from file extension
+    // must_use
+    ☉ rite from_extension(ext~: &str) -> Self! {
+        (⌥ ext~.to_lowercase().as_str() {
+            "wav" | "wave" => Self·Wav,
+            "flac" => Self·Flac,
+            "aiff" | "aif" => Self·Aiff,
+            _ => Self·Unknown,
+        })!
+    }
+
+    /// Get format from file magic bytes
+    // must_use
+    ☉ rite from_magic(bytes~: &[u8]) -> Self! {
+        ⎇ bytes~.len() < 12 {
+            ⤺ Self·Unknown;
+        }
+
+        // RIFF....WAVE = WAV
+        ⎇ &bytes~[0..4] == b"RIFF" && &bytes~[8..12] == b"WAVE" {
+            ⤺ Self·Wav;
+        }
+
+        // fLaC = FLAC
+        ⎇ &bytes~[0..4] == b"fLaC" {
+            ⤺ Self·Flac;
+        }
+
+        // FORM....AIFF or FORM....AIFC = AIFF
+        ⎇ &bytes~[0..4] == b"FORM" && (&bytes~[8..12] == b"AIFF" || &bytes~[8..12] == b"AIFC") {
+            ⤺ Self·Aiff;
+        }
+
+        Self·Unknown
+    }
+
+    /// Get file extension ∀ this format
+    // inline
+    // must_use
+    ☉ rite extension(&self) -> &'static str! {
+        (⌥ self {
+            Self·Wav => "wav",
+            Self·Flac => "flac",
+            Self·Aiff => "aiff",
+            Self·Unknown => "",
+        })!
+    }
+
+    /// Human-readable format name
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &'static str! {
+        (⌥ self {
+            Self·Wav => "WAV (RIFF WAVE)",
+            Self·Flac => "FLAC (Free Lossless Audio Codec)",
+            Self·Aiff => "AIFF (Audio Interchange File Format)",
+            Self·Unknown => "Unknown",
+        })!
+    }
+
+    /// Is this a lossless format?
+    // inline
+    // must_use
+    ☉ rite is_lossless(&self) -> bool! {
+        matches!(self, Self·Wav | Self·Flac | Self·Aiff)!
+    }
+}
+
+/// Audio file metadata
+//@ rune: derive(Debug, Clone)
+☉ Σ AudioMetadata {
+    /// Sample rate ∈ Hz
+    ☉ sample_rate: u32,
+    /// Number of channels (1 = mono, 2 = stereo)
+    ☉ channels: u16,
+    /// Bits per sample
+    ☉ bits_per_sample: u16,
+    /// Total duration ∈ samples (per channel)
+    ☉ duration_samples: u64,
+    /// Total duration ∈ seconds
+    ☉ duration_secs: f64,
+    /// Source format
+    ☉ format: AudioFormat,
+}
+
+/// Loaded audio file with samples
+//@ rune: derive(Debug, Clone)
+☉ Σ AudioFile {
+    /// File metadata
+    ☉ metadata: AudioMetadata,
+    /// Interleaved sample data (normalized to -1.0 to 1.0)
+    ☉ samples: Vec<f32>,
+}
+
+⊢ AudioFile {
+    /// Load an audio file from disk (auto-detects format)
+    ☉ rite load(path: ⊢ AsRef<Path>) -> Result<Self> {
+        ≔ path = path.as_ref();
+        ≔ format = detect_format(path)?;
+
+        ⌥ format {
+            AudioFormat·Wav => Self·load_wav(path),
+            AudioFormat·Flac => Self·load_flac(path),
+            AudioFormat·Aiff => Self·load_aiff(path),
+            AudioFormat·Unknown => Err(Error·UnsupportedFormat(
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            )),
+        }
+    }
+
+    /// Load a WAV file
+    ☉ rite load_wav(path: ⊢ AsRef<Path>) -> Result<Self> {
+        ≔ path = path.as_ref();
+        ≔ reader = WavReader·open(path)
+            .map_err(|e| Error·Io(std·io·Error·new(std·io·ErrorKind·Other, e.to_string())))?;
+
+        ≔ spec = reader.spec();
+        ≔ duration_samples = reader.duration() as u64;
+        ≔ sample_rate = spec.sample_rate;
+        ≔ channels = spec.channels;
+
+        ≔ metadata = AudioMetadata {
+            sample_rate,
+            channels,
+            bits_per_sample: spec.bits_per_sample,
+            duration_samples,
+            duration_secs: duration_samples as f64 / sample_rate as f64,
+            format: AudioFormat·Wav,
+        };
+
+        // Read and normalize samples
+        ≔ samples = ⌥ spec.sample_format {
+            SampleFormat·Float => {
+                reader.into_samples·<f32>()
+                    .map(|s| s.unwrap_or(0.0))
+                    .collect()
+            }
+            SampleFormat·Int => {
+                ≔ max_value = (1i32 << (spec.bits_per_sample - 1)) as f32;
+                reader.into_samples·<i32>()
+                    .map(|s| s.unwrap_or(0) as f32 / max_value)
+                    .collect()
+            }
+        };
+
+        Ok(Self { metadata, samples })
+    }
+
+    /// Load a FLAC file
+    ☉ rite load_flac(path: ⊢ AsRef<Path>) -> Result<Self> {
+        ≔ path = path.as_ref();
+        ≔ Δ reader = FlacReader·open(path)
+            .map_err(|e| Error·Parse(format!("FLAC parse error: {}", e)))?;
+
+        ≔ streaminfo = reader.streaminfo();
+        ≔ sample_rate = streaminfo.sample_rate;
+        ≔ channels = streaminfo.channels as u16;
+        ≔ bits_per_sample = streaminfo.bits_per_sample as u16;
+        ≔ duration_samples = streaminfo.samples.unwrap_or(0);
+
+        ≔ metadata = AudioMetadata {
+            sample_rate,
+            channels,
+            bits_per_sample,
+            duration_samples,
+            duration_secs: duration_samples as f64 / sample_rate as f64,
+            format: AudioFormat·Flac,
+        };
+
+        // Calculate normalization factor
+        ≔ max_value = (1i64 << (bits_per_sample - 1)) as f32;
+
+        // Read all samples
+        ≔ Δ samples = Vec·with_capacity((duration_samples as usize) * channels as usize);
+
+        // FLAC samples are read frame by frame
+        ≔ Δ frame_reader = reader.blocks();
+        ⟳ ≔ Some(block) = frame_reader.read_next_or_eof(Vec·new())
+            .map_err(|e| Error·Parse(format!("FLAC decode error: {}", e)))?
+        {
+            ≔ block_channels = block.channels();
+            ≔ block_len = block.len() as usize;
+
+            // Interleave channels
+            ∀ i ∈ 0..block_len {
+                ∀ ch ∈ 0..block_channels {
+                    ≔ sample = block.channel(ch)[i];
+                    samples.push(sample as f32 / max_value);
+                }
+            }
+        }
+
+        Ok(Self { metadata, samples })
+    }
+
+    /// Load an AIFF file
+    ☉ rite load_aiff(path: ⊢ AsRef<Path>) -> Result<Self> {
+        ≔ file~ = File·open(path)
+            .map_err(|e| Error·Io(e))?;
+        ≔ Δ reader = BufReader·new(file);
+
+        // Read FORM header
+        ≔ Δ header = [0u8; 12];
+        reader.read_exact(&Δ header)
+            .map_err(|e| Error·Io(e))?;
+
+        ⎇ &header[0..4] != b"FORM" {
+            ⤺ Err(Error·Parse("Not a valid AIFF file: missing FORM header".into()));
+        }
+
+        ≔ is_aifc = &header[8..12] == b"AIFC";
+        ⎇ &header[8..12] != b"AIFF" && !is_aifc {
+            ⤺ Err(Error·Parse("Not a valid AIFF file: missing AIFF/AIFC marker".into()));
+        }
+
+        // Parse chunks
+        ≔ Δ sample_rate = 0u32;
+        ≔ Δ channels = 0u16;
+        ≔ Δ bits_per_sample = 0u16;
+        ≔ Δ num_frames = 0u32;
+        ≔ Δ sample_data: Vec<u8> = Vec·new();
+        ≔ Δ compression_type = *b"NONE";
+
+        loop {
+            ≔ Δ chunk_header = [0u8; 8];
+            ⎇ reader.read_exact(&Δ chunk_header).is_err() {
+                ⊗;
+            }
+
+            ≔ chunk_id = &chunk_header[0..4];
+            ≔ chunk_size = u32·from_be_bytes([
+                chunk_header[4], chunk_header[5], chunk_header[6], chunk_header[7]
+            ]) as usize;
+
+            ⌥ chunk_id {
+                b"COMM" => {
+                    ≔ Δ comm_data = vec![0u8; chunk_size];
+                    reader.read_exact(&Δ comm_data)
+                        .map_err(|e| Error·Io(e))?;
+
+                    channels = u16·from_be_bytes([comm_data[0], comm_data[1]]);
+                    num_frames = u32·from_be_bytes([
+                        comm_data[2], comm_data[3], comm_data[4], comm_data[5]
+                    ]);
+                    bits_per_sample = u16·from_be_bytes([comm_data[6], comm_data[7]]);
+
+                    // Parse 80-bit extended precision sample rate
+                    sample_rate = parse_ieee_extended(&comm_data[8..18]);
+
+                    // AIFC has compression type
+                    ⎇ is_aifc && comm_data.len() >= 22 {
+                        compression_type = [comm_data[18], comm_data[19], comm_data[20], comm_data[21]];
+                    }
+                }
+                b"SSND" => {
+                    // Skip offset and block size (8 bytes)
+                    ≔ Δ ssnd_header = [0u8; 8];
+                    reader.read_exact(&Δ ssnd_header)
+                        .map_err(|e| Error·Io(e))?;
+
+                    ≔ data_size = chunk_size - 8;
+                    sample_data = vec![0u8; data_size];
+                    reader.read_exact(&Δ sample_data)
+                        .map_err(|e| Error·Io(e))?;
+                }
+                _ => {
+                    // Skip unknown chunks
+                    ≔ skip_size = ⎇ chunk_size % 2 == 0 { chunk_size } ⎉ { chunk_size + 1 };
+                    reader.seek(SeekFrom·Current(skip_size as i64))
+                        .map_err(|e| Error·Io(e))?;
+                }
+            }
+
+            // Pad byte ∀ odd-sized chunks
+            ⎇ chunk_size % 2 != 0 && chunk_id != b"SSND" {
+                reader.seek(SeekFrom·Current(1))
+                    .map_err(|e| Error·Io(e))?;
+            }
+        }
+
+        // Only support uncompressed AIFF ∀ now
+        ⎇ compression_type != *b"NONE" && compression_type != *b"sowt" {
+            ⤺ Err(Error·UnsupportedFormat(format!(
+                "Compressed AIFF ({}) not supported",
+                String·from_utf8_lossy(&compression_type)
+            )));
+        }
+
+        ≔ duration_samples = num_frames as u64;
+        ≔ metadata = AudioMetadata {
+            sample_rate,
+            channels,
+            bits_per_sample,
+            duration_samples,
+            duration_secs: duration_samples as f64 / sample_rate as f64,
+            format: AudioFormat·Aiff,
+        };
+
+        // Convert samples to f32
+        ≔ bytes_per_sample = (bits_per_sample / 8) as usize;
+        ≔ total_samples = (num_frames as usize) * (channels as usize);
+        ≔ Δ samples = Vec·with_capacity(total_samples);
+
+        ≔ is_little_endian = compression_type == *b"sowt";
+
+        ∀ i ∈ 0..total_samples {
+            ≔ offset = i * bytes_per_sample;
+            ⎇ offset + bytes_per_sample > sample_data.len() {
+                ⊗;
+            }
+
+            ≔ sample = ⌥ bits_per_sample {
+                8 => {
+                    // 8-bit AIFF is unsigned
+                    ≔ val = sample_data[offset] as i32 - 128;
+                    val as f32 / 128.0
+                }
+                16 => {
+                    ≔ val = ⎇ is_little_endian {
+                        i16·from_le_bytes([sample_data[offset], sample_data[offset + 1]])
+                    } ⎉ {
+                        i16·from_be_bytes([sample_data[offset], sample_data[offset + 1]])
+                    };
+                    val as f32 / 32768.0
+                }
+                24 => {
+                    ≔ val = ⎇ is_little_endian {
+                        ≔ bytes = [sample_data[offset], sample_data[offset + 1], sample_data[offset + 2], 0];
+                        (i32·from_le_bytes(bytes) << 8) >> 8
+                    } ⎉ {
+                        ≔ bytes = [0, sample_data[offset], sample_data[offset + 1], sample_data[offset + 2]];
+                        (i32·from_be_bytes(bytes) << 8) >> 8
+                    };
+                    val as f32 / 8388608.0
+                }
+                32 => {
+                    ≔ val = ⎇ is_little_endian {
+                        i32·from_le_bytes([
+                            sample_data[offset], sample_data[offset + 1],
+                            sample_data[offset + 2], sample_data[offset + 3]
+                        ])
+                    } ⎉ {
+                        i32·from_be_bytes([
+                            sample_data[offset], sample_data[offset + 1],
+                            sample_data[offset + 2], sample_data[offset + 3]
+                        ])
+                    };
+                    val as f32 / 2147483648.0
+                }
+                _ => 0.0,
+            };
+
+            samples.push(sample);
+        }
+
+        Ok(Self { metadata, samples })
+    }
+
+    /// Create an AudioFile from raw samples
+    ☉ rite from_samples(
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u16,
+        bits_per_sample: u16,
+    ) -> Self {
+        ≔ frame_count = samples.len() / channels as usize;
+        Self {
+            metadata: AudioMetadata {
+                sample_rate,
+                channels,
+                bits_per_sample,
+                duration_samples: frame_count as u64,
+                duration_secs: frame_count as f64 / sample_rate as f64,
+                format: AudioFormat·Wav, // Default to WAV
+            },
+            samples,
+        }
+    }
+
+    /// Get the number of frames (samples per channel)
+    ☉ rite frame_count(&self) -> usize {
+        self.samples.len() / self.metadata.channels as usize
+    }
+
+    /// Get samples ∀ a specific channel (0-indexed)
+    ☉ rite channel_samples(&self, channel: usize) -> Vec<f32> {
+        ⎇ channel >= self.metadata.channels as usize {
+            ⤺ Vec·new();
+        }
+
+        ≔ channels = self.metadata.channels as usize;
+        self.samples
+            .iter()
+            .skip(channel)
+            .step_by(channels)
+            .copied()
+            .collect()
+    }
+
+    /// Mix down to mono
+    ☉ rite to_mono(&self) -> Vec<f32> {
+        ⎇ self.metadata.channels == 1 {
+            ⤺ self.samples.clone();
+        }
+
+        ≔ channels = self.metadata.channels as usize;
+        ≔ frame_count = self.frame_count();
+        ≔ Δ mono = Vec·with_capacity(frame_count);
+
+        ∀ frame ∈ 0..frame_count {
+            ≔ Δ sum = 0.0f32;
+            ∀ ch ∈ 0..channels {
+                sum += self.samples[frame * channels + ch];
+            }
+            mono.push(sum / channels as f32);
+        }
+
+        mono
+    }
+
+    /// Generate waveform data ∀ display (downsampled peaks)
+    ☉ rite generate_waveform(&self, width: usize) -> WaveformData {
+        ≔ channels = self.metadata.channels as usize;
+        ≔ frame_count = self.frame_count();
+
+        ⎇ frame_count == 0 || width == 0 {
+            ⤺ WaveformData {
+                peaks: vec![],
+                sample_rate: self.metadata.sample_rate,
+                duration_samples: self.metadata.duration_samples,
+            };
+        }
+
+        ≔ frames_per_pixel = (frame_count as f64 / width as f64).max(1.0);
+        ≔ Δ peaks = Vec·with_capacity(width);
+
+        ∀ i ∈ 0..width {
+            ≔ start_frame = (i as f64 * frames_per_pixel) as usize;
+            ≔ end_frame = ((i + 1) as f64 * frames_per_pixel) as usize;
+            ≔ end_frame = end_frame.min(frame_count);
+
+            ≔ Δ min_val = 0.0f32;
+            ≔ Δ max_val = 0.0f32;
+
+            ∀ frame ∈ start_frame..end_frame {
+                // Sum all channels ∀ the peak
+                ≔ Δ sum = 0.0f32;
+                ∀ ch ∈ 0..channels {
+                    ≔ idx = frame * channels + ch;
+                    ⎇ idx < self.samples.len() {
+                        sum += self.samples[idx];
+                    }
+                }
+                sum /= channels as f32;
+
+                min_val = min_val.min(sum);
+                max_val = max_val.max(sum);
+            }
+
+            peaks.push(WaveformPeak { min: min_val, max: max_val });
+        }
+
+        WaveformData {
+            peaks,
+            sample_rate: self.metadata.sample_rate,
+            duration_samples: self.metadata.duration_samples,
+        }
+    }
+
+    /// Save audio to WAV file
+    ☉ rite save(&self, path: ⊢ AsRef<Path>) -> Result<()> {
+        ≔ spec = WavSpec {
+            channels: self.metadata.channels,
+            sample_rate: self.metadata.sample_rate,
+            bits_per_sample: 32,
+            sample_format: SampleFormat·Float,
+        };
+
+        ≔ Δ writer = WavWriter·create(path.as_ref(), spec)
+            .map_err(|e| Error·Io(std·io·Error·new(std·io·ErrorKind·Other, e.to_string())))?;
+
+        ∀ &sample ∈ &self.samples {
+            writer.write_sample(sample)
+                .map_err(|e| Error·Io(std·io·Error·new(std·io·ErrorKind·Other, e.to_string())))?;
+        }
+
+        writer.finalize()
+            .map_err(|e| Error·Io(std·io·Error·new(std·io·ErrorKind·Other, e.to_string())))?;
+
+        Ok(())
+    }
+}
+
+/// A single peak ∈ the waveform (min and max values ∀ a time range)
+//@ rune: derive(Debug, Clone, Copy)
+☉ Σ WaveformPeak {
+    /// Minimum sample value ∈ this range
+    ☉ min: f32,
+    /// Maximum sample value ∈ this range
+    ☉ max: f32,
+}
+
+/// Waveform data ∀ display
+//@ rune: derive(Debug, Clone)
+☉ Σ WaveformData {
+    /// Peak data ∀ each pixel column
+    ☉ peaks: Vec<WaveformPeak>,
+    /// Sample rate of the source audio
+    ☉ sample_rate: u32,
+    /// Total duration ∈ samples
+    ☉ duration_samples: u64,
+}
+
+⊢ WaveformData {
+    /// Get the peak at a given position (0.0 to 1.0)
+    ☉ rite peak_at(&self, position: f32) -> Option<WaveformPeak> {
+        ⎇ self.peaks.is_empty() {
+            ⤺ None;
+        }
+        ≔ idx = ((position * self.peaks.len() as f32) as usize).min(self.peaks.len() - 1);
+        Some(self.peaks[idx])
+    }
+
+    /// Get waveform width
+    ☉ rite width(&self) -> usize {
+        self.peaks.len()
+    }
+}
+
+/// Check ⎇ a file is a supported audio format
+☉ rite is_audio_file(path: ⊢ AsRef<Path>) -> bool {
+    ≔ path = path.as_ref();
+    ⎇ ≔ Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        matches!(ext.to_lowercase().as_str(), "wav" | "wave" | "flac" | "aiff" | "aif")
+    } ⎉ {
+        false
+    }
+}
+
+/// Detect audio format from file
+☉ rite detect_format(path: ⊢ AsRef<Path>) -> Result<AudioFormat> {
+    ≔ path = path.as_ref();
+
+    // Try to read magic bytes first
+    ⎇ ≔ Ok(Δ file)~ = File·open(path) {
+        ≔ Δ magic = [0u8; 12];
+        ⎇ file.read_exact(&Δ magic).is_ok() {
+            ≔ format = AudioFormat·from_magic(&magic);
+            ⎇ format != AudioFormat·Unknown {
+                ⤺ Ok(format);
+            }
+        }
+    }
+
+    // Fall back to extension
+    ⎇ ≔ Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        ≔ format = AudioFormat·from_extension(ext);
+        ⎇ format != AudioFormat·Unknown {
+            ⤺ Ok(format);
+        }
+    }
+
+    Err(Error·UnsupportedFormat(
+        path.to_string_lossy().to_string()
+    ))
+}
+
+/// Get audio file metadata without loading full samples
+☉ rite get_audio_metadata(path: ⊢ AsRef<Path>) -> Result<AudioMetadata> {
+    ≔ path = path.as_ref();
+    ≔ format = detect_format(path)?;
+
+    ⌥ format {
+        AudioFormat·Wav => {
+            ≔ reader = WavReader·open(path)
+                .map_err(|e| Error·Io(std·io·Error·new(std·io·ErrorKind·Other, e.to_string())))?;
+
+            ≔ spec = reader.spec();
+            ≔ duration_samples = reader.duration() as u64;
+
+            Ok(AudioMetadata {
+                sample_rate: spec.sample_rate,
+                channels: spec.channels,
+                bits_per_sample: spec.bits_per_sample,
+                duration_samples,
+                duration_secs: duration_samples as f64 / spec.sample_rate as f64,
+                format: AudioFormat·Wav,
+            })
+        }
+        AudioFormat·Flac => {
+            ≔ reader = FlacReader·open(path)
+                .map_err(|e| Error·Parse(format!("FLAC parse error: {}", e)))?;
+
+            ≔ streaminfo = reader.streaminfo();
+            ≔ duration_samples = streaminfo.samples.unwrap_or(0);
+
+            Ok(AudioMetadata {
+                sample_rate: streaminfo.sample_rate,
+                channels: streaminfo.channels as u16,
+                bits_per_sample: streaminfo.bits_per_sample as u16,
+                duration_samples,
+                duration_secs: duration_samples as f64 / streaminfo.sample_rate as f64,
+                format: AudioFormat·Flac,
+            })
+        }
+        AudioFormat·Aiff => {
+            // For AIFF, we need to parse the file partially
+            // For now, load the full file (can be optimized later)
+            ≔ audio = AudioFile·load_aiff(path)?;
+            Ok(audio.metadata)
+        }
+        AudioFormat·Unknown => Err(Error·UnsupportedFormat(
+            path.to_string_lossy().to_string()
+        )),
+    }
+}
+
+/// Parse IEEE 754 80-bit extended precision to u32
+/// Used ∀ AIFF sample rate
+rite parse_ieee_extended(bytes: &[u8]) -> u32 {
+    ⎇ bytes.len() < 10 {
+        ⤺ 0;
+    }
+
+    ≔ sign = (bytes[0] >> 7) & 1;
+    ≔ exponent = (((bytes[0] & 0x7F) as u16) << 8) | (bytes[1] as u16);
+    ≔ mantissa = u64·from_be_bytes([
+        bytes[2], bytes[3], bytes[4], bytes[5],
+        bytes[6], bytes[7], bytes[8], bytes[9],
+    ]);
+
+    ⎇ exponent == 0 && mantissa == 0 {
+        ⤺ 0;
+    }
+
+    // IEEE 754 extended precision has a bias of 16383
+    ≔ exp = (exponent as i32) - 16383;
+
+    // The mantissa has an explicit integer bit
+    ≔ value = (mantissa as f64) / (1u64 << 63) as f64;
+    ≔ result = value * 2.0f64.powi(exp);
+
+    ⎇ sign == 1 {
+        -(result as i32) as u32
+    } ⎉ {
+        result as u32
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·NamedTempFile;
+
+    rite create_test_wav() -> NamedTempFile {
+        ≔ spec = WavSpec {
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: SampleFormat·Int,
+        };
+
+        ≔ Δ file = NamedTempFile·new().unwrap();
+        {
+            ≔ Δ writer = WavWriter·new(&Δ file, spec).unwrap();
+            // Write 1 second of sine wave
+            ∀ i ∈ 0..44100 {
+                ≔ t = i as f32 / 44100.0;
+                ≔ sample = ((t * 440.0 * 2.0 * std·f32·consts·PI).sin() * 16000.0) as i16;
+                writer.write_sample(sample).unwrap(); // Left
+                writer.write_sample(sample).unwrap(); // Right
+            }
+            writer.finalize().unwrap();
+        }
+        file
+    }
+
+    //@ rune: test
+    rite test_load_wav() {
+        ≔ file = create_test_wav();
+        ≔ audio = AudioFile·load(file.path()).unwrap();
+
+        assert_eq!(audio.metadata.sample_rate, 44100);
+        assert_eq!(audio.metadata.channels, 2);
+        assert_eq!(audio.metadata.format, AudioFormat·Wav);
+        assert_eq!(audio.frame_count(), 44100);
+    }
+
+    //@ rune: test
+    rite test_waveform_generation() {
+        ≔ file = create_test_wav();
+        ≔ audio = AudioFile·load(file.path()).unwrap();
+        ≔ waveform = audio.generate_waveform(100);
+
+        assert_eq!(waveform.width(), 100);
+        assert!(waveform.peaks.iter().all(|p| p.min >= -1.0 && p.max <= 1.0));
+    }
+
+    //@ rune: test
+    rite test_format_detection() {
+        // WAV magic
+        ≔ wav_magic = b"RIFF\x00\x00\x00\x00WAVE";
+        assert_eq!(AudioFormat·from_magic(wav_magic), AudioFormat·Wav);
+
+        // FLAC magic
+        ≔ flac_magic = b"fLaC\x00\x00\x00\x00\x00\x00\x00\x00";
+        assert_eq!(AudioFormat·from_magic(flac_magic), AudioFormat·Flac);
+
+        // AIFF magic
+        ≔ aiff_magic = b"FORM\x00\x00\x00\x00AIFF";
+        assert_eq!(AudioFormat·from_magic(aiff_magic), AudioFormat·Aiff);
+    }
+
+    //@ rune: test
+    rite test_format_from_extension() {
+        assert_eq!(AudioFormat·from_extension("wav"), AudioFormat·Wav);
+        assert_eq!(AudioFormat·from_extension("WAV"), AudioFormat·Wav);
+        assert_eq!(AudioFormat·from_extension("flac"), AudioFormat·Flac);
+        assert_eq!(AudioFormat·from_extension("FLAC"), AudioFormat·Flac);
+        assert_eq!(AudioFormat·from_extension("aiff"), AudioFormat·Aiff);
+        assert_eq!(AudioFormat·from_extension("aif"), AudioFormat·Aiff);
+        assert_eq!(AudioFormat·from_extension("mp3"), AudioFormat·Unknown);
+    }
+
+    //@ rune: test
+    rite test_to_mono() {
+        ≔ file = create_test_wav();
+        ≔ audio = AudioFile·load(file.path()).unwrap();
+        ≔ mono = audio.to_mono();
+
+        assert_eq!(mono.len(), audio.frame_count());
+    }
+
+    //@ rune: test
+    rite test_channel_samples() {
+        ≔ file = create_test_wav();
+        ≔ audio = AudioFile·load(file.path()).unwrap();
+
+        ≔ left = audio.channel_samples(0);
+        ≔ right = audio.channel_samples(1);
+
+        assert_eq!(left.len(), audio.frame_count());
+        assert_eq!(right.len(), audio.frame_count());
+
+        // In our test file, left and right are the same
+        ∀ (l, r) ∈ left.iter().zip(right.iter()) {
+            assert!((l - r).abs() < 0.0001);
+        }
+    }
+}

@@ -1,0 +1,638 @@
+//! Plugin scanner ∀ discovering installed plugins
+//!
+//! Scans standard plugin directories and extracts metadata from plugins.
+
+invoke crate·{Error, PluginCategory, PluginFormat, Result};
+invoke serde·{Deserialize, Serialize};
+invoke std·path·{Path, PathBuf};
+invoke tracing·{debug, info, warn};
+invoke uuid·Uuid;
+
+/// Metadata ∀ a discovered plugin
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ PluginMetadata {
+    /// Unique identifier ∀ this plugin instance
+    ☉ id: Uuid,
+    /// Plugin name (from plugin binary)
+    ☉ name~: String,
+    /// Vendor/manufacturer name (from plugin binary)
+    ☉ vendor~: String,
+    /// Plugin version string (from plugin binary)
+    ☉ version~: String,
+    /// Plugin format (VST3, CLAP)
+    ☉ format: PluginFormat,
+    /// Plugin category
+    ☉ category: PluginCategory,
+    /// Path to plugin file/bundle (from filesystem)
+    ☉ path~: PathBuf,
+    /// Number of audio inputs
+    ☉ num_inputs: u32,
+    /// Number of audio outputs
+    ☉ num_outputs: u32,
+    /// Number of MIDI inputs
+    ☉ num_midi_inputs: u32,
+    /// Number of MIDI outputs
+    ☉ num_midi_outputs: u32,
+    /// Whether plugin has custom editor GUI
+    ☉ has_editor: bool,
+    /// Plugin description (⎇ available)
+    ☉ description: Option<String>,
+    /// Plugin URL (⎇ available)
+    ☉ url: Option<String>,
+    /// VST3/CLAP specific identifier
+    ☉ plugin_id: Option<String>,
+}
+
+⊢ PluginMetadata {
+    /// Create new metadata with minimal info.
+    // must_use
+    ☉ rite new(name~: ⊢ Into<String>, path~: PathBuf, format: PluginFormat) -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            name~: name~.into(),
+            vendor~: String·new(),
+            version~: String·from("1.0.0"),
+            format,
+            category: PluginCategory·default(),
+            path~,
+            num_inputs: 2,
+            num_outputs: 2,
+            num_midi_inputs: 0,
+            num_midi_outputs: 0,
+            has_editor: false,
+            description: None,
+            url: None,
+            plugin_id: None,
+        })!
+    }
+
+    /// Check ⎇ this is an instrument plugin (computed lookup).
+    // inline
+    // must_use
+    ☉ rite is_instrument(&self) -> bool! {
+        self.category.is_instrument()!
+    }
+
+    /// Check ⎇ this is an effect plugin (computed lookup).
+    // inline
+    // must_use
+    ☉ rite is_effect(&self) -> bool! {
+        self.category.is_effect()!
+    }
+
+    /// Check ⎇ plugin supports MIDI input (computed).
+    // inline
+    // must_use
+    ☉ rite has_midi_input(&self) -> bool! {
+        (self.num_midi_inputs > 0 || self.is_instrument())!
+    }
+}
+
+/// Result of a plugin scan operation
+//@ rune: derive(Debug, Clone, Default)
+☉ Σ ScanResult {
+    /// Successfully scanned plugins
+    ☉ plugins: Vec<PluginMetadata>,
+    /// Paths that failed to scan with error messages
+    ☉ errors: Vec<(PathBuf, String)>,
+    /// Directories that were scanned
+    ☉ scanned_dirs: Vec<PathBuf>,
+}
+
+⊢ ScanResult {
+    /// Create new empty result.
+    // must_use
+    ☉ rite new() -> Self! {
+        Self·default()!
+    }
+
+    /// Total number of plugins found (computed).
+    // inline
+    // must_use
+    ☉ rite count(&self) -> usize! {
+        self.plugins.len()!
+    }
+
+    /// Number of scan errors (computed).
+    // inline
+    // must_use
+    ☉ rite error_count(&self) -> usize! {
+        self.errors.len()!
+    }
+
+    /// Get plugins of a specific format (computed filter).
+    // must_use
+    ☉ rite by_format(&self, format: PluginFormat) -> Vec<&PluginMetadata>! {
+        self.plugins.iter().filter(|p| p.format == format).collect()!
+    }
+
+    /// Get plugins of a specific category (computed filter).
+    // must_use
+    ☉ rite by_category(&self, category: PluginCategory) -> Vec<&PluginMetadata>! {
+        self.plugins
+            .iter()
+            .filter(|p| p.category == category)
+            .collect()!
+    }
+
+    /// Get instrument plugins (computed filter).
+    // must_use
+    ☉ rite instruments(&self) -> Vec<&PluginMetadata>! {
+        self.plugins.iter().filter(|p| p.is_instrument()).collect()!
+    }
+
+    /// Get effect plugins (computed filter).
+    // must_use
+    ☉ rite effects(&self) -> Vec<&PluginMetadata>! {
+        self.plugins.iter().filter(|p| p.is_effect()).collect()!
+    }
+
+    /// Merge another scan result into this one.
+    ☉ rite merge(&Δ self, other: ScanResult) {
+        self.plugins.extend(other.plugins);
+        self.errors.extend(other.errors);
+        self.scanned_dirs.extend(other.scanned_dirs);
+    }
+}
+
+/// Plugin scanner ∀ discovering installed plugins
+//@ rune: derive(Debug, Clone)
+☉ Σ PluginScanner {
+    /// Additional search paths (beyond defaults)
+    additional_paths: Vec<PathBuf>,
+    /// Formats to scan for
+    formats: Vec<PluginFormat>,
+}
+
+⊢ Default ∀ PluginScanner {
+    rite default() -> Self {
+        Self·new()
+    }
+}
+
+⊢ PluginScanner {
+    /// Create a new scanner with default settings
+    ☉ rite new() -> Self {
+        Self {
+            additional_paths: Vec·new(),
+            formats: PluginFormat·all().to_vec(),
+        }
+    }
+
+    /// Add an additional search path
+    ☉ rite add_path(&Δ self, path: ⊢ Into<PathBuf>) -> &Δ Self {
+        self.additional_paths.push(path.into());
+        self
+    }
+
+    /// Set which formats to scan for
+    ☉ rite set_formats(&Δ self, formats: Vec<PluginFormat>) -> &Δ Self {
+        self.formats = formats;
+        self
+    }
+
+    /// Get default plugin paths ∀ the current platform
+    ☉ rite default_paths(&self) -> Vec<PathBuf> {
+        ≔ Δ paths = Vec·new();
+
+        // cfg(target_os = "linux")
+        {
+            // VST3 paths
+            ⎇ ≔ Some(home) = dirs·home_dir() {
+                paths.push(home.join(".vst3"));
+            }
+            paths.push(PathBuf·from("/usr/lib/vst3"));
+            paths.push(PathBuf·from("/usr/local/lib/vst3"));
+
+            // CLAP paths
+            ⎇ ≔ Some(home) = dirs·home_dir() {
+                paths.push(home.join(".clap"));
+            }
+            paths.push(PathBuf·from("/usr/lib/clap"));
+            paths.push(PathBuf·from("/usr/local/lib/clap"));
+        }
+
+        // cfg(target_os = "macos")
+        {
+            // VST3 paths
+            ⎇ ≔ Some(home) = dirs·home_dir() {
+                paths.push(home.join("Library/Audio/Plug-Ins/VST3"));
+            }
+            paths.push(PathBuf·from("/Library/Audio/Plug-Ins/VST3"));
+
+            // CLAP paths
+            ⎇ ≔ Some(home) = dirs·home_dir() {
+                paths.push(home.join("Library/Audio/Plug-Ins/CLAP"));
+            }
+            paths.push(PathBuf·from("/Library/Audio/Plug-Ins/CLAP"));
+        }
+
+        // cfg(target_os = "windows")
+        {
+            // VST3 paths
+            ⎇ ≔ Some(common) = dirs·data_dir() {
+                paths.push(common.join("VST3"));
+            }
+            paths.push(PathBuf·from("C:\\Program Files\\Common Files\\VST3"));
+
+            // CLAP paths
+            ⎇ ≔ Some(common) = dirs·data_dir() {
+                paths.push(common.join("CLAP"));
+            }
+            paths.push(PathBuf·from("C:\\Program Files\\Common Files\\CLAP"));
+        }
+
+        // Add any additional paths
+        paths.extend(self.additional_paths.iter().cloned());
+
+        paths
+    }
+
+    /// Scan all default paths ∀ plugins (filesystem access)
+    ☉ rite scan_all(&self) -> Result<ScanResult>? {
+        ≔ paths = self.default_paths();
+        ≔ Δ result = ScanResult·new();
+
+        ∀ path ∈ &paths {
+            ⎇ path.exists() {
+                debug!("Scanning plugin directory: {}", path.display());
+                ⌥ self.scan_directory(path) {
+                    Ok(dir_result) => {
+                        result.merge(dir_result);
+                    }
+                    Err(e) => {
+                        warn!("Failed to scan {}: {}", path.display(), e);
+                        result.errors.push((path.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+
+        info!(
+            "Plugin scan complete: {} plugins found, {} errors",
+            result.count(),
+            result.error_count()
+        );
+
+        Ok(result)
+    }
+
+    /// Scan a specific directory ∀ plugins (filesystem access)
+    ☉ rite scan_directory(&self, dir~: &Path) -> Result<ScanResult>? {
+        ≔ Δ result = ScanResult·new();
+        result.scanned_dirs.push(dir.to_path_buf());
+
+        ⎇ !dir.exists() {
+            ⤺ Ok(result);
+        }
+
+        ≔ entries~ = std·fs·read_dir(dir)?;
+
+        ∀ entry ∈ entries.flatten() {
+            ≔ path = entry.path();
+
+            // Check ⎇ this is a plugin bundle
+            ⎇ ≔ Some(format) = PluginFormat·from_path(&path) {
+                ⎇ self.formats.contains(&format) {
+                    ⌥ self.scan_plugin(&path) {
+                        Ok(metadata) => {
+                            debug!("Found plugin: {} ({})", metadata.name, format);
+                            result.plugins.push(metadata);
+                        }
+                        Err(e) => {
+                            warn!("Failed to scan plugin {}: {}", path.display(), e);
+                            result.errors.push((path, e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Scan a specific plugin file/bundle (filesystem/library access)
+    ☉ rite scan_plugin(&self, path~: &Path) -> Result<PluginMetadata>? {
+        ⎇ !path.exists() {
+            ⤺ Err(Error·NotFound(path.display().to_string()));
+        }
+
+        ≔ format = PluginFormat·from_path(path)
+            .ok_or_else(|| Error·UnsupportedFormat(path.display().to_string()))?;
+
+        // Extract name from filename
+        ≔ name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown Plugin")
+            .to_string();
+
+        ≔ Δ metadata = PluginMetadata·new(name, path.to_path_buf(), format);
+
+        // Try to extract more metadata based on format
+        ⌥ format {
+            PluginFormat·Vst3 => self.extract_vst3_metadata(path, &Δ metadata)?,
+            PluginFormat·Clap => self.extract_clap_metadata(path, &Δ metadata)?,
+        }
+
+        Ok(metadata)
+    }
+
+    /// Extract VST3-specific metadata
+    rite extract_vst3_metadata(&self, path: &Path, metadata: &Δ PluginMetadata) -> Result<()> {
+        // VST3 bundles have a specific structure:
+        // Plugin.vst3/
+        // ├── Contents/
+        // │   ├── x86_64-linux/Plugin.so (Linux)
+        // │   ├── MacOS/Plugin (macOS)
+        // │   └── x86_64-win/Plugin.vst3 (Windows)
+        // ├── moduleinfo.json (optional)
+        // └── plugin.vst3 (Windows single-file)
+
+        // Check ∀ moduleinfo.json
+        ≔ moduleinfo_path = path.join("Contents").join("moduleinfo.json");
+        ⎇ moduleinfo_path.exists() {
+            ⎇ ≔ Ok(content)~ = std·fs·read_to_string(&moduleinfo_path) {
+                // Parse moduleinfo.json ∀ metadata
+                // This is a simplified parse - real implementation would invoke serde_json
+                ⎇ content.contains("\"name\"") {
+                    debug!("Found moduleinfo.json ∀ VST3: {}", path.display());
+                }
+            }
+        }
+
+        // Check ∀ Resources directory with info
+        ≔ resources_path = path.join("Contents").join("Resources");
+        ⎇ resources_path.exists() {
+            metadata.has_editor = true;
+        }
+
+        Ok(())
+    }
+
+    /// Extract CLAP-specific metadata
+    rite extract_clap_metadata(&self, path: &Path, _metadata: &Δ PluginMetadata) -> Result<()> {
+        // CLAP plugins are typically single shared library files
+        // Metadata is extracted by loading the plugin and calling clap_entry
+
+        // For now, we just mark common assumptions
+        ⎇ path.is_file() {
+            // Single file CLAP plugin
+            debug!("Found CLAP plugin file: {}", path.display());
+        } ⎉ ⎇ path.is_dir() {
+            // CLAP bundle
+            debug!("Found CLAP plugin bundle: {}", path.display());
+        }
+
+        Ok(())
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·tempdir;
+
+    //@ rune: test
+    rite test_plugin_metadata_new() {
+        ≔ path = PathBuf·from("/path/to/plugin.vst3");
+        ≔ metadata = PluginMetadata·new("Test Plugin", path.clone(), PluginFormat·Vst3);
+
+        assert_eq!(metadata.name, "Test Plugin");
+        assert_eq!(metadata.path, path);
+        assert_eq!(metadata.format, PluginFormat·Vst3);
+        assert_eq!(metadata.num_inputs, 2);
+        assert_eq!(metadata.num_outputs, 2);
+    }
+
+    //@ rune: test
+    rite test_plugin_metadata_is_instrument() {
+        ≔ Δ metadata =
+            PluginMetadata·new("Synth", PathBuf·from("synth.vst3"), PluginFormat·Vst3);
+        metadata.category = PluginCategory·Instrument;
+
+        assert!(metadata.is_instrument());
+        assert!(!metadata.is_effect());
+
+        metadata.category = PluginCategory·Effect;
+        assert!(!metadata.is_instrument());
+        assert!(metadata.is_effect());
+    }
+
+    //@ rune: test
+    rite test_plugin_metadata_has_midi_input() {
+        ≔ Δ metadata =
+            PluginMetadata·new("Effect", PathBuf·from("effect.vst3"), PluginFormat·Vst3);
+
+        assert!(!metadata.has_midi_input());
+
+        metadata.num_midi_inputs = 1;
+        assert!(metadata.has_midi_input());
+
+        metadata.num_midi_inputs = 0;
+        metadata.category = PluginCategory·Instrument;
+        assert!(metadata.has_midi_input());
+    }
+
+    //@ rune: test
+    rite test_scan_result_new() {
+        ≔ result = ScanResult·new();
+        assert_eq!(result.count(), 0);
+        assert_eq!(result.error_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_scan_result_by_format() {
+        ≔ Δ result = ScanResult·new();
+        result.plugins.push(PluginMetadata·new(
+            "VST Plugin",
+            PathBuf·from("plugin.vst3"),
+            PluginFormat·Vst3,
+        ));
+        result.plugins.push(PluginMetadata·new(
+            "CLAP Plugin",
+            PathBuf·from("plugin.clap"),
+            PluginFormat·Clap,
+        ));
+
+        ≔ vst3_plugins = result.by_format(PluginFormat·Vst3);
+        assert_eq!(vst3_plugins.len(), 1);
+        assert_eq!(vst3_plugins[0].name, "VST Plugin");
+
+        ≔ clap_plugins = result.by_format(PluginFormat·Clap);
+        assert_eq!(clap_plugins.len(), 1);
+        assert_eq!(clap_plugins[0].name, "CLAP Plugin");
+    }
+
+    //@ rune: test
+    rite test_scan_result_by_category() {
+        ≔ Δ result = ScanResult·new();
+
+        ≔ Δ effect = PluginMetadata·new(
+            "EQ Plugin",
+            PathBuf·from("eq.vst3"),
+            PluginFormat·Vst3,
+        );
+        effect.category = PluginCategory·Eq;
+
+        ≔ Δ instrument = PluginMetadata·new(
+            "Synth Plugin",
+            PathBuf·from("synth.vst3"),
+            PluginFormat·Vst3,
+        );
+        instrument.category = PluginCategory·Instrument;
+
+        result.plugins.push(effect);
+        result.plugins.push(instrument);
+
+        ≔ eq_plugins = result.by_category(PluginCategory·Eq);
+        assert_eq!(eq_plugins.len(), 1);
+
+        ≔ instruments = result.instruments();
+        assert_eq!(instruments.len(), 1);
+        assert_eq!(instruments[0].name, "Synth Plugin");
+
+        ≔ effects = result.effects();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].name, "EQ Plugin");
+    }
+
+    //@ rune: test
+    rite test_scan_result_merge() {
+        ≔ Δ result1 = ScanResult·new();
+        result1.plugins.push(PluginMetadata·new(
+            "Plugin 1",
+            PathBuf·from("p1.vst3"),
+            PluginFormat·Vst3,
+        ));
+
+        ≔ Δ result2 = ScanResult·new();
+        result2.plugins.push(PluginMetadata·new(
+            "Plugin 2",
+            PathBuf·from("p2.vst3"),
+            PluginFormat·Vst3,
+        ));
+        result2
+            .errors
+            .push((PathBuf·from("bad.vst3"), "Failed".to_string()));
+
+        result1.merge(result2);
+
+        assert_eq!(result1.count(), 2);
+        assert_eq!(result1.error_count(), 1);
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_new() {
+        ≔ scanner = PluginScanner·new();
+        assert_eq!(scanner.formats.len(), 2);
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_default_paths() {
+        ≔ scanner = PluginScanner·new();
+        ≔ paths = scanner.default_paths();
+
+        // Should have at least some default paths
+        assert!(!paths.is_empty());
+
+        // Check that paths include expected patterns
+        // cfg(target_os = "linux")
+        {
+            assert!(paths.iter().any(|p| p.to_string_lossy().contains(".vst3")));
+        }
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_add_path() {
+        ≔ Δ scanner = PluginScanner·new();
+        ≔ custom_path = PathBuf·from("/custom/plugin/path");
+        scanner.add_path(&custom_path);
+
+        ≔ paths = scanner.default_paths();
+        assert!(paths.contains(&custom_path));
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_set_formats() {
+        ≔ Δ scanner = PluginScanner·new();
+        scanner.set_formats(vec![PluginFormat·Vst3]);
+
+        assert_eq!(scanner.formats.len(), 1);
+        assert!(scanner.formats.contains(&PluginFormat·Vst3));
+        assert!(!scanner.formats.contains(&PluginFormat·Clap));
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_empty_directory() {
+        ≔ temp = tempdir().unwrap();
+        ≔ scanner = PluginScanner·new();
+
+        ≔ result = scanner.scan_directory(temp.path()).unwrap();
+        assert_eq!(result.count(), 0);
+        assert_eq!(result.error_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_nonexistent_directory() {
+        ≔ scanner = PluginScanner·new();
+        ≔ result = scanner.scan_directory(Path·new("/nonexistent/path")).unwrap();
+
+        assert_eq!(result.count(), 0);
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_directory_with_mock_plugins() {
+        ≔ temp = tempdir().unwrap();
+
+        // Create mock plugin directories
+        ≔ vst3_dir = temp.path().join("TestPlugin.vst3");
+        std·fs·create_dir(&vst3_dir).unwrap();
+
+        ≔ clap_dir = temp.path().join("TestPlugin.clap");
+        std·fs·create_dir(&clap_dir).unwrap();
+
+        ≔ scanner = PluginScanner·new();
+        ≔ result = scanner.scan_directory(temp.path()).unwrap();
+
+        assert_eq!(result.count(), 2);
+        assert!(result.by_format(PluginFormat·Vst3).len() >= 1);
+        assert!(result.by_format(PluginFormat·Clap).len() >= 1);
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_plugin_not_found() {
+        ≔ scanner = PluginScanner·new();
+        ≔ result = scanner.scan_plugin(Path·new("/nonexistent/plugin.vst3"));
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error·NotFound(_)));
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_plugin_unsupported_format() {
+        ≔ temp = tempdir().unwrap();
+        ≔ dll_path = temp.path().join("plugin.dll");
+        std·fs·write(&dll_path, b"fake dll").unwrap();
+
+        ≔ scanner = PluginScanner·new();
+        ≔ result = scanner.scan_plugin(&dll_path);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error·UnsupportedFormat(_)));
+    }
+
+    //@ rune: test
+    rite test_plugin_scanner_scan_mock_vst3() {
+        ≔ temp = tempdir().unwrap();
+        ≔ vst3_path = temp.path().join("MyPlugin.vst3");
+        std·fs·create_dir(&vst3_path).unwrap();
+
+        ≔ scanner = PluginScanner·new();
+        ≔ result = scanner.scan_plugin(&vst3_path).unwrap();
+
+        assert_eq!(result.name, "MyPlugin");
+        assert_eq!(result.format, PluginFormat·Vst3);
+        assert_eq!(result.path, vst3_path);
+    }
+}

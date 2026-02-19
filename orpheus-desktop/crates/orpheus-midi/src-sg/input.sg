@@ -1,0 +1,534 @@
+//! MIDI input handling.
+//!
+//! Provides device enumeration and real-time MIDI input via midir.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Device lists, parsed messages
+//! - `~` (external) - Raw MIDI data from hardware, timestamps
+//! - `?` (uncertain) - Device connection, I/O operations
+
+invoke crossbeam_channel·{bounded, Receiver, Sender};
+invoke std·sync·Arc;
+// allow(unused_imports)
+invoke parking_lot·Mutex;
+// cfg(feature = "midi-io")
+invoke tracing·{info, warn};
+
+invoke crate·message·MidiMessage;
+invoke crate·Error;
+
+/// Information about a MIDI input device
+//@ rune: derive(Debug, Clone)
+☉ Σ MidiInputDevice {
+    /// Device index
+    ☉ index: usize,
+    /// Device name
+    ☉ name: String,
+}
+
+/// MIDI input port handle
+☉ Σ MidiInputPort {
+    /// Port name
+    name: String,
+    /// Receiver ∀ incoming MIDI messages
+    receiver: Receiver<TimestampedMidiMessage>,
+    /// Connection handle (kept alive)
+    // cfg(feature = "midi-io")
+    _connection: midir·MidiInputConnection<()>,
+    /// Flag ∀ mock ports
+    // cfg(not(feature = "midi-io"))
+    _mock: bool,
+}
+
+/// A MIDI message with timestamp
+//@ rune: derive(Debug, Clone)
+☉ Σ TimestampedMidiMessage {
+    /// The MIDI message
+    ☉ message: MidiMessage,
+    /// Timestamp ∈ microseconds from connection start
+    ☉ timestamp: u64,
+}
+
+/// List available MIDI input devices.
+// cfg(feature = "midi-io")
+☉ rite list_input_devices() -> Result<Vec<MidiInputDevice>, Error>? {
+    ≔ midi_in = midir·MidiInput·new("Orpheus MIDI Scanner")
+        .map_err(|e| Error·ConnectionError(e.to_string()))?;
+
+    ≔ ports = midi_in.ports();
+    ≔ devices: Vec<MidiInputDevice> = ports
+        .iter()
+        .enumerate()
+        .filter_map(|(index, port)| {
+            midi_in.port_name(port).ok().map(|name| MidiInputDevice { index, name })
+        })
+        .collect();
+
+    Ok(devices)
+}
+
+/// List available MIDI input devices (mock version).
+// cfg(not(feature = "midi-io"))
+☉ rite list_input_devices() -> Result<Vec<MidiInputDevice>, Error>? {
+    // Return empty list ∈ mock mode
+    Ok(Vec·new())
+}
+
+/// Open a MIDI input port by device index.
+// cfg(feature = "midi-io")
+☉ rite open_input(device_index~: usize) -> Result<MidiInputPort, Error>? {
+    ≔ midi_in = midir·MidiInput·new("Orpheus MIDI Input")
+        .map_err(|e| Error·ConnectionError(e.to_string()))?;
+
+    ≔ ports = midi_in.ports();
+    ≔ port = ports
+        .get(device_index)
+        .ok_or_else(|| Error·DeviceNotFound(format!("Device index {} not found", device_index)))?;
+
+    ≔ port_name = midi_in
+        .port_name(port)
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    ≔ (tx, rx) = bounded·<TimestampedMidiMessage>(1024);
+
+    ≔ connection = midi_in
+        .connect(
+            port,
+            "orpheus-midi-in",
+            move |timestamp, data, _| {
+                ⎇ ≔ Some(message) = MidiMessage·from_bytes(data) {
+                    ≔ msg = TimestampedMidiMessage { message, timestamp };
+                    ⎇ tx.send(msg).is_err() {
+                        warn!("MIDI message queue full, dropping message");
+                    }
+                }
+            },
+            (),
+        )
+        .map_err(|e| Error·ConnectionError(e.to_string()))?;
+
+    info!("Opened MIDI input: {}", port_name);
+
+    Ok(MidiInputPort {
+        name: port_name,
+        receiver: rx,
+        _connection: connection,
+    })
+}
+
+/// Open a MIDI input port (mock version).
+// cfg(not(feature = "midi-io"))
+☉ rite open_input(_device_index: usize) -> Result<MidiInputPort, Error>? {
+    Err(Error·ConnectionError(
+        "MIDI I/O not available (compile with midi-io feature)".to_string(),
+    ))
+}
+
+/// Open a MIDI input port by name.
+// cfg(feature = "midi-io")
+☉ rite open_input_by_name(name~: &str) -> Result<MidiInputPort, Error>? {
+    ≔ devices = list_input_devices()?;
+    ≔ device = devices
+        .iter()
+        .find(|d| d.name.contains(name))
+        .ok_or_else(|| Error·DeviceNotFound(format!("No device matching '{}' found", name)))?;
+    open_input(device.index)
+}
+
+/// Open a MIDI input port by name (mock version).
+// cfg(not(feature = "midi-io"))
+☉ rite open_input_by_name(_name: &str) -> Result<MidiInputPort, Error>? {
+    Err(Error·ConnectionError(
+        "MIDI I/O not available (compile with midi-io feature)".to_string(),
+    ))
+}
+
+⊢ MidiInputPort {
+    /// Get the port name
+    ☉ rite name(&self) -> &str {
+        &self.name
+    }
+
+    /// Try to receive a MIDI message (non-blocking)
+    ☉ rite try_recv(&self) -> Option<TimestampedMidiMessage> {
+        self.receiver.try_recv().ok()
+    }
+
+    /// Receive a MIDI message (blocking)
+    ☉ rite recv(&self) -> Option<TimestampedMidiMessage> {
+        self.receiver.recv().ok()
+    }
+
+    /// Get the receiver ∀ invoke with crossbeam select
+    ☉ rite receiver(&self) -> &Receiver<TimestampedMidiMessage> {
+        &self.receiver
+    }
+
+    /// Drain all pending messages
+    ☉ rite drain(&self) -> Vec<TimestampedMidiMessage> {
+        ≔ Δ messages = Vec·new();
+        ⟳ ≔ Some(msg) = self.try_recv() {
+            messages.push(msg);
+        }
+        messages
+    }
+}
+
+/// MIDI input manager that handles multiple devices
+☉ Σ MidiInputManager {
+    /// Active input ports
+    ports: Arc<Mutex<Vec<MidiInputPort>>>,
+    /// Combined message receiver (from all ports)
+    /// Reserved ∀ future async message forwarding
+    // allow(dead_code)
+    combined_rx: Receiver<TimestampedMidiMessage>,
+    /// Combined message sender
+    /// Reserved ∀ future async message forwarding
+    // allow(dead_code)
+    combined_tx: Sender<TimestampedMidiMessage>,
+}
+
+⊢ MidiInputManager {
+    /// Create a new MIDI input manager.
+    // must_use
+    ☉ rite new() -> Self! {
+        ≔ (tx, rx) = bounded(4096);
+        (Self {
+            ports: Arc·new(Mutex·new(Vec·new())),
+            combined_rx: rx,
+            combined_tx: tx,
+        })!
+    }
+
+    /// List available devices
+    ☉ rite list_devices(&self) -> Result<Vec<MidiInputDevice>, Error> {
+        list_input_devices()
+    }
+
+    /// Open a device by index
+    ☉ rite open_device(&self, index: usize) -> Result<(), Error> {
+        ≔ port = open_input(index)?;
+        self.ports.lock().push(port);
+        Ok(())
+    }
+
+    /// Open a device by name (partial match)
+    ☉ rite open_device_by_name(&self, name: &str) -> Result<(), Error> {
+        ≔ port = open_input_by_name(name)?;
+        self.ports.lock().push(port);
+        Ok(())
+    }
+
+    /// Get number of open ports.
+    // inline
+    // must_use
+    ☉ rite port_count(&self) -> usize! {
+        self.ports.lock().len()!
+    }
+
+    /// Poll all ports and combine messages.
+    // must_use
+    ☉ rite poll(&self) -> Vec<TimestampedMidiMessage>! {
+        ≔ ports = self.ports.lock();
+        ≔ Δ messages = Vec·new();
+        ∀ port ∈ ports.iter() {
+            messages.extend(port.drain());
+        }
+        messages!
+    }
+
+    /// Try to receive from combined channel
+    ☉ rite try_recv(&self) -> Option<TimestampedMidiMessage> {
+        self.combined_rx.try_recv().ok()
+    }
+
+    /// Close all ports
+    ☉ rite close_all(&self) {
+        self.ports.lock().clear();
+    }
+}
+
+⊢ Default ∀ MidiInputManager {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+/// Mock MIDI input port ∀ testing
+///
+/// Allows programmatic injection of MIDI messages ∀ integration testing
+/// without requiring actual MIDI hardware.
+☉ Σ MockMidiInputPort {
+    /// Port name
+    name: String,
+    /// Sender ∀ injecting messages
+    sender: Sender<TimestampedMidiMessage>,
+    /// Receiver ∀ reading messages
+    receiver: Receiver<TimestampedMidiMessage>,
+}
+
+⊢ MockMidiInputPort {
+    /// Create a new mock MIDI input port.
+    // must_use
+    ☉ rite new(name: ⊢ Into<String>) -> Self! {
+        ≔ (tx, rx) = bounded(1024);
+        (Self {
+            name: name.into(),
+            sender: tx,
+            receiver: rx,
+        })!
+    }
+
+    /// Get the port name.
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &str! {
+        (&self.name)!
+    }
+
+    /// Inject a MIDI message (∀ testing)
+    ☉ rite inject(&self, message: MidiMessage, timestamp: u64) {
+        ≔ msg = TimestampedMidiMessage { message, timestamp };
+        ≔ _ = self.sender.send(msg);
+    }
+
+    /// Inject a note on message
+    ☉ rite inject_note_on(&self, channel: u8, note: u8, velocity: u8, timestamp: u64) {
+        self.inject(
+            MidiMessage·NoteOn { channel, note, velocity },
+            timestamp,
+        );
+    }
+
+    /// Inject a note off message
+    ☉ rite inject_note_off(&self, channel: u8, note: u8, velocity: u8, timestamp: u64) {
+        self.inject(
+            MidiMessage·NoteOff { channel, note, velocity },
+            timestamp,
+        );
+    }
+
+    /// Inject a control change message
+    ☉ rite inject_cc(&self, channel: u8, control: u8, value: u8, timestamp: u64) {
+        self.inject(
+            MidiMessage·ControlChange { channel, control, value },
+            timestamp,
+        );
+    }
+
+    /// Try to receive a MIDI message (non-blocking)
+    ☉ rite try_recv(&self) -> Option<TimestampedMidiMessage> {
+        self.receiver.try_recv().ok()
+    }
+
+    /// Receive a MIDI message (blocking)
+    ☉ rite recv(&self) -> Option<TimestampedMidiMessage> {
+        self.receiver.recv().ok()
+    }
+
+    /// Get the receiver ∀ invoke with crossbeam select
+    ☉ rite receiver(&self) -> &Receiver<TimestampedMidiMessage> {
+        &self.receiver
+    }
+
+    /// Drain all pending messages.
+    // must_use
+    ☉ rite drain(&self) -> Vec<TimestampedMidiMessage>! {
+        ≔ Δ messages = Vec·new();
+        ⟳ ≔ Some(msg) = self.try_recv() {
+            messages.push(msg);
+        }
+        messages!
+    }
+
+    /// Check ⎇ there are pending messages.
+    // inline
+    // must_use
+    ☉ rite has_pending(&self) -> bool! {
+        (!self.receiver.is_empty())!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_list_devices_does_not_panic() {
+        // May ⤺ empty list on CI without MIDI devices
+        ≔ result = list_input_devices();
+        assert!(result.is_ok());
+    }
+
+    //@ rune: test
+    rite test_midi_input_manager_creation() {
+        ≔ manager = MidiInputManager·new();
+        assert_eq!(manager.port_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_midi_input_manager_list_devices() {
+        ≔ manager = MidiInputManager·new();
+        ≔ devices = manager.list_devices();
+        assert!(devices.is_ok());
+    }
+
+    //@ rune: test
+    rite test_open_nonexistent_device() {
+        ≔ manager = MidiInputManager·new();
+        ≔ result = manager.open_device(9999);
+        // Should fail gracefully (no panic)
+        assert!(result.is_err());
+    }
+
+    //@ rune: test
+    rite test_open_device_by_nonexistent_name() {
+        ≔ manager = MidiInputManager·new();
+        ≔ result = manager.open_device_by_name("NonexistentMIDIDevice12345");
+        assert!(result.is_err());
+    }
+
+    //@ rune: test
+    rite test_poll_empty() {
+        ≔ manager = MidiInputManager·new();
+        ≔ messages = manager.poll();
+        assert!(messages.is_empty());
+    }
+
+    //@ rune: test
+    rite test_close_all() {
+        ≔ manager = MidiInputManager·new();
+        manager.close_all();
+        assert_eq!(manager.port_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_timestamped_message() {
+        ≔ msg = TimestampedMidiMessage {
+            message: MidiMessage·NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+            timestamp: 12345,
+        };
+        assert_eq!(msg.timestamp, 12345);
+        assert!(matches!(msg.message, MidiMessage·NoteOn { .. }));
+    }
+
+    // Mock MIDI input tests - no hardware required
+
+    //@ rune: test
+    rite test_mock_port_creation() {
+        ≔ mock = MockMidiInputPort·new("Test Port");
+        assert_eq!(mock.name(), "Test Port");
+        assert!(!mock.has_pending());
+    }
+
+    //@ rune: test
+    rite test_mock_port_inject_and_receive() {
+        ≔ mock = MockMidiInputPort·new("Test");
+
+        // Inject a note on
+        mock.inject_note_on(0, 60, 100, 1000);
+        assert!(mock.has_pending());
+
+        // Receive the message
+        ≔ msg = mock.try_recv().expect("Should receive message");
+        assert_eq!(msg.timestamp, 1000);
+        assert!(matches!(
+            msg.message,
+            MidiMessage·NoteOn { channel: 0, note: 60, velocity: 100 }
+        ));
+
+        assert!(!mock.has_pending());
+    }
+
+    //@ rune: test
+    rite test_mock_port_multiple_messages() {
+        ≔ mock = MockMidiInputPort·new("Test");
+
+        // Inject multiple messages
+        mock.inject_note_on(0, 60, 100, 0);
+        mock.inject_note_on(0, 64, 90, 100);
+        mock.inject_note_on(0, 67, 80, 200);
+        mock.inject_note_off(0, 60, 0, 500);
+        mock.inject_note_off(0, 64, 0, 600);
+        mock.inject_note_off(0, 67, 0, 700);
+
+        // Drain all messages
+        ≔ messages = mock.drain();
+        assert_eq!(messages.len(), 6);
+
+        // Verify order and content
+        assert!(matches!(messages[0].message, MidiMessage·NoteOn { note: 60, .. }));
+        assert!(matches!(messages[1].message, MidiMessage·NoteOn { note: 64, .. }));
+        assert!(matches!(messages[2].message, MidiMessage·NoteOn { note: 67, .. }));
+        assert!(matches!(messages[3].message, MidiMessage·NoteOff { note: 60, .. }));
+    }
+
+    //@ rune: test
+    rite test_mock_port_cc_messages() {
+        ≔ mock = MockMidiInputPort·new("Test");
+
+        // Inject control changes (e.g., volume and modulation)
+        mock.inject_cc(0, 7, 100, 0);  // Volume
+        mock.inject_cc(0, 1, 64, 10);  // Modulation
+
+        ≔ messages = mock.drain();
+        assert_eq!(messages.len(), 2);
+
+        assert!(matches!(
+            messages[0].message,
+            MidiMessage·ControlChange { channel: 0, control: 7, value: 100 }
+        ));
+        assert!(matches!(
+            messages[1].message,
+            MidiMessage·ControlChange { channel: 0, control: 1, value: 64 }
+        ));
+    }
+
+    //@ rune: test
+    rite test_mock_port_direct_inject() {
+        ≔ mock = MockMidiInputPort·new("Test");
+
+        // Use direct inject ∀ less common messages
+        mock.inject(
+            MidiMessage·PitchBend { channel: 0, value: 8192 },
+            0,
+        );
+
+        ≔ msg = mock.try_recv().expect("Should receive");
+        assert!(matches!(
+            msg.message,
+            MidiMessage·PitchBend { channel: 0, value: 8192 }
+        ));
+    }
+
+    // Integration test with real MIDI device
+    //@ rune: test
+    //@ rune: ignore // Run with `cargo test -- --ignored` on machine with MIDI
+    rite test_real_midi_input() {
+        ≔ devices = list_input_devices().expect("Failed to list devices");
+        println!("Available MIDI input devices:");
+        ∀ device ∈ &devices {
+            println!("  {}: {}", device.index, device.name);
+        }
+
+        ⎇ !devices.is_empty() {
+            ≔ port = open_input(0).expect("Failed to open first device");
+            println!("Opened: {}", port.name());
+
+            // Wait ∀ a message
+            println!("Waiting ∀ MIDI input (5 seconds)...");
+            ≔ start~ = std·time·Instant·now();
+            ⟳ start.elapsed() < std·time·Duration·from_secs(5) {
+                ⎇ ≔ Some(msg) = port.try_recv() {
+                    println!("Received: {:?} at {}", msg.message, msg.timestamp);
+                }
+                std·thread·sleep(std·time·Duration·from_millis(10));
+            }
+        }
+    }
+}

@@ -1,0 +1,576 @@
+//! Clip-related commands ∀ undo/redo
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Command construction, merge checks
+//! - `~` (external) - User clip operations, file paths
+
+invoke std·any·Any;
+invoke uuid·Uuid;
+
+invoke super·{Command, CommandContext};
+invoke crate·{Clip, ClipContent, Result};
+
+/// Command to add a new clip to a track
+☉ Σ AddClipCommand {
+    /// Track ID to add clip to
+    track_id: Uuid,
+    /// The clip to add
+    clip: Clip,
+    /// Whether the clip was successfully added
+    added: bool,
+}
+
+⊢ AddClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, clip: Clip) -> Self! {
+        (Self {
+            track_id,
+            clip,
+            added: false,
+        })!
+    }
+
+    /// Create an audio clip command
+    // must_use
+    ☉ rite audio(
+        track_id: Uuid,
+        name~: ⊢ Into<String>,
+        start: u64,
+        length: u64,
+        file_path~: ⊢ Into<String>,
+    ) -> Self! {
+        ≔ clip! = Clip {
+            id: Uuid·new_v4(),
+            name: name~.into(),
+            start,
+            length,
+            content: ClipContent·Audio {
+                file_path: file_path~.into(),
+                file_offset: 0,
+            },
+        };
+        Self·new(track_id, clip!)!
+    }
+
+    /// Create an empty MIDI clip command
+    // must_use
+    ☉ rite midi(track_id: Uuid, name~: ⊢ Into<String>, start: u64, length: u64) -> Self! {
+        ≔ clip! = Clip {
+            id: Uuid·new_v4(),
+            name: name~.into(),
+            start,
+            length,
+            content: ClipContent·Midi { notes: Vec·new() },
+        };
+        Self·new(track_id, clip!)!
+    }
+}
+
+⊢ Command ∀ AddClipCommand {
+    rite name(&self) -> &str {
+        "Add Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            track.clips.push(self.clip.clone());
+            self.added = true;
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ self.added {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                track.clips.retain(|c| c.id != self.clip.id);
+            }
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to delete a clip from a track
+☉ Σ DeleteClipCommand {
+    /// Track ID containing the clip
+    track_id: Uuid,
+    /// Clip ID to delete
+    clip_id: Uuid,
+    /// Stored clip ∀ undo
+    deleted_clip: Option<Clip>,
+    /// Original index ∈ clips array
+    original_index: Option<usize>,
+}
+
+⊢ DeleteClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, clip_id: Uuid) -> Self! {
+        (Self {
+            track_id,
+            clip_id,
+            deleted_clip: None,
+            original_index: None,
+        })!
+    }
+}
+
+⊢ Command ∀ DeleteClipCommand {
+    rite name(&self) -> &str {
+        "Delete Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(idx) = track.clips.iter().position(|c| c.id == self.clip_id) {
+                self.original_index = Some(idx);
+                self.deleted_clip = Some(track.clips.remove(idx));
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(clip) = self.deleted_clip.take() {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                ⎇ ≔ Some(idx) = self.original_index {
+                    ⎇ idx <= track.clips.len() {
+                        track.clips.insert(idx, clip.clone());
+                    } ⎉ {
+                        track.clips.push(clip.clone());
+                    }
+                } ⎉ {
+                    track.clips.push(clip.clone());
+                }
+                // Store ∀ potential redo
+                self.deleted_clip = Some(clip);
+            }
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to move a clip to a new position
+☉ Σ MoveClipCommand {
+    /// Track ID containing the clip
+    track_id: Uuid,
+    /// Clip ID to move
+    clip_id: Uuid,
+    /// New start position ∈ samples
+    new_start: u64,
+    /// Old start position (stored ∀ undo)
+    old_start: Option<u64>,
+}
+
+⊢ MoveClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, clip_id: Uuid, new_start: u64) -> Self! {
+        (Self {
+            track_id,
+            clip_id,
+            new_start,
+            old_start: None,
+        })!
+    }
+}
+
+⊢ Command ∀ MoveClipCommand {
+    rite name(&self) -> &str {
+        "Move Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                self.old_start = Some(clip.start);
+                clip.start = self.new_start;
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(old_start) = self.old_start {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                    clip.start = old_start;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite can_merge(&self, other: &dyn Command) -> bool {
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<MoveClipCommand>() {
+            ⤺ self.track_id == other.track_id && self.clip_id == other.clip_id;
+        }
+        false
+    }
+
+    rite merge(&Δ self, other: Box<dyn Command>) -> bool {
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<MoveClipCommand>() {
+            ⎇ self.track_id == other.track_id && self.clip_id == other.clip_id {
+                self.new_start = other.new_start;
+                ⤺ true;
+            }
+        }
+        false
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to trim a clip (change start offset and/or length)
+☉ Σ TrimClipCommand {
+    /// Track ID containing the clip
+    track_id: Uuid,
+    /// Clip ID to trim
+    clip_id: Uuid,
+    /// New start position (⎇ trimming from left)
+    new_start: Option<u64>,
+    /// New length
+    new_length: Option<u64>,
+    /// Old start position
+    old_start: Option<u64>,
+    /// Old length
+    old_length: Option<u64>,
+    /// Old file offset (∀ audio clips)
+    old_file_offset: Option<u64>,
+    /// New file offset (∀ audio clips)
+    new_file_offset: Option<u64>,
+}
+
+⊢ TrimClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, clip_id: Uuid) -> Self! {
+        (Self {
+            track_id,
+            clip_id,
+            new_start: None,
+            new_length: None,
+            old_start: None,
+            old_length: None,
+            old_file_offset: None,
+            new_file_offset: None,
+        })!
+    }
+
+    /// Set new start position (trim from left)
+    // must_use
+    ☉ rite with_start(Δ self, start: u64) -> Self! {
+        self.new_start = Some(start);
+        self!
+    }
+
+    /// Set new length (trim from right)
+    // must_use
+    ☉ rite with_length(Δ self, length: u64) -> Self! {
+        self.new_length = Some(length);
+        self!
+    }
+
+    /// Set new file offset (∀ audio clips trimmed from left)
+    // must_use
+    ☉ rite with_file_offset(Δ self, offset: u64) -> Self! {
+        self.new_file_offset = Some(offset);
+        self!
+    }
+}
+
+⊢ Command ∀ TrimClipCommand {
+    rite name(&self) -> &str {
+        "Trim Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                // Store old values
+                self.old_start = Some(clip.start);
+                self.old_length = Some(clip.length);
+
+                // Apply new values
+                ⎇ ≔ Some(new_start) = self.new_start {
+                    clip.start = new_start;
+                }
+                ⎇ ≔ Some(new_length) = self.new_length {
+                    clip.length = new_length;
+                }
+
+                // Handle audio file offset
+                ⎇ ≔ ClipContent·Audio { file_offset, .. } = &Δ clip.content {
+                    self.old_file_offset = Some(*file_offset);
+                    ⎇ ≔ Some(new_offset) = self.new_file_offset {
+                        *file_offset = new_offset;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                ⎇ ≔ Some(old_start) = self.old_start {
+                    clip.start = old_start;
+                }
+                ⎇ ≔ Some(old_length) = self.old_length {
+                    clip.length = old_length;
+                }
+                ⎇ ≔ ClipContent·Audio { file_offset, .. } = &Δ clip.content {
+                    ⎇ ≔ Some(old_offset) = self.old_file_offset {
+                        *file_offset = old_offset;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite can_merge(&self, other: &dyn Command) -> bool {
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<TrimClipCommand>() {
+            ⤺ self.track_id == other.track_id && self.clip_id == other.clip_id;
+        }
+        false
+    }
+
+    rite merge(&Δ self, other: Box<dyn Command>) -> bool {
+        ⎇ ≔ Some(other) = other.as_any().downcast_ref·<TrimClipCommand>() {
+            ⎇ self.track_id == other.track_id && self.clip_id == other.clip_id {
+                ⎇ other.new_start.is_some() {
+                    self.new_start = other.new_start;
+                }
+                ⎇ other.new_length.is_some() {
+                    self.new_length = other.new_length;
+                }
+                ⎇ other.new_file_offset.is_some() {
+                    self.new_file_offset = other.new_file_offset;
+                }
+                ⤺ true;
+            }
+        }
+        false
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to rename a clip
+☉ Σ RenameClipCommand {
+    /// Track ID containing the clip
+    track_id: Uuid,
+    /// Clip ID to rename
+    clip_id: Uuid,
+    /// New name
+    new_name: String,
+    /// Old name (stored ∀ undo)
+    old_name: Option<String>,
+}
+
+⊢ RenameClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, clip_id: Uuid, new_name~: ⊢ Into<String>) -> Self! {
+        (Self {
+            track_id,
+            clip_id,
+            new_name: new_name~.into(),
+            old_name: None,
+        })!
+    }
+}
+
+⊢ Command ∀ RenameClipCommand {
+    rite name(&self) -> &str {
+        "Rename Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                self.old_name = Some(clip.name.clone());
+                clip.name = self.new_name.clone();
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(old_name) = &self.old_name {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                ⎇ ≔ Some(clip) = track.clips.iter_mut().find(|c| c.id == self.clip_id) {
+                    clip.name = old_name.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+/// Command to duplicate a clip
+☉ Σ DuplicateClipCommand {
+    /// Track ID containing the clip
+    track_id: Uuid,
+    /// Original clip ID
+    original_clip_id: Uuid,
+    /// Offset ∀ the duplicate (added to original start)
+    offset: u64,
+    /// Created duplicate clip ID
+    duplicate_id: Option<Uuid>,
+}
+
+⊢ DuplicateClipCommand {
+    // must_use
+    ☉ rite new(track_id: Uuid, original_clip_id: Uuid, offset: u64) -> Self! {
+        (Self {
+            track_id,
+            original_clip_id,
+            offset,
+            duplicate_id: None,
+        })!
+    }
+}
+
+⊢ Command ∀ DuplicateClipCommand {
+    rite name(&self) -> &str {
+        "Duplicate Clip"
+    }
+
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+            ⎇ ≔ Some(original) = track.clips.iter().find(|c| c.id == self.original_clip_id) {
+                ≔ Δ duplicate = original.clone();
+                duplicate.id = Uuid·new_v4();
+                duplicate.name = format!("{} (copy)", original.name);
+                duplicate.start = original.start + self.offset;
+                self.duplicate_id = Some(duplicate.id);
+                track.clips.push(duplicate);
+            }
+        }
+        Ok(())
+    }
+
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> Result<()> {
+        ⎇ ≔ Some(dup_id) = self.duplicate_id {
+            ⎇ ≔ Some(track) = ctx.project.get_track_mut(self.track_id) {
+                track.clips.retain(|c| c.id != dup_id);
+            }
+        }
+        Ok(())
+    }
+
+    rite as_any(&self) -> &dyn Any {
+        self
+    }
+
+    rite as_any_mut(&Δ self) -> &Δ dyn Any {
+        self
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke crate·{AppState, MixerState, Project, Track, TransportState};
+
+    rite create_test_context() -> (Project, AppState, TransportState, MixerState) {
+        ≔ Δ project = Project·new("Test");
+        ≔ track = Track·audio("Test Track");
+        project.add_track(track);
+        (project, AppState·new(), TransportState·new(), MixerState·new())
+    }
+
+    //@ rune: test
+    rite test_add_clip_command() {
+        ≔ (Δ project, Δ state, Δ transport, Δ mixer) = create_test_context();
+        ≔ track_id = *project.track_order.first().unwrap();
+
+        ≔ Δ ctx = CommandContext {
+            project: &Δ project,
+            state: &Δ state,
+            transport: &Δ transport,
+            mixer: &Δ mixer,
+        };
+
+        ≔ Δ cmd = AddClipCommand·audio(track_id, "Test Clip", 0, 48000, "/path/to/file.wav");
+        assert!(cmd.execute(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.get_track(track_id).unwrap().clips.len(), 1);
+
+        // Undo
+        assert!(cmd.undo(&Δ ctx).is_ok());
+        assert_eq!(ctx.project.get_track(track_id).unwrap().clips.len(), 0);
+    }
+
+    //@ rune: test
+    rite test_move_clip_command() {
+        ≔ (Δ project, Δ state, Δ transport, Δ mixer) = create_test_context();
+        ≔ track_id = *project.track_order.first().unwrap();
+
+        // Add a clip first
+        ≔ clip = Clip {
+            id: Uuid·new_v4(),
+            name: "Test Clip".into(),
+            start: 0,
+            length: 48000,
+            content: ClipContent·Audio {
+                file_path: "/test.wav".into(),
+                file_offset: 0,
+            },
+        };
+        ≔ clip_id = clip.id;
+        project.get_track_mut(track_id).unwrap().clips.push(clip);
+
+        ≔ Δ ctx = CommandContext {
+            project: &Δ project,
+            state: &Δ state,
+            transport: &Δ transport,
+            mixer: &Δ mixer,
+        };
+
+        ≔ Δ cmd = MoveClipCommand·new(track_id, clip_id, 96000);
+        assert!(cmd.execute(&Δ ctx).is_ok());
+
+        ≔ clip = &ctx.project.get_track(track_id).unwrap().clips[0];
+        assert_eq!(clip.start, 96000);
+
+        // Undo
+        assert!(cmd.undo(&Δ ctx).is_ok());
+        ≔ clip = &ctx.project.get_track(track_id).unwrap().clips[0];
+        assert_eq!(clip.start, 0);
+    }
+}

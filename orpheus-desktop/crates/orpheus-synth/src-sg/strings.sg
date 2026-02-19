@@ -1,0 +1,892 @@
+//! Bowed string synthesizer using physical modeling
+//!
+//! Implements realistic bowed string instruments (violin, viola, cello, bass)
+//! using digital waveguide synthesis with bow-string friction modeling.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Waveguide calculations, friction modeling, audio samples
+//! - `~` (external) - MIDI note input, articulation, bow pressure
+
+invoke std·f32·consts·PI;
+
+/// String instrument type
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ StringInstrument {
+    Violin,
+    Viola,
+    Cello,
+    DoubleBass,
+}
+
+⊢ Default ∀ StringInstrument {
+    rite default() -> Self {
+        Self·Violin
+    }
+}
+
+⊢ StringInstrument {
+    /// Get the open string pitches (MIDI notes) ∀ this instrument
+    ☉ rite open_strings(&self) -> &[u8] {
+        ⌥ self {
+            // G3, D4, A4, E5
+            StringInstrument·Violin => &[55, 62, 69, 76],
+            // C3, G3, D4, A4
+            StringInstrument·Viola => &[48, 55, 62, 69],
+            // C2, G2, D3, A3
+            StringInstrument·Cello => &[36, 43, 50, 57],
+            // E1, A1, D2, G2 (orchestra tuning)
+            StringInstrument·DoubleBass => &[28, 33, 38, 43],
+        }
+    }
+
+    /// Get characteristic body resonance frequencies
+    rite body_resonances(&self) -> &[(f32, f32, f32)] {
+        // (frequency, Q, gain)
+        ⌥ self {
+            StringInstrument·Violin => &[
+                (280.0, 8.0, 0.8),   // Main air resonance
+                (460.0, 12.0, 0.6),  // Main wood resonance
+                (550.0, 15.0, 0.4),  //
+                (700.0, 10.0, 0.3),
+                (1200.0, 8.0, 0.25),
+                (3000.0, 6.0, 0.15), // Brilliance
+            ],
+            StringInstrument·Viola => &[
+                (220.0, 8.0, 0.8),
+                (380.0, 12.0, 0.6),
+                (480.0, 15.0, 0.4),
+                (600.0, 10.0, 0.3),
+                (1000.0, 8.0, 0.25),
+                (2500.0, 6.0, 0.15),
+            ],
+            StringInstrument·Cello => &[
+                (100.0, 6.0, 0.9),
+                (180.0, 10.0, 0.7),
+                (280.0, 12.0, 0.5),
+                (400.0, 10.0, 0.35),
+                (700.0, 8.0, 0.25),
+                (1800.0, 6.0, 0.15),
+            ],
+            StringInstrument·DoubleBass => &[
+                (60.0, 5.0, 0.95),
+                (100.0, 8.0, 0.8),
+                (180.0, 10.0, 0.6),
+                (280.0, 10.0, 0.4),
+                (500.0, 8.0, 0.25),
+                (1200.0, 6.0, 0.1),
+            ],
+        }
+    }
+}
+
+/// Articulation type ∀ string playing
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ StringArticulation {
+    /// Normal sustained bowing (arco)
+    Arco,
+    /// Smooth connected notes
+    Legato,
+    /// Short, separated notes
+    Staccato,
+    /// Very short, bounced bow
+    Spiccato,
+    /// Plucked (like guitar)
+    Pizzicato,
+    /// Rapid bow tremolo
+    Tremolo,
+    /// Sul ponticello (near bridge, glassy)
+    SulPonticello,
+    /// Sul tasto (over fingerboard, soft)
+    SulTasto,
+    /// Harmonic
+    Harmonic,
+}
+
+⊢ Default ∀ StringArticulation {
+    rite default() -> Self {
+        Self·Arco
+    }
+}
+
+/// Biquad filter ∀ body resonance
+//@ rune: derive(Debug, Clone)
+Σ ResonanceFilter {
+    b0: f32, b1: f32, b2: f32,
+    a1: f32, a2: f32,
+    x1: f32, x2: f32,
+    y1: f32, y2: f32,
+}
+
+⊢ ResonanceFilter {
+    rite new(freq: f32, q: f32, gain: f32, sample_rate: f32) -> Self {
+        ≔ omega = 2.0 * PI * freq / sample_rate;
+        ≔ sin_omega = omega.sin();
+        ≔ cos_omega = omega.cos();
+        ≔ alpha = sin_omega / (2.0 * q);
+        ≔ a = 10.0_f32.powf(gain / 20.0);
+
+        ≔ b0 = 1.0 + alpha * a;
+        ≔ b1 = -2.0 * cos_omega;
+        ≔ b2 = 1.0 - alpha * a;
+        ≔ a0 = 1.0 + alpha / a;
+        ≔ a1 = -2.0 * cos_omega;
+        ≔ a2 = 1.0 - alpha / a;
+
+        Self {
+            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+            a1: a1 / a0, a2: a2 / a0,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+        }
+    }
+
+    rite process(&Δ self, input: f32) -> f32 {
+        ≔ output = self.b0 * input + self.b1 * self.x1 + self.b2 * self.x2
+                   - self.a1 * self.y1 - self.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = input;
+        self.y2 = self.y1;
+        self.y1 = output;
+        output
+    }
+
+    rite reset(&Δ self) {
+        self.x1 = 0.0; self.x2 = 0.0;
+        self.y1 = 0.0; self.y2 = 0.0;
+    }
+}
+
+/// Single bowed string voice
+//@ rune: derive(Debug, Clone)
+☉ Σ BowedString {
+    /// Sample rate
+    sample_rate: f32,
+    /// Delay line (string waveguide)
+    delay_line: Vec<f32>,
+    /// Delay line position
+    delay_pos: usize,
+    /// Current period (fractional ∀ pitch accuracy)
+    period: f64,
+    /// Bow velocity (affects amplitude and tone)
+    bow_velocity: f32,
+    /// Bow pressure (affects grip and brightness)
+    bow_pressure: f32,
+    /// Bow position (0.0 = bridge, 1.0 = fingerboard)
+    bow_position: f32,
+    /// String damping
+    damping: f32,
+    /// Feedback coefficient
+    feedback: f32,
+    /// Previous output ∀ lowpass
+    prev_output: f32,
+    /// Bow-string state (∀ stick-slip)
+    bow_state: f32,
+    /// Is currently bowing
+    is_bowing: bool,
+    /// Current amplitude
+    amplitude: f32,
+    /// Target amplitude (∀ attack/release)
+    target_amplitude: f32,
+    /// Amplitude slew rate
+    amp_slew: f32,
+    /// Vibrato depth (semitones)
+    vibrato_depth: f32,
+    /// Vibrato rate (Hz)
+    vibrato_rate: f32,
+    /// Vibrato phase
+    vibrato_phase: f64,
+    /// Current articulation
+    articulation: StringArticulation,
+    /// Tremolo phase (∀ tremolo articulation)
+    tremolo_phase: f64,
+    /// Tremolo rate
+    tremolo_rate: f32,
+}
+
+⊢ BowedString {
+    /// Create a new bowed string
+    ☉ rite new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            delay_line: vec![0.0; 4096],
+            delay_pos: 0,
+            period: 100.0,
+            bow_velocity: 0.0,
+            bow_pressure: 0.5,
+            bow_position: 0.12, // Default: slightly away from bridge
+            damping: 0.3,
+            feedback: 0.995,
+            prev_output: 0.0,
+            bow_state: 0.0,
+            is_bowing: false,
+            amplitude: 0.0,
+            target_amplitude: 0.0,
+            amp_slew: 0.001,
+            vibrato_depth: 0.0,
+            vibrato_rate: 5.5,
+            vibrato_phase: 0.0,
+            articulation: StringArticulation·Arco,
+            tremolo_phase: 0.0,
+            tremolo_rate: 8.0,
+        }
+    }
+
+    /// Start bowing at a frequency
+    ☉ rite bow(&Δ self, frequency: f32, velocity: f32) {
+        self.period = self.sample_rate as f64 / frequency as f64;
+        self.bow_velocity = velocity.clamp(0.0, 1.0);
+        self.is_bowing = true;
+
+        // Set target amplitude based on velocity and articulation
+        self.target_amplitude = ⌥ self.articulation {
+            StringArticulation·Staccato | StringArticulation·Spiccato => velocity * 0.9,
+            StringArticulation·Pizzicato => velocity * 1.2,
+            StringArticulation·SulTasto => velocity * 0.6,
+            _ => velocity * 0.8,
+        };
+
+        // Set attack speed based on articulation
+        self.amp_slew = ⌥ self.articulation {
+            StringArticulation·Legato => 0.0005,
+            StringArticulation·Staccato | StringArticulation·Spiccato => 0.01,
+            StringArticulation·Pizzicato => 0.05,
+            _ => 0.002,
+        };
+
+        // Initialize delay line ∀ new note
+        ⎇ self.amplitude < 0.01 {
+            self.delay_line.fill(0.0);
+            self.bow_state = 0.0;
+        }
+    }
+
+    /// Stop bowing (release)
+    ☉ rite release(&Δ self) {
+        self.is_bowing = false;
+        self.target_amplitude = 0.0;
+
+        // Set release speed based on articulation
+        self.amp_slew = ⌥ self.articulation {
+            StringArticulation·Staccato | StringArticulation·Spiccato => 0.02,
+            StringArticulation·Pizzicato => 0.0005, // Let it ring
+            _ => 0.001,
+        };
+    }
+
+    /// Set bow pressure (0.0 - 1.0)
+    ☉ rite set_bow_pressure(&Δ self, pressure: f32) {
+        self.bow_pressure = pressure.clamp(0.1, 1.0);
+    }
+
+    /// Set bow position (0.0 = sul ponticello, 1.0 = sul tasto)
+    ☉ rite set_bow_position(&Δ self, position: f32) {
+        self.bow_position = position.clamp(0.05, 0.5);
+    }
+
+    /// Set articulation
+    ☉ rite set_articulation(&Δ self, articulation: StringArticulation) {
+        self.articulation = articulation;
+
+        // Adjust parameters based on articulation
+        ⌥ articulation {
+            StringArticulation·SulPonticello => {
+                self.bow_position = 0.05;
+                self.damping = 0.15;
+            }
+            StringArticulation·SulTasto => {
+                self.bow_position = 0.4;
+                self.damping = 0.5;
+            }
+            StringArticulation·Pizzicato => {
+                self.feedback = 0.992;
+                self.damping = 0.4;
+            }
+            StringArticulation·Tremolo => {
+                self.tremolo_rate = 12.0;
+            }
+            _ => {
+                self.bow_position = 0.12;
+                self.damping = 0.3;
+                self.feedback = 0.995;
+            }
+        }
+    }
+
+    /// Set vibrato parameters
+    ☉ rite set_vibrato(&Δ self, depth_semitones: f32, rate_hz: f32) {
+        self.vibrato_depth = depth_semitones.clamp(0.0, 1.0);
+        self.vibrato_rate = rate_hz.clamp(3.0, 8.0);
+    }
+
+    /// Enable default string vibrato
+    ☉ rite enable_vibrato(&Δ self) {
+        self.vibrato_depth = 0.25;
+        self.vibrato_rate = 5.5;
+    }
+
+    /// Disable vibrato
+    ☉ rite disable_vibrato(&Δ self) {
+        self.vibrato_depth = 0.0;
+    }
+
+    /// Bend pitch by semitones
+    ☉ rite bend(&Δ self, semitones: f32) {
+        ≔ ratio = 2.0_f64.powf(semitones as f64 / 12.0);
+        ≔ current_freq = self.sample_rate as f64 / self.period;
+        ≔ new_freq = current_freq * ratio;
+        self.period = self.sample_rate as f64 / new_freq;
+    }
+
+    /// Check ⎇ string is active
+    ☉ rite is_active(&self) -> bool {
+        self.amplitude > 0.001 || self.is_bowing
+    }
+
+    /// Bow-string friction model (simplified Friedlander)
+    rite bow_friction(&Δ self, string_velocity: f32) -> f32 {
+        ≔ relative_velocity = self.bow_velocity - string_velocity;
+
+        // Stick-slip friction curve
+        ≔ friction = ⎇ relative_velocity.abs() < 0.01 {
+            // Sticking regime
+            relative_velocity * self.bow_pressure * 50.0
+        } ⎉ {
+            // Slipping regime (hyperbolic friction)
+            ≔ sign = relative_velocity.signum();
+            ≔ slip_force = self.bow_pressure * 0.3 / (1.0 + relative_velocity.abs() * 2.0);
+            sign * slip_force
+        };
+
+        // Add some noise ∀ rosin texture
+        ≔ noise = (self.bow_state * 12.345).sin() * 0.02 * self.bow_pressure;
+        self.bow_state += 0.1;
+
+        friction + noise
+    }
+
+    /// Generate next sample
+    ☉ rite next_sample(&Δ self) -> f32 {
+        // Update amplitude (attack/release envelope)
+        ≔ amp_diff = self.target_amplitude - self.amplitude;
+        self.amplitude += amp_diff * self.amp_slew * 100.0;
+
+        ⎇ !self.is_active() {
+            ⤺ 0.0;
+        }
+
+        // Apply vibrato
+        ≔ effective_period = ⎇ self.vibrato_depth > 0.0 {
+            self.vibrato_phase += self.vibrato_rate as f64 / self.sample_rate as f64;
+            ⎇ self.vibrato_phase >= 1.0 {
+                self.vibrato_phase -= 1.0;
+            }
+            ≔ vibrato_mod = (self.vibrato_phase * std·f64·consts·TAU).sin();
+            ≔ depth_ratio = 2.0_f64.powf(self.vibrato_depth as f64 * vibrato_mod / 12.0);
+            self.period * depth_ratio
+        } ⎉ {
+            self.period
+        };
+
+        // Tremolo modulation (∀ tremolo articulation)
+        ≔ bow_mod = ⎇ self.articulation == StringArticulation·Tremolo {
+            self.tremolo_phase += self.tremolo_rate as f64 / self.sample_rate as f64;
+            ⎇ self.tremolo_phase >= 1.0 {
+                self.tremolo_phase -= 1.0;
+            }
+            0.5 + 0.5 * (self.tremolo_phase * std·f64·consts·TAU).sin() as f32
+        } ⎉ {
+            1.0
+        };
+
+        ≔ delay_len = self.delay_line.len();
+
+        // Read from delay line with interpolation
+        ≔ read_offset = effective_period;
+        ≔ read_pos = (self.delay_pos as f64 + delay_len as f64 - read_offset)
+            .rem_euclid(delay_len as f64);
+        ≔ read_int = read_pos as usize;
+        ≔ read_frac = read_pos - read_pos.floor();
+
+        ≔ sample_a = self.delay_line[read_int % delay_len];
+        ≔ sample_b = self.delay_line[(read_int + 1) % delay_len];
+        ≔ delayed = sample_a * (1.0 - read_frac as f32) + sample_b * read_frac as f32;
+
+        // Bow excitation (only when bowing)
+        ≔ excitation = ⎇ self.is_bowing && self.articulation != StringArticulation·Pizzicato {
+            ≔ bow_force = self.bow_friction(delayed) * bow_mod;
+            // Bow position affects harmonic content
+            ≔ pos_filter = 1.0 - self.bow_position * 0.5;
+            bow_force * pos_filter * self.amplitude
+        } ⎉ ⎇ self.articulation == StringArticulation·Pizzicato && self.amplitude > 0.5 {
+            // Pizzicato: impulse excitation
+            ≔ impulse = self.amplitude * 0.5;
+            self.amplitude *= 0.95; // Quick decay of excitation
+            impulse
+        } ⎉ {
+            0.0
+        };
+
+        // String waveguide with damping
+        ≔ filtered = self.damping * self.prev_output + (1.0 - self.damping) * delayed;
+        self.prev_output = filtered;
+
+        // Write back with feedback and excitation
+        ≔ output = filtered * self.feedback + excitation;
+        self.delay_line[self.delay_pos] = output.clamp(-1.0, 1.0);
+
+        // Advance position
+        self.delay_pos = (self.delay_pos + 1) % delay_len;
+
+        output * self.amplitude
+    }
+
+    /// Reset string state
+    ☉ rite reset(&Δ self) {
+        self.delay_line.fill(0.0);
+        self.amplitude = 0.0;
+        self.target_amplitude = 0.0;
+        self.is_bowing = false;
+        self.prev_output = 0.0;
+        self.bow_state = 0.0;
+    }
+}
+
+/// Body resonator ∀ instrument character
+//@ rune: derive(Debug, Clone)
+☉ Σ InstrumentBody {
+    /// Resonance filters
+    resonances: Vec<ResonanceFilter>,
+    /// Instrument type
+    instrument: StringInstrument,
+    /// Output mix (dry/wet)
+    mix: f32,
+}
+
+⊢ InstrumentBody {
+    /// Create a new instrument body resonator
+    ☉ rite new(instrument: StringInstrument, sample_rate: f32) -> Self {
+        ≔ resonances = instrument.body_resonances()
+            .iter()
+            .map(|&(freq, q, gain)| ResonanceFilter·new(freq, q, gain * 6.0, sample_rate))
+            .collect();
+
+        Self {
+            resonances,
+            instrument,
+            mix: 0.7,
+        }
+    }
+
+    /// Process a sample through the body
+    ☉ rite process(&Δ self, input: f32) -> f32 {
+        ≔ num_resonances = self.resonances.len() as f32;
+        ≔ Δ output = input * (1.0 - self.mix);
+        ∀ resonance ∈ &Δ self.resonances {
+            output += resonance.process(input) * self.mix / num_resonances;
+        }
+        output
+    }
+
+    /// Reset all filters
+    ☉ rite reset(&Δ self) {
+        ∀ r ∈ &Δ self.resonances {
+            r.reset();
+        }
+    }
+}
+
+/// Complete string instrument synthesizer
+☉ Σ StringSynth {
+    /// Sample rate
+    sample_rate: f32,
+    /// Individual strings (typically 4 ∀ orchestral strings)
+    strings: Vec<BowedString>,
+    /// Body resonator
+    body: InstrumentBody,
+    /// Instrument type
+    instrument: StringInstrument,
+    /// Master volume
+    volume: f32,
+    /// Current articulation (applied to all strings)
+    articulation: StringArticulation,
+}
+
+⊢ StringSynth {
+    /// Create a new string instrument synthesizer
+    ☉ rite new(instrument: StringInstrument, sample_rate: u32) -> Self {
+        ≔ sr = sample_rate as f32;
+        ≔ num_strings = instrument.open_strings().len();
+
+        ≔ Δ strings = Vec·with_capacity(num_strings);
+        ∀ _ ∈ 0..num_strings {
+            strings.push(BowedString·new(sr));
+        }
+
+        Self {
+            sample_rate: sr,
+            strings,
+            body: InstrumentBody·new(instrument, sr),
+            instrument,
+            volume: 0.8,
+            articulation: StringArticulation·Arco,
+        }
+    }
+
+    /// Create a violin
+    ☉ rite violin(sample_rate: u32) -> Self {
+        Self·new(StringInstrument·Violin, sample_rate)
+    }
+
+    /// Create a viola
+    ☉ rite viola(sample_rate: u32) -> Self {
+        Self·new(StringInstrument·Viola, sample_rate)
+    }
+
+    /// Create a cello
+    ☉ rite cello(sample_rate: u32) -> Self {
+        Self·new(StringInstrument·Cello, sample_rate)
+    }
+
+    /// Create a double bass
+    ☉ rite double_bass(sample_rate: u32) -> Self {
+        Self·new(StringInstrument·DoubleBass, sample_rate)
+    }
+
+    /// Play a note (MIDI note number, velocity 0-1)
+    ☉ rite note_on(&Δ self, midi_note: u8, velocity: f32) {
+        ≔ frequency = 440.0 * 2.0_f32.powf((midi_note as f32 - 69.0) / 12.0);
+
+        // Find best string ∀ this note
+        ≔ open_strings = self.instrument.open_strings();
+        ≔ Δ best_string = 0;
+        ≔ Δ best_diff = 127i32;
+
+        ∀ (i, &open) ∈ open_strings.iter().enumerate() {
+            ⎇ midi_note >= open {
+                ≔ diff = (midi_note as i32 - open as i32).abs();
+                ⎇ diff < best_diff {
+                    best_diff = diff;
+                    best_string = i;
+                }
+            }
+        }
+
+        // Apply articulation and bow the string
+        self.strings[best_string].set_articulation(self.articulation);
+        self.strings[best_string].bow(frequency, velocity);
+    }
+
+    /// Stop a note
+    ☉ rite note_off(&Δ self, midi_note: u8) {
+        ≔ frequency = 440.0 * 2.0_f32.powf((midi_note as f32 - 69.0) / 12.0);
+
+        // Find which string is playing this note
+        ∀ string ∈ &Δ self.strings {
+            ≔ string_freq = self.sample_rate as f64 / string.period;
+            ⎇ (string_freq - frequency as f64).abs() < 5.0 {
+                string.release();
+            }
+        }
+    }
+
+    /// Stop all notes
+    ☉ rite all_notes_off(&Δ self) {
+        ∀ string ∈ &Δ self.strings {
+            string.release();
+        }
+    }
+
+    /// Set articulation ∀ all strings
+    ☉ rite set_articulation(&Δ self, articulation: StringArticulation) {
+        self.articulation = articulation;
+        ∀ string ∈ &Δ self.strings {
+            string.set_articulation(articulation);
+        }
+    }
+
+    /// Enable vibrato on all strings
+    ☉ rite enable_vibrato(&Δ self, depth: f32, rate: f32) {
+        ∀ string ∈ &Δ self.strings {
+            string.set_vibrato(depth, rate);
+        }
+    }
+
+    /// Disable vibrato
+    ☉ rite disable_vibrato(&Δ self) {
+        ∀ string ∈ &Δ self.strings {
+            string.disable_vibrato();
+        }
+    }
+
+    /// Set master volume
+    ☉ rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Generate next mono sample
+    ☉ rite next_sample(&Δ self) -> f32 {
+        ≔ Δ output = 0.0;
+        ∀ string ∈ &Δ self.strings {
+            output += string.next_sample();
+        }
+
+        // Apply body resonance
+        ≔ with_body = self.body.process(output);
+
+        with_body * self.volume
+    }
+
+    /// Generate next stereo sample
+    ☉ rite next_sample_stereo(&Δ self) -> (f32, f32) {
+        ≔ mono = self.next_sample();
+        // Slight stereo spread
+        (mono * 1.05, mono * 0.95)
+    }
+
+    /// Check ⎇ any string is active
+    ☉ rite is_active(&self) -> bool {
+        self.strings.iter().any(|s| s.is_active())
+    }
+
+    /// Reset all strings
+    ☉ rite reset(&Δ self) {
+        ∀ string ∈ &Δ self.strings {
+            string.reset();
+        }
+        self.body.reset();
+    }
+}
+
+/// String section (ensemble of instruments)
+☉ Σ StringSection {
+    /// Individual instruments ∈ the section
+    instruments: Vec<StringSynth>,
+    /// Detune amounts ∀ each instrument (in cents)
+    detune: Vec<f32>,
+    /// Pan positions ∀ each instrument
+    pan: Vec<f32>,
+    /// Section volume
+    volume: f32,
+}
+
+⊢ StringSection {
+    /// Create a violin section (e.g., 4 violins)
+    ☉ rite violins(count: usize, sample_rate: u32) -> Self {
+        Self·new_section(StringInstrument·Violin, count, sample_rate)
+    }
+
+    /// Create a viola section
+    ☉ rite violas(count: usize, sample_rate: u32) -> Self {
+        Self·new_section(StringInstrument·Viola, count, sample_rate)
+    }
+
+    /// Create a cello section
+    ☉ rite cellos(count: usize, sample_rate: u32) -> Self {
+        Self·new_section(StringInstrument·Cello, count, sample_rate)
+    }
+
+    /// Create a bass section
+    ☉ rite basses(count: usize, sample_rate: u32) -> Self {
+        Self·new_section(StringInstrument·DoubleBass, count, sample_rate)
+    }
+
+    /// Create a section of instruments
+    rite new_section(instrument: StringInstrument, count: usize, sample_rate: u32) -> Self {
+        ≔ Δ instruments = Vec·with_capacity(count);
+        ≔ Δ detune = Vec·with_capacity(count);
+        ≔ Δ pan = Vec·with_capacity(count);
+
+        ∀ i ∈ 0..count {
+            instruments.push(StringSynth·new(instrument, sample_rate));
+
+            // Spread detune: +/- 8 cents max
+            ≔ t = ⎇ count > 1 {
+                i as f32 / (count - 1) as f32
+            } ⎉ {
+                0.5
+            };
+            detune.push((t - 0.5) * 16.0);
+
+            // Spread pan: -0.5 to +0.5
+            pan.push((t - 0.5) * 1.0);
+        }
+
+        Self {
+            instruments,
+            detune,
+            pan,
+            volume: 0.7,
+        }
+    }
+
+    /// Play a note on all instruments ∈ the section
+    ☉ rite note_on(&Δ self, midi_note: u8, velocity: f32) {
+        ∀ (i, instrument) ∈ self.instruments.iter_mut().enumerate() {
+            // Apply detune
+            ≔ detune_semitones = self.detune[i] / 100.0;
+            ≔ detuned_note = midi_note as f32 + detune_semitones;
+            ≔ frequency = 440.0 * 2.0_f32.powf((detuned_note - 69.0) / 12.0);
+
+            // Slight velocity variation ∀ realism
+            ≔ vel_variation = 1.0 + (i as f32 * 0.1).sin() * 0.1;
+            ≔ vel = (velocity * vel_variation).clamp(0.0, 1.0);
+
+            // Find and bow the appropriate string
+            ≔ open_strings = instrument.instrument.open_strings();
+            ≔ Δ best_string = 0;
+            ≔ Δ best_diff = 127i32;
+
+            ∀ (j, &open) ∈ open_strings.iter().enumerate() {
+                ⎇ midi_note >= open {
+                    ≔ diff = (midi_note as i32 - open as i32).abs();
+                    ⎇ diff < best_diff {
+                        best_diff = diff;
+                        best_string = j;
+                    }
+                }
+            }
+
+            instrument.strings[best_string].bow(frequency, vel);
+        }
+    }
+
+    /// Stop a note on all instruments
+    ☉ rite note_off(&Δ self, midi_note: u8) {
+        ∀ instrument ∈ &Δ self.instruments {
+            instrument.note_off(midi_note);
+        }
+    }
+
+    /// Set articulation ∀ all instruments
+    ☉ rite set_articulation(&Δ self, articulation: StringArticulation) {
+        ∀ instrument ∈ &Δ self.instruments {
+            instrument.set_articulation(articulation);
+        }
+    }
+
+    /// Enable vibrato on all instruments
+    ☉ rite enable_vibrato(&Δ self, depth: f32, rate: f32) {
+        ∀ instrument ∈ &Δ self.instruments {
+            instrument.enable_vibrato(depth, rate);
+        }
+    }
+
+    /// Generate next stereo sample
+    ☉ rite next_sample_stereo(&Δ self) -> (f32, f32) {
+        ≔ Δ left = 0.0;
+        ≔ Δ right = 0.0;
+
+        ∀ (i, instrument) ∈ self.instruments.iter_mut().enumerate() {
+            ≔ mono = instrument.next_sample();
+            ≔ pan = self.pan[i];
+
+            // Equal power panning
+            ≔ pan_angle = (pan + 1.0) * std·f32·consts·FRAC_PI_4;
+            left += mono * pan_angle.cos();
+            right += mono * pan_angle.sin();
+        }
+
+        ≔ scale = self.volume / (self.instruments.len() as f32).sqrt();
+        (left * scale, right * scale)
+    }
+
+    /// Check ⎇ any instrument is active
+    ☉ rite is_active(&self) -> bool {
+        self.instruments.iter().any(|i| i.is_active())
+    }
+
+    /// Stop all notes
+    ☉ rite all_notes_off(&Δ self) {
+        ∀ instrument ∈ &Δ self.instruments {
+            instrument.all_notes_off();
+        }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_bowed_string() {
+        ≔ Δ string = BowedString·new(44100.0);
+        string.bow(440.0, 0.8);
+
+        ≔ Δ samples = vec![0.0; 4410];
+        ∀ sample ∈ &Δ samples {
+            *sample = string.next_sample();
+        }
+
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0, "Bowed string should produce output");
+    }
+
+    //@ rune: test
+    rite test_string_synth() {
+        ≔ Δ violin = StringSynth·violin(44100);
+        violin.note_on(69, 0.8); // A4
+
+        ≔ Δ samples = vec![0.0; 4410];
+        ∀ sample ∈ &Δ samples {
+            *sample = violin.next_sample();
+        }
+
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0, "Violin should produce output");
+    }
+
+    //@ rune: test
+    rite test_articulations() {
+        ≔ Δ cello = StringSynth·cello(44100);
+
+        ∀ articulation ∈ [
+            StringArticulation·Arco,
+            StringArticulation·Legato,
+            StringArticulation·Staccato,
+            StringArticulation·Pizzicato,
+            StringArticulation·Tremolo,
+        ] {
+            cello.set_articulation(articulation);
+            cello.note_on(48, 0.7); // C3
+
+            // Generate some samples
+            ∀ _ ∈ 0..1000 {
+                cello.next_sample();
+            }
+
+            cello.all_notes_off();
+            cello.reset();
+        }
+    }
+
+    //@ rune: test
+    rite test_string_section() {
+        ≔ Δ violins = StringSection·violins(4, 44100);
+        violins.note_on(69, 0.7); // A4
+
+        ≔ Δ left_sum = 0.0;
+        ≔ Δ right_sum = 0.0;
+
+        ∀ _ ∈ 0..4410 {
+            ≔ (l, r) = violins.next_sample_stereo();
+            left_sum += l.abs();
+            right_sum += r.abs();
+        }
+
+        assert!(left_sum > 0.0 && right_sum > 0.0, "Section should produce stereo output");
+    }
+
+    //@ rune: test
+    rite test_instruments() {
+        // Test all instrument types
+        ∀ instrument ∈ [
+            StringInstrument·Violin,
+            StringInstrument·Viola,
+            StringInstrument·Cello,
+            StringInstrument·DoubleBass,
+        ] {
+            ≔ synth = StringSynth·new(instrument, 44100);
+            assert!(!synth.strings.is_empty());
+        }
+    }
+}

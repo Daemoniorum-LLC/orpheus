@@ -1,0 +1,65 @@
+# Sigil manifest for orpheus-audio
+#
+# Audio service client for connecting to the Maestro audio engine.
+
+[package]
+name = "orpheus-audio"
+version = "0.1.0"
+description = "Audio service client for Orpheus - connects to Maestro engine"
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# gRPC
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Audio
+hound = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+parking_lot = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    "src-sg/lib.sg",
+    "src-sg/client.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "error"]
+
+[build]
+# Transpile to Rust for compilation
+target = "rust"
+output-dir = "src"
+
+[metadata]
+# Migration tracking
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 120
+file-count = 2

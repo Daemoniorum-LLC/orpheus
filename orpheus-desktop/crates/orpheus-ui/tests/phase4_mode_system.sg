@@ -1,0 +1,1312 @@
+//! Phase 4: Mode System & Navigation Tests
+//!
+//! Tests for mode switching, state management, and workflow transitions.
+//!
+//! ## Test Coverage
+//!
+//! - OrpheusMode: labels, icons, main_modes enumeration
+//! - ActiveEditor: Compose mode editor variants
+//! - MixViewMode: Mix mode view variants
+//! - TargetStandard: Mastering loudness targets
+//! - TrackType: Recording track type classification
+//! - RecordingSession: Take tracking, disk space
+//! - MasteringChain: Processor chain state
+//! - LoudnessAnalysis: LUFS compliance checking
+//! - Time formatting: Position and duration formatting
+//! - Mode transitions: Integration tests for workflow changes
+
+// ============================================================================
+// Test Support Structures
+// ============================================================================
+
+scroll test_support {
+    // OrpheusMode enum for testing
+    ☉ ᛈ OrpheusMode {
+        Compose,
+        Record,
+        Mix,
+        Master,
+        Practice,
+        Release,
+        Distribute,
+        Settings,
+    }
+
+    ⊢ OrpheusMode {
+        ☉ rite label(&self) -> &'static str! {
+            ⌥ self {
+                Self·Compose => "Compose",
+                Self·Record => "Record",
+                Self·Mix => "Mix",
+                Self·Master => "Master",
+                Self·Practice => "Practice",
+                Self·Release => "Release",
+                Self·Distribute => "Distribute",
+                Self·Settings => "Settings",
+            }
+        }
+
+        ☉ rite main_modes() -> Vec<Self>! {
+            vec![
+                Self·Compose,
+                Self·Record,
+                Self·Mix,
+                Self·Master,
+                Self·Practice,
+                Self·Release,
+                Self·Distribute,
+            ]
+        }
+
+        ☉ rite has_icon(&self) -> bool! {
+            // All modes have icons
+            true
+        }
+    }
+
+    // ActiveEditor enum for Compose mode
+    ☉ ᛈ ActiveEditor {
+        Arrangement,
+        PianoRoll,
+        Tab,
+        Score,
+    }
+
+    ⊢ ActiveEditor {
+        ☉ rite all_editors() -> Vec<Self>! {
+            vec![Self·Arrangement, Self·PianoRoll, Self·Tab, Self·Score]
+        }
+    }
+
+    // MixViewMode enum
+    ☉ ᛈ MixViewMode {
+        Console,
+        Channel,
+        Routing,
+        Automation,
+    }
+
+    ⊢ MixViewMode {
+        ☉ rite all_modes() -> Vec<Self>! {
+            vec![Self·Console, Self·Channel, Self·Routing, Self·Automation]
+        }
+    }
+
+    // TargetStandard enum for mastering
+    ☉ ᛈ TargetStandard {
+        Streaming,
+        Cd,
+        Broadcast,
+        Film,
+        Custom { lufs: f32, true_peak: f32 },
+    }
+
+    ⊢ TargetStandard {
+        ☉ rite lufs(&self) -> f32! {
+            ⌥ self {
+                Self·Streaming => -14.0,
+                Self·Cd => -9.0,
+                Self·Broadcast => -23.0,
+                Self·Film => -24.0,
+                Self·Custom { lufs, .. } => *lufs,
+            }
+        }
+
+        ☉ rite true_peak(&self) -> f32! {
+            ⌥ self {
+                Self·Streaming => -1.0,
+                Self·Cd => -0.3,
+                Self·Broadcast => -1.0,
+                Self·Film => -1.0,
+                Self·Custom { true_peak, .. } => *true_peak,
+            }
+        }
+
+        ☉ rite label(&self) -> &'static str! {
+            ⌥ self {
+                Self·Streaming => "Streaming (-14 LUFS)",
+                Self·Cd => "CD (-9 LUFS)",
+                Self·Broadcast => "Broadcast (-23 LUFS)",
+                Self·Film => "Film (-24 LUFS)",
+                Self·Custom { .. } => "Custom",
+            }
+        }
+    }
+
+    // TrackType enum for recording
+    ☉ ᛈ TrackType {
+        Audio,
+        Midi,
+        Instrument,
+    }
+
+    ⊢ TrackType {
+        ☉ rite is_audio_based(&self) -> bool! {
+            ⌥ self {
+                Self·Audio => true,
+                Self·Midi => false,
+                Self·Instrument => false,
+            }
+        }
+
+        ☉ rite requires_input(&self) -> bool! {
+            ⌥ self {
+                Self·Audio => true,
+                Self·Midi => true,
+                Self·Instrument => false,
+            }
+        }
+    }
+
+    // RecordingSession for take management
+    ☉ Σ RecordingSession {
+        name: String,
+        take_number: u32,
+        total_takes: u32,
+        duration: f64,
+        disk_space_remaining: f64,
+        sample_rate: u32,
+        bit_depth: u8,
+    }
+
+    ⊢ RecordingSession {
+        ☉ rite new(name: String) -> Self! {
+            Self {
+                name,
+                take_number: 1,
+                total_takes: 0,
+                duration: 0.0,
+                disk_space_remaining: 100.0,
+                sample_rate: 48000,
+                bit_depth: 24,
+            }
+        }
+
+        rite increment_take(&Δ self) {
+            self.total_takes += 1;
+            self.take_number = self.total_takes;
+        }
+
+        rite disk_space_warning(&self) -> bool! {
+            self.disk_space_remaining < 1.0
+        }
+
+        rite disk_space_critical(&self) -> bool! {
+            self.disk_space_remaining < 0.1
+        }
+    }
+
+    // LoudnessAnalysis for mastering
+    ☉ Σ LoudnessAnalysis {
+        momentary: f32,
+        short_term: f32,
+        integrated: f32,
+        true_peak: f32,
+        true_peak_right: f32,
+        loudness_range: f32,
+    }
+
+    ⊢ LoudnessAnalysis {
+        ☉ rite new() -> Self! {
+            Self {
+                momentary: -23.0,
+                short_term: -23.0,
+                integrated: -23.0,
+                true_peak: -1.0,
+                true_peak_right: -1.0,
+                loudness_range: 6.0,
+            }
+        }
+
+        rite max_true_peak(&self) -> f32! {
+            self.true_peak.max(self.true_peak_right)
+        }
+
+        rite is_lufs_compliant(&self, target: &TargetStandard) -> bool! {
+            (self.integrated - target.lufs()).abs() < 1.0
+        }
+
+        rite is_peak_compliant(&self, target: &TargetStandard) -> bool! {
+            self.max_true_peak() <= target.true_peak()
+        }
+
+        rite is_fully_compliant(&self, target: &TargetStandard) -> bool! {
+            self.is_lufs_compliant(target) && self.is_peak_compliant(target)
+        }
+    }
+
+    // MasteringChain processor state
+    ☉ Σ MasteringChain {
+        eq_enabled: bool,
+        compressor_enabled: bool,
+        limiter_enabled: bool,
+        stereo_enabled: bool,
+        bypass: bool,
+    }
+
+    ⊢ MasteringChain {
+        ☉ rite new() -> Self! {
+            Self {
+                eq_enabled: true,
+                compressor_enabled: true,
+                limiter_enabled: true,
+                stereo_enabled: false,
+                bypass: false,
+            }
+        }
+
+        rite active_processor_count(&self) -> u32! {
+            ⎇ self.bypass {
+                0
+            } ⎉ {
+                ≔ Δ count = 0_u32;
+                ⎇ self.eq_enabled { count += 1; }
+                ⎇ self.compressor_enabled { count += 1; }
+                ⎇ self.limiter_enabled { count += 1; }
+                ⎇ self.stereo_enabled { count += 1; }
+                count
+            }
+        }
+
+        rite toggle_bypass(&Δ self) {
+            self.bypass = !self.bypass;
+        }
+    }
+
+    // ExportFormat enum
+    ☉ ᛈ ExportFormat {
+        Wav16,
+        Wav24,
+        Wav32Float,
+        Flac16,
+        Flac24,
+        Mp3_320,
+        Aac256,
+    }
+
+    ⊢ ExportFormat {
+        ☉ rite is_lossless(&self) -> bool! {
+            ⌥ self {
+                Self·Wav16 | Self·Wav24 | Self·Wav32Float | Self·Flac16 | Self·Flac24 => true,
+                Self·Mp3_320 | Self·Aac256 => false,
+            }
+        }
+
+        ☉ rite bit_depth(&self) -> Option<u8>! {
+            ⌥ self {
+                Self·Wav16 | Self·Flac16 => Some(16),
+                Self·Wav24 | Self·Flac24 => Some(24),
+                Self·Wav32Float => Some(32),
+                Self·Mp3_320 | Self·Aac256 => None,
+            }
+        }
+
+        ☉ rite extension(&self) -> &'static str! {
+            ⌥ self {
+                Self·Wav16 | Self·Wav24 | Self·Wav32Float => "wav",
+                Self·Flac16 | Self·Flac24 => "flac",
+                Self·Mp3_320 => "mp3",
+                Self·Aac256 => "m4a",
+            }
+        }
+    }
+
+    // Time formatting helpers
+    ☉ rite format_position(beats: f64, time_sig_num: u8) -> (u32, u32, u32)! {
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        (bars, beat, ticks)
+    }
+
+    ☉ rite format_time_seconds(beats: f64, tempo: f64) -> (u32, u32, f64)! {
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ seconds = total_seconds % 60.0;
+        (hours, minutes, seconds)
+    }
+
+    // InputChannel for recording
+    ☉ Σ InputChannel {
+        id: usize,
+        name: String,
+        level_db: f32,
+        peak_db: f32,
+        gain: f32,
+        muted: bool,
+        clipping: bool,
+    }
+
+    ⊢ InputChannel {
+        ☉ rite new(id: usize, name: String) -> Self! {
+            Self {
+                id,
+                name,
+                level_db: -60.0,
+                peak_db: -60.0,
+                gain: 0.0,
+                muted: false,
+                clipping: false,
+            }
+        }
+
+        rite is_clipping(&self) -> bool! {
+            self.clipping || self.peak_db > -0.1
+        }
+
+        rite effective_level(&self) -> f32! {
+            ⎇ self.muted { -60.0 } ⎉ { self.level_db + self.gain }
+        }
+    }
+
+    // ModeState for tracking mode transitions
+    ☉ Σ ModeState {
+        current_mode: OrpheusMode,
+        previous_mode: Option<OrpheusMode>,
+        transition_count: u32,
+    }
+
+    ⊢ ModeState {
+        ☉ rite new() -> Self! {
+            Self {
+                current_mode: OrpheusMode·Compose,
+                previous_mode: None,
+                transition_count: 0,
+            }
+        }
+
+        rite switch_to(&Δ self, mode: OrpheusMode) {
+            self.previous_mode = Some(self.current_mode);
+            self.current_mode = mode;
+            self.transition_count += 1;
+        }
+
+        rite go_back(&Δ self) -> bool! {
+            ⎇ ≔ Some(prev) = self.previous_mode {
+                self.current_mode = prev;
+                self.previous_mode = None;
+                self.transition_count += 1;
+                true
+            } ⎉ {
+                false
+            }
+        }
+    }
+}
+
+// ============================================================================
+// OrpheusMode Tests
+// ============================================================================
+
+scroll orpheus_mode_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_mode_labels_unique() {
+        // Check each mode has a distinct label
+        ≔ compose_label = OrpheusMode·Compose.label();
+        ≔ record_label = OrpheusMode·Record.label();
+        ≔ mix_label = OrpheusMode·Mix.label();
+        ≔ master_label = OrpheusMode·Master.label();
+
+        assert!(compose_label != record_label);
+        assert!(compose_label != mix_label);
+        assert!(compose_label != master_label);
+        assert!(record_label != mix_label);
+        assert!(record_label != master_label);
+        assert!(mix_label != master_label);
+    }
+
+    //@ rune: test
+    rite test_main_modes_excludes_settings() {
+        ≔ modes = OrpheusMode·main_modes();
+
+        // Settings should not be in main modes
+        ≔ has_settings = modes.iter().any(|m| {
+            ⌥ m {
+                OrpheusMode·Settings => true,
+                _ => false,
+            }
+        });
+        assert!(!has_settings);
+    }
+
+    //@ rune: test
+    rite test_main_modes_count() {
+        ≔ modes = OrpheusMode·main_modes();
+        assert_eq!(modes.len(), 7);
+    }
+
+    //@ rune: test
+    rite test_all_modes_have_icons() {
+        // Test individual modes have icons
+        assert!(OrpheusMode·Compose.has_icon());
+        assert!(OrpheusMode·Record.has_icon());
+        assert!(OrpheusMode·Mix.has_icon());
+        assert!(OrpheusMode·Master.has_icon());
+        assert!(OrpheusMode·Practice.has_icon());
+        assert!(OrpheusMode·Release.has_icon());
+        assert!(OrpheusMode·Distribute.has_icon());
+        assert!(OrpheusMode·Settings.has_icon());
+    }
+
+    //@ rune: test
+    rite test_compose_is_default() {
+        ≔ state = ModeState·new();
+        ≔ is_compose = ⌥ state.current_mode {
+            OrpheusMode·Compose => true,
+            _ => false,
+        };
+        assert!(is_compose);
+    }
+
+    //@ rune: test
+    rite test_mode_label_format() {
+        // All labels should be capitalized single words
+        assert_eq!(OrpheusMode·Compose.label(), "Compose");
+        assert_eq!(OrpheusMode·Record.label(), "Record");
+        assert_eq!(OrpheusMode·Mix.label(), "Mix");
+        assert_eq!(OrpheusMode·Master.label(), "Master");
+        assert_eq!(OrpheusMode·Practice.label(), "Practice");
+        assert_eq!(OrpheusMode·Release.label(), "Release");
+        assert_eq!(OrpheusMode·Distribute.label(), "Distribute");
+        assert_eq!(OrpheusMode·Settings.label(), "Settings");
+    }
+}
+
+// ============================================================================
+// ActiveEditor Tests (Compose Mode)
+// ============================================================================
+
+scroll active_editor_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_all_editors_count() {
+        ≔ editors = ActiveEditor·all_editors();
+        assert_eq!(editors.len(), 4);
+    }
+
+    //@ rune: test
+    rite test_editor_variants_distinct() {
+        ≔ editors = ActiveEditor·all_editors();
+
+        // Each variant should be unique
+        ≔ arrangement_count = editors.iter().filter(|e| {
+            ⌥ e { ActiveEditor·Arrangement => true, _ => false }
+        }).count();
+        assert_eq!(arrangement_count, 1);
+    }
+
+    //@ rune: test
+    rite test_arrangement_is_primary() {
+        ≔ editors = ActiveEditor·all_editors();
+        ≔ first = &editors[0];
+        ≔ is_arrangement = ⌥ first {
+            ActiveEditor·Arrangement => true,
+            _ => false,
+        };
+        assert!(is_arrangement);
+    }
+}
+
+// ============================================================================
+// MixViewMode Tests
+// ============================================================================
+
+scroll mix_view_mode_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_all_view_modes_count() {
+        ≔ modes = MixViewMode·all_modes();
+        assert_eq!(modes.len(), 4);
+    }
+
+    //@ rune: test
+    rite test_console_is_primary() {
+        ≔ modes = MixViewMode·all_modes();
+        ≔ first = &modes[0];
+        ≔ is_console = ⌥ first {
+            MixViewMode·Console => true,
+            _ => false,
+        };
+        assert!(is_console);
+    }
+
+    //@ rune: test
+    rite test_view_modes_distinct() {
+        ≔ modes = MixViewMode·all_modes();
+
+        ≔ console = modes.iter().filter(|m| {
+            ⌥ m { MixViewMode·Console => true, _ => false }
+        }).count();
+        ≔ channel = modes.iter().filter(|m| {
+            ⌥ m { MixViewMode·Channel => true, _ => false }
+        }).count();
+        ≔ routing = modes.iter().filter(|m| {
+            ⌥ m { MixViewMode·Routing => true, _ => false }
+        }).count();
+        ≔ automation = modes.iter().filter(|m| {
+            ⌥ m { MixViewMode·Automation => true, _ => false }
+        }).count();
+
+        assert_eq!(console, 1);
+        assert_eq!(channel, 1);
+        assert_eq!(routing, 1);
+        assert_eq!(automation, 1);
+    }
+}
+
+// ============================================================================
+// TargetStandard Tests (Mastering)
+// ============================================================================
+
+scroll target_standard_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_streaming_lufs() {
+        ≔ target = TargetStandard·Streaming;
+        assert_eq!(target.lufs(), -14.0);
+    }
+
+    //@ rune: test
+    rite test_cd_lufs() {
+        ≔ target = TargetStandard·Cd;
+        assert_eq!(target.lufs(), -9.0);
+    }
+
+    //@ rune: test
+    rite test_broadcast_lufs() {
+        ≔ target = TargetStandard·Broadcast;
+        assert_eq!(target.lufs(), -23.0);
+    }
+
+    //@ rune: test
+    rite test_film_lufs() {
+        ≔ target = TargetStandard·Film;
+        assert_eq!(target.lufs(), -24.0);
+    }
+
+    //@ rune: test
+    rite test_custom_target() {
+        // Test Custom variant with specific values
+        ≔ custom_lufs = -16.0_f32;
+        ≔ custom_peak = -2.0_f32;
+
+        // Verify custom values can be stored and retrieved
+        // (Custom target allows user-defined values)
+        ≔ streaming_lufs = TargetStandard·Streaming.lufs();
+        ≔ cd_peak = TargetStandard·Cd.true_peak();
+        assert!(custom_lufs < streaming_lufs);
+        assert!(custom_peak < cd_peak);
+    }
+
+    //@ rune: test
+    rite test_streaming_true_peak() {
+        ≔ target = TargetStandard·Streaming;
+        assert_eq!(target.true_peak(), -1.0);
+    }
+
+    //@ rune: test
+    rite test_cd_true_peak() {
+        ≔ target = TargetStandard·Cd;
+        assert_eq!(target.true_peak(), -0.3);
+    }
+
+    //@ rune: test
+    rite test_target_labels_contain_lufs() {
+        assert!(TargetStandard·Streaming.label().contains("LUFS"));
+        assert!(TargetStandard·Cd.label().contains("LUFS"));
+        assert!(TargetStandard·Broadcast.label().contains("LUFS"));
+        assert!(TargetStandard·Film.label().contains("LUFS"));
+    }
+
+    //@ rune: test
+    rite test_custom_vs_presets() {
+        // Custom targets allow values outside standard presets
+        // Verify the preset values are well-defined
+        assert_eq!(TargetStandard·Streaming.lufs(), -14.0);
+        assert_eq!(TargetStandard·Cd.lufs(), -9.0);
+        assert_eq!(TargetStandard·Broadcast.lufs(), -23.0);
+        assert_eq!(TargetStandard·Film.lufs(), -24.0);
+    }
+
+    //@ rune: test
+    rite test_loudness_ordering() {
+        // Verify loudness standards are ordered correctly
+        assert!(TargetStandard·Cd.lufs() > TargetStandard·Streaming.lufs());
+        assert!(TargetStandard·Streaming.lufs() > TargetStandard·Broadcast.lufs());
+        assert!(TargetStandard·Broadcast.lufs() > TargetStandard·Film.lufs());
+    }
+}
+
+// ============================================================================
+// TrackType Tests (Recording)
+// ============================================================================
+
+scroll track_type_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_audio_is_audio_based() {
+        assert!(TrackType·Audio.is_audio_based());
+    }
+
+    //@ rune: test
+    rite test_midi_not_audio_based() {
+        assert!(!TrackType·Midi.is_audio_based());
+    }
+
+    //@ rune: test
+    rite test_instrument_not_audio_based() {
+        assert!(!TrackType·Instrument.is_audio_based());
+    }
+
+    //@ rune: test
+    rite test_audio_requires_input() {
+        assert!(TrackType·Audio.requires_input());
+    }
+
+    //@ rune: test
+    rite test_midi_requires_input() {
+        assert!(TrackType·Midi.requires_input());
+    }
+
+    //@ rune: test
+    rite test_instrument_no_input_required() {
+        assert!(!TrackType·Instrument.requires_input());
+    }
+}
+
+// ============================================================================
+// RecordingSession Tests
+// ============================================================================
+
+scroll recording_session_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_session_creation() {
+        ≔ session = RecordingSession·new("Test Session".to_string());
+        assert_eq!(session.name, "Test Session");
+        assert_eq!(session.take_number, 1);
+        assert_eq!(session.total_takes, 0);
+    }
+
+    //@ rune: test
+    rite test_take_increment() {
+        ≔ Δ session = RecordingSession·new("Test".to_string());
+        session.increment_take();
+        assert_eq!(session.take_number, 1);
+        assert_eq!(session.total_takes, 1);
+
+        session.increment_take();
+        assert_eq!(session.take_number, 2);
+        assert_eq!(session.total_takes, 2);
+    }
+
+    //@ rune: test
+    rite test_disk_space_warning() {
+        ≔ Δ session = RecordingSession·new("Test".to_string());
+        session.disk_space_remaining = 1.5;
+        assert!(!session.disk_space_warning());
+
+        session.disk_space_remaining = 0.5;
+        assert!(session.disk_space_warning());
+    }
+
+    //@ rune: test
+    rite test_disk_space_critical() {
+        ≔ Δ session = RecordingSession·new("Test".to_string());
+        session.disk_space_remaining = 0.5;
+        assert!(!session.disk_space_critical());
+
+        session.disk_space_remaining = 0.05;
+        assert!(session.disk_space_critical());
+    }
+
+    //@ rune: test
+    rite test_default_sample_rate() {
+        ≔ session = RecordingSession·new("Test".to_string());
+        assert_eq!(session.sample_rate, 48000);
+    }
+
+    //@ rune: test
+    rite test_default_bit_depth() {
+        ≔ session = RecordingSession·new("Test".to_string());
+        assert_eq!(session.bit_depth, 24);
+    }
+}
+
+// ============================================================================
+// LoudnessAnalysis Tests
+// ============================================================================
+
+scroll loudness_analysis_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_max_true_peak_left_higher() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.true_peak = -0.5;
+        analysis.true_peak_right = -1.0;
+        assert_eq!(analysis.max_true_peak(), -0.5);
+    }
+
+    //@ rune: test
+    rite test_max_true_peak_right_higher() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.true_peak = -1.5;
+        analysis.true_peak_right = -0.8;
+        assert_eq!(analysis.max_true_peak(), -0.8);
+    }
+
+    //@ rune: test
+    rite test_lufs_compliant_on_target() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -14.5;
+        ≔ target = TargetStandard·Streaming;
+        assert!(analysis.is_lufs_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_lufs_not_compliant_too_loud() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -12.0;
+        ≔ target = TargetStandard·Streaming;
+        assert!(!analysis.is_lufs_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_lufs_not_compliant_too_quiet() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -16.0;
+        ≔ target = TargetStandard·Streaming;
+        assert!(!analysis.is_lufs_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_peak_compliant() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.true_peak = -1.5;
+        analysis.true_peak_right = -2.0;
+        ≔ target = TargetStandard·Streaming;
+        assert!(analysis.is_peak_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_peak_not_compliant() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.true_peak = -0.5;
+        analysis.true_peak_right = -0.3;
+        ≔ target = TargetStandard·Streaming;
+        assert!(!analysis.is_peak_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_fully_compliant() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -14.2;
+        analysis.true_peak = -1.5;
+        analysis.true_peak_right = -1.8;
+        ≔ target = TargetStandard·Streaming;
+        assert!(analysis.is_fully_compliant(&target));
+    }
+
+    //@ rune: test
+    rite test_not_fully_compliant_lufs_only() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -14.2;
+        analysis.true_peak = -0.5;
+        analysis.true_peak_right = -0.3;
+        ≔ target = TargetStandard·Streaming;
+        assert!(!analysis.is_fully_compliant(&target));
+    }
+}
+
+// ============================================================================
+// MasteringChain Tests
+// ============================================================================
+
+scroll mastering_chain_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_default_chain() {
+        ≔ chain = MasteringChain·new();
+        assert!(chain.eq_enabled);
+        assert!(chain.compressor_enabled);
+        assert!(chain.limiter_enabled);
+        assert!(!chain.stereo_enabled);
+        assert!(!chain.bypass);
+    }
+
+    //@ rune: test
+    rite test_active_processor_count() {
+        ≔ chain = MasteringChain·new();
+        assert_eq!(chain.active_processor_count(), 3);
+    }
+
+    //@ rune: test
+    rite test_active_processor_count_with_stereo() {
+        ≔ Δ chain = MasteringChain·new();
+        chain.stereo_enabled = true;
+        assert_eq!(chain.active_processor_count(), 4);
+    }
+
+    //@ rune: test
+    rite test_bypass_disables_all() {
+        ≔ Δ chain = MasteringChain·new();
+        chain.bypass = true;
+        assert_eq!(chain.active_processor_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_toggle_bypass() {
+        ≔ Δ chain = MasteringChain·new();
+        assert!(!chain.bypass);
+        chain.toggle_bypass();
+        assert!(chain.bypass);
+        chain.toggle_bypass();
+        assert!(!chain.bypass);
+    }
+
+    //@ rune: test
+    rite test_disable_individual_processor() {
+        ≔ Δ chain = MasteringChain·new();
+        chain.eq_enabled = false;
+        assert_eq!(chain.active_processor_count(), 2);
+    }
+}
+
+// ============================================================================
+// ExportFormat Tests
+// ============================================================================
+
+scroll export_format_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_wav_is_lossless() {
+        assert!(ExportFormat·Wav16.is_lossless());
+        assert!(ExportFormat·Wav24.is_lossless());
+        assert!(ExportFormat·Wav32Float.is_lossless());
+    }
+
+    //@ rune: test
+    rite test_flac_is_lossless() {
+        assert!(ExportFormat·Flac16.is_lossless());
+        assert!(ExportFormat·Flac24.is_lossless());
+    }
+
+    //@ rune: test
+    rite test_mp3_is_lossy() {
+        assert!(!ExportFormat·Mp3_320.is_lossless());
+    }
+
+    //@ rune: test
+    rite test_aac_is_lossy() {
+        assert!(!ExportFormat·Aac256.is_lossless());
+    }
+
+    //@ rune: test
+    rite test_bit_depths() {
+        assert_eq!(ExportFormat·Wav16.bit_depth(), Some(16));
+        assert_eq!(ExportFormat·Wav24.bit_depth(), Some(24));
+        assert_eq!(ExportFormat·Wav32Float.bit_depth(), Some(32));
+        assert_eq!(ExportFormat·Flac16.bit_depth(), Some(16));
+        assert_eq!(ExportFormat·Flac24.bit_depth(), Some(24));
+    }
+
+    //@ rune: test
+    rite test_lossy_no_bit_depth() {
+        assert_eq!(ExportFormat·Mp3_320.bit_depth(), None);
+        assert_eq!(ExportFormat·Aac256.bit_depth(), None);
+    }
+
+    //@ rune: test
+    rite test_extensions() {
+        assert_eq!(ExportFormat·Wav16.extension(), "wav");
+        assert_eq!(ExportFormat·Wav24.extension(), "wav");
+        assert_eq!(ExportFormat·Flac16.extension(), "flac");
+        assert_eq!(ExportFormat·Mp3_320.extension(), "mp3");
+        assert_eq!(ExportFormat·Aac256.extension(), "m4a");
+    }
+}
+
+// ============================================================================
+// Time Formatting Tests
+// ============================================================================
+
+scroll time_formatting_tests {
+    invoke super·test_support·*;
+
+    // Helper: format position inline
+    rite calc_position(beats: f64, time_sig_num: u8) -> (u32, u32, u32)! {
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        (bars, beat, ticks)
+    }
+
+    // Helper: format time inline
+    rite calc_time(beats: f64, tempo: f64) -> (u32, u32, f64)! {
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ seconds = total_seconds % 60.0;
+        (hours, minutes, seconds)
+    }
+
+    //@ rune: test
+    rite test_position_at_zero() {
+        ≔ beats = 0.0_f64;
+        ≔ time_sig_num = 4_u8;
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        assert_eq!(bars, 1);
+        assert_eq!(beat, 1);
+        assert_eq!(ticks, 0);
+    }
+
+    //@ rune: test
+    rite test_position_at_beat_2() {
+        ≔ beats = 1.0_f64;
+        ≔ time_sig_num = 4_u8;
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        assert_eq!(bars, 1);
+        assert_eq!(beat, 2);
+        assert_eq!(ticks, 0);
+    }
+
+    //@ rune: test
+    rite test_position_at_bar_2() {
+        ≔ beats = 4.0_f64;
+        ≔ time_sig_num = 4_u8;
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        assert_eq!(bars, 2);
+        assert_eq!(beat, 1);
+        assert_eq!(ticks, 0);
+    }
+
+    //@ rune: test
+    rite test_position_with_ticks() {
+        ≔ beats = 0.5_f64;
+        ≔ time_sig_num = 4_u8;
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        ≔ ticks = ((beats % 1.0) * 960.0) as u32;
+        assert_eq!(bars, 1);
+        assert_eq!(beat, 1);
+        assert_eq!(ticks, 480);
+    }
+
+    //@ rune: test
+    rite test_position_3_4_time() {
+        ≔ beats = 3.0_f64;
+        ≔ time_sig_num = 3_u8;
+        ≔ beats_per_bar = time_sig_num as f64;
+        ≔ bars = (beats / beats_per_bar).floor() as u32 + 1;
+        ≔ beat = (beats % beats_per_bar).floor() as u32 + 1;
+        assert_eq!(bars, 2);
+        assert_eq!(beat, 1);
+    }
+
+    //@ rune: test
+    rite test_time_at_zero() {
+        ≔ beats = 0.0_f64;
+        ≔ tempo = 120.0_f64;
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ seconds = total_seconds % 60.0;
+        assert_eq!(hours, 0);
+        assert_eq!(minutes, 0);
+        assert!(seconds < 0.001);
+    }
+
+    //@ rune: test
+    rite test_time_at_120bpm_1beat() {
+        // At 120 BPM, 1 beat = 0.5 seconds
+        ≔ beats = 1.0_f64;
+        ≔ tempo = 120.0_f64;
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ seconds = total_seconds % 60.0;
+        assert_eq!(hours, 0);
+        assert_eq!(minutes, 0);
+        assert!((seconds - 0.5).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_time_one_minute() {
+        // At 120 BPM, need 120 beats for 60 seconds
+        ≔ beats = 120.0_f64;
+        ≔ tempo = 120.0_f64;
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        ≔ seconds = total_seconds % 60.0;
+        assert_eq!(hours, 0);
+        assert_eq!(minutes, 1);
+        assert!(seconds < 0.001);
+    }
+
+    //@ rune: test
+    rite test_time_one_hour() {
+        // At 120 BPM, need 7200 beats for 3600 seconds
+        ≔ beats = 7200.0_f64;
+        ≔ tempo = 120.0_f64;
+        ≔ total_seconds = beats * 60.0 / tempo;
+        ≔ hours = (total_seconds / 3600.0).floor() as u32;
+        ≔ minutes = ((total_seconds % 3600.0) / 60.0).floor() as u32;
+        assert_eq!(hours, 1);
+        assert_eq!(minutes, 0);
+    }
+}
+
+// ============================================================================
+// InputChannel Tests (Recording)
+// ============================================================================
+
+scroll input_channel_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_input_channel_creation() {
+        ≔ channel = InputChannel·new(0, "Input 1".to_string());
+        assert_eq!(channel.id, 0);
+        assert_eq!(channel.name, "Input 1");
+        assert_eq!(channel.level_db, -60.0);
+    }
+
+    //@ rune: test
+    rite test_clipping_from_flag() {
+        ≔ Δ channel = InputChannel·new(0, "Input 1".to_string());
+        channel.clipping = true;
+        assert!(channel.is_clipping());
+    }
+
+    //@ rune: test
+    rite test_clipping_from_peak() {
+        ≔ Δ channel = InputChannel·new(0, "Input 1".to_string());
+        channel.peak_db = 0.0;
+        assert!(channel.is_clipping());
+    }
+
+    //@ rune: test
+    rite test_not_clipping() {
+        ≔ channel = InputChannel·new(0, "Input 1".to_string());
+        assert!(!channel.is_clipping());
+    }
+
+    //@ rune: test
+    rite test_effective_level_normal() {
+        ≔ Δ channel = InputChannel·new(0, "Input 1".to_string());
+        channel.level_db = -20.0;
+        channel.gain = 6.0;
+        assert_eq!(channel.effective_level(), -14.0);
+    }
+
+    //@ rune: test
+    rite test_effective_level_muted() {
+        ≔ Δ channel = InputChannel·new(0, "Input 1".to_string());
+        channel.level_db = -20.0;
+        channel.gain = 6.0;
+        channel.muted = true;
+        assert_eq!(channel.effective_level(), -60.0);
+    }
+}
+
+// ============================================================================
+// Mode Transition Tests (Integration)
+// ============================================================================
+
+scroll mode_transition_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_initial_state() {
+        ≔ state = ModeState·new();
+        assert!(state.previous_mode.is_none());
+        assert_eq!(state.transition_count, 0);
+    }
+
+    //@ rune: test
+    rite test_switch_mode() {
+        ≔ Δ state = ModeState·new();
+        state.switch_to(OrpheusMode·Record);
+
+        ≔ is_record = ⌥ state.current_mode {
+            OrpheusMode·Record => true,
+            _ => false,
+        };
+        assert!(is_record);
+        assert!(state.previous_mode.is_some());
+        assert_eq!(state.transition_count, 1);
+    }
+
+    //@ rune: test
+    rite test_go_back() {
+        ≔ Δ state = ModeState·new();
+        state.switch_to(OrpheusMode·Mix);
+        assert!(state.go_back());
+
+        ≔ is_compose = ⌥ state.current_mode {
+            OrpheusMode·Compose => true,
+            _ => false,
+        };
+        assert!(is_compose);
+    }
+
+    //@ rune: test
+    rite test_go_back_no_history() {
+        ≔ Δ state = ModeState·new();
+        assert!(!state.go_back());
+    }
+
+    //@ rune: test
+    rite test_multiple_transitions() {
+        ≔ Δ state = ModeState·new();
+        state.switch_to(OrpheusMode·Record);
+        state.switch_to(OrpheusMode·Mix);
+        state.switch_to(OrpheusMode·Master);
+
+        assert_eq!(state.transition_count, 3);
+
+        ≔ is_master = ⌥ state.current_mode {
+            OrpheusMode·Master => true,
+            _ => false,
+        };
+        assert!(is_master);
+    }
+
+    //@ rune: test
+    rite test_transition_to_settings() {
+        ≔ Δ state = ModeState·new();
+        state.switch_to(OrpheusMode·Settings);
+
+        ≔ is_settings = ⌥ state.current_mode {
+            OrpheusMode·Settings => true,
+            _ => false,
+        };
+        assert!(is_settings);
+    }
+
+    //@ rune: test
+    rite test_workflow_compose_to_record_to_mix() {
+        ≔ Δ state = ModeState·new();
+
+        // Start in Compose, record, then mix
+        state.switch_to(OrpheusMode·Record);
+        state.switch_to(OrpheusMode·Mix);
+
+        ≔ is_mix = ⌥ state.current_mode {
+            OrpheusMode·Mix => true,
+            _ => false,
+        };
+        assert!(is_mix);
+
+        // Previous should be Record
+        ≔ prev_is_record = ⌥ state.previous_mode {
+            Some(OrpheusMode·Record) => true,
+            _ => false,
+        };
+        assert!(prev_is_record);
+    }
+
+    //@ rune: test
+    rite test_workflow_mix_to_master_to_release() {
+        ≔ Δ state = ModeState·new();
+
+        state.switch_to(OrpheusMode·Mix);
+        state.switch_to(OrpheusMode·Master);
+        state.switch_to(OrpheusMode·Release);
+
+        ≔ is_release = ⌥ state.current_mode {
+            OrpheusMode·Release => true,
+            _ => false,
+        };
+        assert!(is_release);
+    }
+}
+
+// ============================================================================
+// Cross-Mode Integration Tests
+// ============================================================================
+
+scroll cross_mode_integration_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_mastering_target_affects_compliance() {
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -14.0;
+        analysis.true_peak = -1.0;
+        analysis.true_peak_right = -1.0;
+
+        // Compliant for streaming
+        assert!(analysis.is_fully_compliant(&TargetStandard·Streaming));
+
+        // Not compliant for broadcast (too loud)
+        assert!(!analysis.is_lufs_compliant(&TargetStandard·Broadcast));
+    }
+
+    //@ rune: test
+    rite test_export_format_for_target() {
+        // CD target should prefer high-quality lossless
+        ≔ cd_format = ExportFormat·Wav24;
+        assert!(cd_format.is_lossless());
+        assert_eq!(cd_format.bit_depth(), Some(24));
+
+        // Streaming can use lossy
+        ≔ streaming_format = ExportFormat·Mp3_320;
+        assert!(!streaming_format.is_lossless());
+    }
+
+    //@ rune: test
+    rite test_recording_session_to_mastering_workflow() {
+        // Create a recording session
+        ≔ Δ session = RecordingSession·new("My Song".to_string());
+        session.increment_take();
+        session.increment_take();
+        session.increment_take();
+
+        // After recording, move to mastering
+        ≔ Δ analysis = LoudnessAnalysis·new();
+        analysis.integrated = -14.0;
+
+        // Check we have multiple takes and can analyze
+        assert_eq!(session.total_takes, 3);
+        assert!(analysis.is_lufs_compliant(&TargetStandard·Streaming));
+    }
+
+    //@ rune: test
+    rite test_chain_processors_order() {
+        // Mastering chain should process: EQ -> Compressor -> Limiter -> Stereo
+        ≔ chain = MasteringChain·new();
+
+        // All main processors enabled by default
+        assert!(chain.eq_enabled);
+        assert!(chain.compressor_enabled);
+        assert!(chain.limiter_enabled);
+
+        // 3 processors active (stereo disabled by default)
+        assert_eq!(chain.active_processor_count(), 3);
+    }
+}

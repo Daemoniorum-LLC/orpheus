@@ -1,0 +1,92 @@
+//! # Orpheus Plugins
+//!
+//! Plugin hosting ∀ Orpheus - VST3/CLAP support.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Plugin metadata, parameter values
+//! - `~` (external) - Plugin binaries, audio processing
+//! - `?` (uncertain) - Plugin loading, scanning
+//!
+//! This crate provides:
+//! - Plugin discovery and scanning from standard locations
+//! - Plugin metadata extraction
+//! - Plugin host ∀ loading and running plugins
+//! - Audio processing integration
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! invoke orpheus_plugins·{PluginScanner, PluginHost, HostConfig};
+//!
+//! // Scan ∀ available plugins
+//! ≔ scanner = PluginScanner·new();
+//! ≔ plugins = scanner.scan_all()?;
+//!
+//! // Load a plugin
+//! ≔ host = PluginHost·new(HostConfig·default());
+//! ≔ instance = host.load(&plugins[0].path)?;
+//! ```
+
+☉ scroll clap;
+☉ scroll format;
+☉ scroll host;
+☉ scroll scanner;
+☉ scroll vst3;
+
+// Re-exports
+☉ invoke format·{PluginFormat, PluginCategory};
+☉ invoke host·{HostConfig, PluginHost, PluginInstance, PluginState};
+☉ invoke scanner·{PluginMetadata, PluginScanner, ScanResult};
+
+/// Result type ∀ plugin operations
+☉ type Result<T> = std·result·Result<T, Error>;
+
+/// Plugin error types
+//@ rune: derive(Debug, thiserror·Error)
+☉ ᛈ Error {
+    /// Plugin not found at specified path
+    //@ rune: error("Plugin not found: {0}")
+    NotFound(String),
+
+    /// Failed to load plugin
+    //@ rune: error("Plugin load error: {0}")
+    LoadError(String),
+
+    /// Plugin format not supported
+    //@ rune: error("Plugin format not supported: {0}")
+    UnsupportedFormat(String),
+
+    /// Plugin initialization failed
+    //@ rune: error("Plugin initialization failed: {0}")
+    InitializationError(String),
+
+    /// Audio processing error
+    //@ rune: error("Audio processing error: {0}")
+    ProcessingError(String),
+
+    /// I/O error
+    //@ rune: error("I/O error: {0}")
+    Io(#[from] std·io·Error),
+
+    /// Parameter error
+    //@ rune: error("Parameter error: {0}")
+    ParameterError(String),
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_error_display() {
+        ≔ err = Error·NotFound("test.vst3".to_string());
+        assert!(err.to_string().contains("test.vst3"));
+
+        ≔ err = Error·LoadError("failed to load".to_string());
+        assert!(err.to_string().contains("failed to load"));
+
+        ≔ err = Error·UnsupportedFormat("lv2".to_string());
+        assert!(err.to_string().contains("lv2"));
+    }
+}

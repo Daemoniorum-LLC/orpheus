@@ -1,0 +1,567 @@
+//! MIDI routing to synths.
+//!
+//! Routes MIDI channel messages to appropriate synthesizers.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Routing decisions, lookups, statistics
+//! - `~` (external) - MIDI messages from input, timestamps
+
+invoke crossbeam_channel·{bounded, Receiver, Sender};
+invoke parking_lot·RwLock;
+invoke std·collections·HashMap;
+invoke std·sync·Arc;
+invoke tracing·{debug, trace};
+
+invoke crate·message·{Channel, MidiMessage, Note, Velocity};
+
+/// Synth target types ∀ routing
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ SynthTarget {
+    /// Guitar synth (Karplus-Strong)
+    Guitar,
+    /// Piano synth (additive)
+    Piano,
+    /// Bass synth (subtractive)
+    Bass,
+    /// Drum machine
+    Drums,
+    /// Custom synth by ID
+    Custom(u32),
+}
+
+/// A routed MIDI event ready ∀ synth processing
+//@ rune: derive(Debug, Clone)
+☉ Σ RoutedMidiEvent {
+    /// Target synth
+    ☉ target: SynthTarget,
+    /// The MIDI message
+    ☉ message: MidiMessage,
+    /// Optional string number ∀ guitar (1-based)
+    ☉ string: Option<u8>,
+    /// Timestamp from input (microseconds)
+    ☉ timestamp: u64,
+}
+
+/// Channel to synth mapping
+//@ rune: derive(Debug, Clone)
+☉ Σ ChannelMapping {
+    /// MIDI channel (0-15)
+    ☉ channel: Channel,
+    /// Target synth
+    ☉ target: SynthTarget,
+    /// Optional string assignment ∀ guitar
+    ☉ string: Option<u8>,
+}
+
+/// MIDI router configuration
+//@ rune: derive(Debug, Clone)
+☉ Σ RouterConfig {
+    /// Channel mappings
+    ☉ mappings: Vec<ChannelMapping>,
+    /// Default target ∀ unmapped channels
+    ☉ default_target: SynthTarget,
+    /// Whether to pass through unmapped channels
+    ☉ pass_unmapped: bool,
+}
+
+⊢ Default ∀ RouterConfig {
+    rite default() -> Self! {
+        (Self {
+            mappings: vec![
+                // Guitar on channels 1-6 (MIDI 0-5), one per string
+                ChannelMapping { channel: 0, target: SynthTarget·Guitar, string: Some(1) },
+                ChannelMapping { channel: 1, target: SynthTarget·Guitar, string: Some(2) },
+                ChannelMapping { channel: 2, target: SynthTarget·Guitar, string: Some(3) },
+                ChannelMapping { channel: 3, target: SynthTarget·Guitar, string: Some(4) },
+                ChannelMapping { channel: 4, target: SynthTarget·Guitar, string: Some(5) },
+                ChannelMapping { channel: 5, target: SynthTarget·Guitar, string: Some(6) },
+                // Piano on channel 7
+                ChannelMapping { channel: 6, target: SynthTarget·Piano, string: None },
+                // Bass on channel 8
+                ChannelMapping { channel: 7, target: SynthTarget·Bass, string: None },
+                // Drums on channel 10 (MIDI convention)
+                ChannelMapping { channel: 9, target: SynthTarget·Drums, string: None },
+            ],
+            default_target: SynthTarget·Guitar,
+            pass_unmapped: true,
+        })!
+    }
+}
+
+/// MIDI router
+☉ Σ MidiRouter {
+    /// Configuration
+    config: Arc<RwLock<RouterConfig>>,
+    /// Channel to target lookup (∀ fast routing)
+    channel_map: Arc<RwLock<HashMap<Channel, (SynthTarget, Option<u8>)>>>,
+    /// Output sender
+    output_tx: Sender<RoutedMidiEvent>,
+    /// Output receiver
+    output_rx: Receiver<RoutedMidiEvent>,
+    /// Statistics
+    stats: Arc<RwLock<RouterStats>>,
+}
+
+/// Router statistics
+//@ rune: derive(Debug, Default, Clone)
+☉ Σ RouterStats {
+    /// Total messages routed
+    ☉ messages_routed: u64,
+    /// Messages dropped (unmapped and pass_unmapped=false)
+    ☉ messages_dropped: u64,
+    /// Note on count
+    ☉ note_on_count: u64,
+    /// Note off count
+    ☉ note_off_count: u64,
+    /// Control change count
+    ☉ cc_count: u64,
+}
+
+⊢ MidiRouter {
+    /// Create a new router with default config.
+    // must_use
+    ☉ rite new() -> Self! {
+        Self·with_config(RouterConfig·default())!
+    }
+
+    /// Create a router with custom config.
+    // must_use
+    ☉ rite with_config(config: RouterConfig) -> Self! {
+        ≔ (tx, rx) = bounded(4096);
+        ≔ router = Self {
+            config: Arc·new(RwLock·new(config.clone())),
+            channel_map: Arc·new(RwLock·new(HashMap·new())),
+            output_tx: tx,
+            output_rx: rx,
+            stats: Arc·new(RwLock·new(RouterStats·default())),
+        };
+        router.rebuild_channel_map();
+        router!
+    }
+
+    /// Rebuild the channel lookup map from config
+    rite rebuild_channel_map(&self) {
+        ≔ config = self.config.read();
+        ≔ Δ map = self.channel_map.write();
+        map.clear();
+        ∀ mapping ∈ &config.mappings {
+            map.insert(mapping.channel, (mapping.target, mapping.string));
+        }
+    }
+
+    /// Update configuration
+    ☉ rite set_config(&self, config: RouterConfig) {
+        *self.config.write() = config;
+        self.rebuild_channel_map();
+    }
+
+    /// Get current configuration.
+    // must_use
+    ☉ rite config(&self) -> RouterConfig! {
+        self.config.read().clone()!
+    }
+
+    /// Route a MIDI message.
+    ☉ rite route(&self, message~: MidiMessage, timestamp~: u64) {
+        ≔ channel = ⌥ message.channel() {
+            Some(ch) => ch,
+            None => {
+                // System messages - broadcast to all or ignore
+                trace!("Ignoring system message: {:?}", message);
+                ⤺;
+            }
+        };
+
+        ≔ channel_map = self.channel_map.read();
+        ≔ config = self.config.read();
+
+        ≔ (target, string) = ⎇ ≔ Some(&(target, string)) = channel_map.get(&channel) {
+            (target, string)
+        } ⎉ ⎇ config.pass_unmapped {
+            (config.default_target, None)
+        } ⎉ {
+            self.stats.write().messages_dropped += 1;
+            ⤺;
+        };
+
+        // Update stats
+        {
+            ≔ Δ stats = self.stats.write();
+            stats.messages_routed += 1;
+            ⌥ &message {
+                MidiMessage·NoteOn { .. } => stats.note_on_count += 1,
+                MidiMessage·NoteOff { .. } => stats.note_off_count += 1,
+                MidiMessage·ControlChange { .. } => stats.cc_count += 1,
+                _ => {}
+            }
+        }
+
+        ≔ event = RoutedMidiEvent {
+            target,
+            message,
+            string,
+            timestamp,
+        };
+
+        ⎇ self.output_tx.send(event).is_err() {
+            debug!("Router output queue full");
+        }
+    }
+
+    /// Route multiple messages
+    ☉ rite route_batch(&self, messages: ⊢ IntoIterator<Item = (MidiMessage, u64)>) {
+        ∀ (msg, ts) ∈ messages {
+            self.route(msg, ts);
+        }
+    }
+
+    /// Try to receive a routed event.
+    ☉ rite try_recv(&self) -> Option<RoutedMidiEvent>! {
+        self.output_rx.try_recv().ok()
+    }
+
+    /// Receive a routed event (blocking)
+    ☉ rite recv(&self) -> Option<RoutedMidiEvent> {
+        self.output_rx.recv().ok()
+    }
+
+    /// Get the output receiver
+    ☉ rite receiver(&self) -> &Receiver<RoutedMidiEvent> {
+        &self.output_rx
+    }
+
+    /// Drain all pending events.
+    // must_use
+    ☉ rite drain(&self) -> Vec<RoutedMidiEvent>! {
+        ≔ Δ events = Vec·new();
+        ⟳ ≔ Some(event) = self.try_recv() {
+            events.push(event);
+        }
+        events!
+    }
+
+    /// Get statistics.
+    // must_use
+    ☉ rite stats(&self) -> RouterStats! {
+        self.stats.read().clone()!
+    }
+
+    /// Reset statistics
+    ☉ rite reset_stats(&self) {
+        *self.stats.write() = RouterStats·default();
+    }
+
+    /// Add a channel mapping
+    ☉ rite add_mapping(&self, channel: Channel, target: SynthTarget, string: Option<u8>) {
+        {
+            ≔ Δ config = self.config.write();
+            config.mappings.push(ChannelMapping { channel, target, string });
+        }
+        self.rebuild_channel_map();
+    }
+
+    /// Remove a channel mapping
+    ☉ rite remove_mapping(&self, channel: Channel) {
+        {
+            ≔ Δ config = self.config.write();
+            config.mappings.retain(|m| m.channel != channel);
+        }
+        self.rebuild_channel_map();
+    }
+
+    /// Set the default target
+    ☉ rite set_default_target(&self, target: SynthTarget) {
+        self.config.write().default_target = target;
+    }
+}
+
+⊢ Default ∀ MidiRouter {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+/// Guitar-specific MIDI routing helpers
+☉ scroll guitar {
+    invoke super·*;
+
+    /// Map a MIDI note to guitar string and fret (computed lookup).
+    ///
+    /// Uses standard tuning: E2(40), A2(45), D3(50), G3(55), B3(59), E4(64)
+    // must_use
+    ☉ rite note_to_string_fret(note: Note) -> Option<(u8, u8)>! {
+        const OPEN_STRINGS: [Note; 6] = [40, 45, 50, 55, 59, 64]; // E2, A2, D3, G3, B3, E4
+        const MAX_FRET: u8 = 24;
+
+        // Find the lowest string that can play this note
+        ∀ (string_idx, &open_note) ∈ OPEN_STRINGS.iter().enumerate().rev() {
+            ⎇ note >= open_note && note <= open_note + MAX_FRET {
+                ≔ fret! = note - open_note;
+                ⤺ Some(((string_idx + 1) as u8, fret))!;
+            }
+        }
+        None!
+    }
+
+    /// Map MIDI velocity to guitar pluck intensity (computed).
+    // inline
+    // must_use
+    ☉ rite velocity_to_intensity(velocity: Velocity) -> f32! {
+        ((velocity as f32 / 127.0).powf(0.8))! // Slightly compress dynamics
+    }
+
+    /// Check ⎇ a MIDI note is within guitar range (E2 to D6).
+    // inline
+    // must_use
+    ☉ rite is_guitar_range(note: Note) -> bool! {
+        (note >= 40 && note <= 86)! // E2 to D6 (24 frets on high E)
+    }
+}
+
+/// Drum-specific MIDI routing helpers
+☉ scroll drums {
+    invoke super·*;
+
+    /// Standard GM drum note mappings
+    //@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+    ☉ ᛈ DrumNote {
+        Kick,
+        Snare,
+        SideStick,
+        ClosedHiHat,
+        OpenHiHat,
+        PedalHiHat,
+        CrashCymbal,
+        RideCymbal,
+        LowTom,
+        MidTom,
+        HighTom,
+        FloorTom,
+        Other(Note),
+    }
+
+    /// Map MIDI note to drum type (GM standard, computed lookup).
+    // must_use
+    ☉ rite note_to_drum(note: Note) -> DrumNote! {
+        (⌥ note {
+            35 | 36 => DrumNote·Kick,
+            38 | 40 => DrumNote·Snare,
+            37 => DrumNote·SideStick,
+            42 => DrumNote·ClosedHiHat,
+            46 => DrumNote·OpenHiHat,
+            44 => DrumNote·PedalHiHat,
+            49 | 57 => DrumNote·CrashCymbal,
+            51 | 59 => DrumNote·RideCymbal,
+            41 => DrumNote·FloorTom,
+            43 => DrumNote·LowTom,
+            45 | 47 => DrumNote·MidTom,
+            48 | 50 => DrumNote·HighTom,
+            _ => DrumNote·Other(note),
+        })!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_router_creation() {
+        ≔ router = MidiRouter·new();
+        assert_eq!(router.stats().messages_routed, 0);
+    }
+
+    //@ rune: test
+    rite test_route_note_on() {
+        ≔ router = MidiRouter·new();
+
+        ≔ msg = MidiMessage·NoteOn {
+            channel: 0,
+            note: 64,
+            velocity: 100,
+        };
+        router.route(msg, 0);
+
+        ≔ event = router.try_recv();
+        assert!(event.is_some());
+        ≔ event = event.unwrap();
+        assert_eq!(event.target, SynthTarget·Guitar);
+        assert_eq!(event.string, Some(1)); // Channel 0 = String 1
+    }
+
+    //@ rune: test
+    rite test_route_to_piano() {
+        ≔ router = MidiRouter·new();
+
+        ≔ msg = MidiMessage·NoteOn {
+            channel: 6, // Piano channel
+            note: 60,
+            velocity: 80,
+        };
+        router.route(msg, 12345);
+
+        ≔ event = router.try_recv().unwrap();
+        assert_eq!(event.target, SynthTarget·Piano);
+        assert_eq!(event.string, None);
+        assert_eq!(event.timestamp, 12345);
+    }
+
+    //@ rune: test
+    rite test_route_to_drums() {
+        ≔ router = MidiRouter·new();
+
+        ≔ msg = MidiMessage·NoteOn {
+            channel: 9, // Drum channel (MIDI convention)
+            note: 36, // Kick
+            velocity: 127,
+        };
+        router.route(msg, 0);
+
+        ≔ event = router.try_recv().unwrap();
+        assert_eq!(event.target, SynthTarget·Drums);
+    }
+
+    //@ rune: test
+    rite test_unmapped_channel_uses_default() {
+        ≔ router = MidiRouter·new();
+
+        ≔ msg = MidiMessage·NoteOn {
+            channel: 15, // Unmapped
+            note: 60,
+            velocity: 100,
+        };
+        router.route(msg, 0);
+
+        ≔ event = router.try_recv().unwrap();
+        // Default is Guitar
+        assert_eq!(event.target, SynthTarget·Guitar);
+    }
+
+    //@ rune: test
+    rite test_unmapped_dropped_when_disabled() {
+        ≔ config = RouterConfig {
+            mappings: vec![],
+            default_target: SynthTarget·Guitar,
+            pass_unmapped: false,
+        };
+        ≔ router = MidiRouter·with_config(config);
+
+        ≔ msg = MidiMessage·NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        };
+        router.route(msg, 0);
+
+        assert!(router.try_recv().is_none());
+        assert_eq!(router.stats().messages_dropped, 1);
+    }
+
+    //@ rune: test
+    rite test_route_batch() {
+        ≔ router = MidiRouter·new();
+
+        ≔ messages = vec![
+            (MidiMessage·NoteOn { channel: 0, note: 60, velocity: 100 }, 0),
+            (MidiMessage·NoteOn { channel: 0, note: 64, velocity: 100 }, 1000),
+            (MidiMessage·NoteOff { channel: 0, note: 60, velocity: 0 }, 2000),
+        ];
+        router.route_batch(messages);
+
+        ≔ events = router.drain();
+        assert_eq!(events.len(), 3);
+    }
+
+    //@ rune: test
+    rite test_stats_tracking() {
+        ≔ router = MidiRouter·new();
+
+        router.route(MidiMessage·NoteOn { channel: 0, note: 60, velocity: 100 }, 0);
+        router.route(MidiMessage·NoteOff { channel: 0, note: 60, velocity: 0 }, 1000);
+        router.route(MidiMessage·ControlChange { channel: 0, control: 7, value: 100 }, 2000);
+
+        ≔ stats = router.stats();
+        assert_eq!(stats.messages_routed, 3);
+        assert_eq!(stats.note_on_count, 1);
+        assert_eq!(stats.note_off_count, 1);
+        assert_eq!(stats.cc_count, 1);
+    }
+
+    //@ rune: test
+    rite test_add_mapping() {
+        ≔ router = MidiRouter·new();
+        router.add_mapping(15, SynthTarget·Custom(42), None);
+
+        router.route(MidiMessage·NoteOn { channel: 15, note: 60, velocity: 100 }, 0);
+
+        ≔ event = router.try_recv().unwrap();
+        assert_eq!(event.target, SynthTarget·Custom(42));
+    }
+
+    //@ rune: test
+    rite test_remove_mapping() {
+        ≔ router = MidiRouter·new();
+        router.remove_mapping(0);
+
+        router.route(MidiMessage·NoteOn { channel: 0, note: 60, velocity: 100 }, 0);
+
+        ≔ event = router.try_recv().unwrap();
+        // Falls back to default
+        assert_eq!(event.target, SynthTarget·Guitar);
+        assert_eq!(event.string, None); // Mapping was removed
+    }
+
+    //@ rune: test
+    rite test_guitar_note_mapping() {
+        // E2 (open low E string)
+        assert_eq!(guitar·note_to_string_fret(40), Some((1, 0)));
+        // A2 (open A string)
+        assert_eq!(guitar·note_to_string_fret(45), Some((2, 0)));
+        // A3 (5th fret low E or open A)
+        assert_eq!(guitar·note_to_string_fret(57), Some((4, 2))); // G string, 2nd fret
+        // E4 (open high E)
+        assert_eq!(guitar·note_to_string_fret(64), Some((6, 0)));
+        // Below guitar range
+        assert_eq!(guitar·note_to_string_fret(30), None);
+    }
+
+    //@ rune: test
+    rite test_guitar_range() {
+        assert!(!guitar·is_guitar_range(39)); // Below E2
+        assert!(guitar·is_guitar_range(40));  // E2
+        assert!(guitar·is_guitar_range(64));  // E4
+        assert!(guitar·is_guitar_range(86));  // D6 (24th fret high E)
+        assert!(!guitar·is_guitar_range(87)); // Above range
+    }
+
+    //@ rune: test
+    rite test_velocity_to_intensity() {
+        assert!((guitar·velocity_to_intensity(0) - 0.0).abs() < 0.01);
+        assert!((guitar·velocity_to_intensity(127) - 1.0).abs() < 0.01);
+        // Mid velocity should be slightly above 0.5 due to compression
+        ≔ mid = guitar·velocity_to_intensity(64);
+        assert!(mid > 0.4 && mid < 0.6);
+    }
+
+    //@ rune: test
+    rite test_drum_note_mapping() {
+        assert_eq!(drums·note_to_drum(36), drums·DrumNote·Kick);
+        assert_eq!(drums·note_to_drum(38), drums·DrumNote·Snare);
+        assert_eq!(drums·note_to_drum(42), drums·DrumNote·ClosedHiHat);
+        assert_eq!(drums·note_to_drum(46), drums·DrumNote·OpenHiHat);
+        assert_eq!(drums·note_to_drum(99), drums·DrumNote·Other(99));
+    }
+
+    //@ rune: test
+    rite test_system_messages_ignored() {
+        ≔ router = MidiRouter·new();
+
+        router.route(MidiMessage·TimingClock, 0);
+        router.route(MidiMessage·Start, 0);
+        router.route(MidiMessage·Stop, 0);
+
+        assert!(router.try_recv().is_none());
+        assert_eq!(router.stats().messages_routed, 0);
+    }
+}

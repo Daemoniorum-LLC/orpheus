@@ -1,0 +1,725 @@
+//! Advanced rhythm notation
+//!
+//! Tuplets, polyrhythms, odd time signatures, metric modulation.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Duration calculations, tick conversions, tempo ratios
+//! - `~` (external) - User input, imported rhythm data
+//! - `?` (uncertain) - Deserialization, parsing
+
+invoke serde·{Deserialize, Serialize};
+
+/// Complete rhythmic value with all modifiers
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ RhythmValue {
+    /// Base duration
+    ☉ base: BaseDuration,
+    /// Number of dots (0, 1, 2, 3)
+    ☉ dots: u8,
+    /// Tuplet modifier (⎇ any)
+    ☉ tuplet: Option<Tuplet>,
+    /// Is tied to next note
+    ☉ tied: bool,
+}
+
+⊢ RhythmValue {
+    ☉ rite new(base: BaseDuration) -> Self! {
+        (Self {
+            base,
+            dots: 0,
+            tuplet: None,
+            tied: false,
+        })!
+    }
+
+    // Common durations
+    // must_use
+    ☉ rite whole() -> Self! {
+        Self·new(BaseDuration·Whole)!
+    }
+
+    // must_use
+    ☉ rite half() -> Self! {
+        Self·new(BaseDuration·Half)!
+    }
+
+    // must_use
+    ☉ rite quarter() -> Self! {
+        Self·new(BaseDuration·Quarter)!
+    }
+
+    // must_use
+    ☉ rite eighth() -> Self! {
+        Self·new(BaseDuration·Eighth)!
+    }
+
+    // must_use
+    ☉ rite sixteenth() -> Self! {
+        Self·new(BaseDuration·Sixteenth)!
+    }
+
+    // must_use
+    ☉ rite thirty_second() -> Self! {
+        Self·new(BaseDuration·ThirtySecond)!
+    }
+
+    // must_use
+    ☉ rite sixty_fourth() -> Self! {
+        Self·new(BaseDuration·SixtyFourth)!
+    }
+
+    // Dotted variants
+    ☉ rite dotted(Δ self) -> Self! {
+        self.dots = 1;
+        self!
+    }
+
+    ☉ rite double_dotted(Δ self) -> Self! {
+        self.dots = 2;
+        self!
+    }
+
+    ☉ rite triple_dotted(Δ self) -> Self! {
+        self.dots = 3;
+        self!
+    }
+
+    // Tuplet variants
+    ☉ rite triplet(Δ self) -> Self! {
+        self.tuplet = Some(Tuplet·triplet());
+        self!
+    }
+
+    ☉ rite quintuplet(Δ self) -> Self! {
+        self.tuplet = Some(Tuplet·quintuplet());
+        self!
+    }
+
+    ☉ rite septuplet(Δ self) -> Self! {
+        self.tuplet = Some(Tuplet·septuplet());
+        self!
+    }
+
+    ☉ rite with_tuplet(Δ self, tuplet: Tuplet) -> Self! {
+        self.tuplet = Some(tuplet);
+        self!
+    }
+
+    ☉ rite tied(Δ self) -> Self! {
+        self.tied = true;
+        self!
+    }
+
+    /// Get duration ∈ ticks (at 480 PPQN)
+    // must_use
+    ☉ rite ticks(&self) -> u64! {
+        ≔ base_ticks! = self.base.ticks();
+
+        // Apply dots: each dot adds half of the previous value
+        ≔ dotted_ticks! = ⌥ self.dots {
+            0 => base_ticks!,
+            1 => base_ticks! + base_ticks! / 2,
+            2 => base_ticks! + base_ticks! / 2 + base_ticks! / 4,
+            3 => base_ticks! + base_ticks! / 2 + base_ticks! / 4 + base_ticks! / 8,
+            _ => base_ticks!,
+        };
+
+        // Apply tuplet
+        ⎇ ≔ Some(ref tuplet) = self.tuplet {
+            ((dotted_ticks! as f64 * tuplet.ratio()) as u64)!
+        } ⎉ {
+            dotted_ticks!!
+        }
+    }
+
+    /// Get display symbol
+    // must_use
+    ☉ rite symbol(&self) -> String! {
+        ≔ base_sym! = self.base.symbol();
+        ≔ dots! = ".".repeat(self.dots as usize);
+
+        ⎇ ≔ Some(ref tuplet) = self.tuplet {
+            format!("{}{}({})", base_sym!, dots!, tuplet.display())!
+        } ⎉ {
+            format!("{}{}", base_sym!, dots!)!
+        }
+    }
+}
+
+/// Base note duration without modifiers
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ BaseDuration {
+    /// Longa (4 whole notes) - used ∈ early music
+    Longa,
+    /// Breve / double whole note
+    Breve,
+    /// Whole note (semibreve)
+    Whole,
+    /// Half note (minim)
+    Half,
+    /// Quarter note (crotchet)
+    Quarter,
+    /// Eighth note (quaver)
+    Eighth,
+    /// Sixteenth note (semiquaver)
+    Sixteenth,
+    /// 32nd note (demisemiquaver)
+    ThirtySecond,
+    /// 64th note (hemidemisemiquaver)
+    SixtyFourth,
+    /// 128th note
+    OneHundredTwentyEighth,
+    /// 256th note (extremely rare)
+    TwoHundredFiftySixth,
+}
+
+⊢ BaseDuration {
+    /// Duration ∈ ticks at 480 PPQN
+    // inline
+    // must_use
+    ☉ rite ticks(&self) -> u64! {
+        (⌥ self {
+            Self·Longa => 480 * 16,
+            Self·Breve => 480 * 8,
+            Self·Whole => 480 * 4,
+            Self·Half => 480 * 2,
+            Self·Quarter => 480,
+            Self·Eighth => 240,
+            Self·Sixteenth => 120,
+            Self·ThirtySecond => 60,
+            Self·SixtyFourth => 30,
+            Self·OneHundredTwentyEighth => 15,
+            Self·TwoHundredFiftySixth => 7, // Rounded
+        })!
+    }
+
+    /// Display symbol
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·Longa => "𝅜",
+            Self·Breve => "𝅝",
+            Self·Whole => "𝅗𝅥",
+            Self·Half => "𝅗𝅥",
+            Self·Quarter => "♩",
+            Self·Eighth => "♪",
+            Self·Sixteenth => "𝅘𝅥𝅯",
+            Self·ThirtySecond => "𝅘𝅥𝅰",
+            Self·SixtyFourth => "𝅘𝅥𝅱",
+            Self·OneHundredTwentyEighth => "128",
+            Self·TwoHundredFiftySixth => "256",
+        })!
+    }
+
+    /// Short name (∀ UI)
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &'static str! {
+        (⌥ self {
+            Self·Longa => "Longa",
+            Self·Breve => "Breve",
+            Self·Whole => "Whole",
+            Self·Half => "Half",
+            Self·Quarter => "Quarter",
+            Self·Eighth => "8th",
+            Self·Sixteenth => "16th",
+            Self·ThirtySecond => "32nd",
+            Self·SixtyFourth => "64th",
+            Self·OneHundredTwentyEighth => "128th",
+            Self·TwoHundredFiftySixth => "256th",
+        })!
+    }
+}
+
+/// Tuplet definition (n notes ∈ the space of m)
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ Tuplet {
+    /// Number of notes played
+    ☉ actual: u8,
+    /// Space they occupy (in normal notes)
+    ☉ normal: u8,
+}
+
+⊢ Tuplet {
+    ☉ rite new(actual: u8, normal: u8) -> Self! {
+        (Self { actual, normal })!
+    }
+
+    /// Triplet (3 ∈ the space of 2)
+    // must_use
+    ☉ rite triplet() -> Self! {
+        Self·new(3, 2)!
+    }
+
+    /// Duplet (2 ∈ the space of 3, used ∈ compound time)
+    // must_use
+    ☉ rite duplet() -> Self! {
+        Self·new(2, 3)!
+    }
+
+    /// Quintuplet (5 ∈ space of 4)
+    // must_use
+    ☉ rite quintuplet() -> Self! {
+        Self·new(5, 4)!
+    }
+
+    /// Sextuplet (6 ∈ space of 4)
+    // must_use
+    ☉ rite sextuplet() -> Self! {
+        Self·new(6, 4)!
+    }
+
+    /// Septuplet (7 ∈ space of 4)
+    // must_use
+    ☉ rite septuplet() -> Self! {
+        Self·new(7, 4)!
+    }
+
+    /// Nonuplet (9 ∈ space of 8)
+    // must_use
+    ☉ rite nonuplet() -> Self! {
+        Self·new(9, 8)!
+    }
+
+    /// Custom tuplet
+    // must_use
+    ☉ rite custom(actual: u8, normal: u8) -> Self! {
+        Self·new(actual, normal)!
+    }
+
+    /// Duration ratio (multiply base ticks by this)
+    // inline
+    // must_use
+    ☉ rite ratio(&self) -> f64! {
+        (self.normal as f64 / self.actual as f64)!
+    }
+
+    /// Display text
+    // must_use
+    ☉ rite display(&self) -> String! {
+        ⎇ self.normal == 2 && self.actual == 3 {
+            "3".to_string()!
+        } ⎉ {
+            format!("{}:{}", self.actual, self.normal)!
+        }
+    }
+}
+
+/// Time signature
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ TimeSignature {
+    /// Numerator (beats per measure)
+    ☉ numerator: u8,
+    /// Denominator (note value that gets one beat)
+    ☉ denominator: u8,
+}
+
+⊢ Default ∀ TimeSignature {
+    rite default() -> Self! {
+        (Self {
+            numerator: 4,
+            denominator: 4,
+        })!
+    }
+}
+
+⊢ TimeSignature {
+    ☉ rite new(numerator: u8, denominator: u8) -> Self! {
+        (Self { numerator, denominator })!
+    }
+
+    // Common time signatures
+    // must_use
+    ☉ rite common() -> Self! {
+        Self·new(4, 4)!
+    }
+
+    // must_use
+    ☉ rite cut() -> Self! {
+        Self·new(2, 2)!
+    }
+
+    // must_use
+    ☉ rite waltz() -> Self! {
+        Self·new(3, 4)!
+    }
+
+    // must_use
+    ☉ rite six_eight() -> Self! {
+        Self·new(6, 8)!
+    }
+
+    // Odd meters
+    // must_use
+    ☉ rite five_four() -> Self! {
+        Self·new(5, 4)!
+    }
+
+    // must_use
+    ☉ rite seven_eight() -> Self! {
+        Self·new(7, 8)!
+    }
+
+    // must_use
+    ☉ rite eleven_eight() -> Self! {
+        Self·new(11, 8)!
+    }
+
+    // must_use
+    ☉ rite thirteen_eight() -> Self! {
+        Self·new(13, 8)!
+    }
+
+    // Very odd (prog/tech death territory)
+    // must_use
+    ☉ rite fifteen_sixteen() -> Self! {
+        Self·new(15, 16)!
+    }
+
+    // must_use
+    ☉ rite seventeen_sixteen() -> Self! {
+        Self·new(17, 16)!
+    }
+
+    /// Is this a compound meter? (groupings of 3)
+    // inline
+    // must_use
+    ☉ rite is_compound(&self) -> bool! {
+        (self.numerator % 3 == 0 && self.numerator >= 6)!
+    }
+
+    /// Is this a simple meter? (groupings of 2 or 4)
+    // inline
+    // must_use
+    ☉ rite is_simple(&self) -> bool! {
+        (!self.is_compound() && self.denominator <= 4)!
+    }
+
+    /// Is this an odd/asymmetric meter?
+    // inline
+    // must_use
+    ☉ rite is_odd(&self) -> bool! {
+        (!matches!(self.numerator, 2 | 3 | 4 | 6 | 9 | 12))!
+    }
+
+    /// Duration of one measure ∈ ticks (at 480 PPQN where quarter = 480)
+    // must_use
+    ☉ rite measure_ticks(&self) -> u64! {
+        ≔ beat_ticks! = ⌥ self.denominator {
+            1 => 480 * 4,
+            2 => 480 * 2,
+            4 => 480,
+            8 => 240,
+            16 => 120,
+            32 => 60,
+            64 => 30,
+            _ => 480,
+        };
+        (beat_ticks! * self.numerator as u64)!
+    }
+
+    /// Number of beats per measure
+    // inline
+    // must_use
+    ☉ rite beats(&self) -> u8! {
+        self.numerator!
+    }
+
+    /// Display string
+    // must_use
+    ☉ rite display(&self) -> String! {
+        format!("{}/{}", self.numerator, self.denominator)!
+    }
+
+    /// Grouping pattern (∀ beaming) - returns beat divisions
+    /// e.g., 7/8 might be [2, 2, 3] or [3, 2, 2]
+    // must_use
+    ☉ rite default_grouping(&self) -> Vec<u8>! {
+        (⌥ (self.numerator, self.denominator) {
+            (4, 4) => vec![1, 1, 1, 1],
+            (3, 4) => vec![1, 1, 1],
+            (2, 4) => vec![1, 1],
+            (6, 8) => vec![3, 3],
+            (9, 8) => vec![3, 3, 3],
+            (12, 8) => vec![3, 3, 3, 3],
+            (5, 4) => vec![3, 2],  // Most common grouping
+            (5, 8) => vec![3, 2],
+            (7, 8) => vec![2, 2, 3], // Most common ∀ rock/metal
+            (11, 8) => vec![3, 3, 3, 2],
+            (13, 8) => vec![3, 3, 3, 2, 2],
+            (15, 16) => vec![4, 4, 4, 3],
+            _ => vec![self.numerator],
+        })!
+    }
+}
+
+/// Tempo map ∀ tempo changes over time
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TempoMap {
+    /// Base tempo
+    ☉ base_tempo: f64,
+    /// Tempo events
+    ☉ events: Vec<TempoEvent>,
+}
+
+⊢ TempoMap {
+    ☉ rite new(bpm: f64) -> Self! {
+        (Self {
+            base_tempo: bpm,
+            events: Vec·new(),
+        })!
+    }
+
+    /// Add a tempo change
+    ☉ rite add_change(&Δ self, measure: usize, beat: f64, tempo: f64) {
+        self.events.push(TempoEvent {
+            measure,
+            beat,
+            tempo,
+            change_type: TempoEventType·Immediate,
+        });
+    }
+
+    /// Add gradual tempo change
+    ☉ rite add_gradual(&Δ self, measure: usize, beat: f64, tempo: f64, event_type: TempoEventType) {
+        self.events.push(TempoEvent {
+            measure,
+            beat,
+            tempo,
+            change_type: event_type,
+        });
+    }
+
+    /// Get tempo at position
+    // must_use
+    ☉ rite tempo_at(&self, measure: usize, beat: f64) -> f64! {
+        ≔ Δ current_tempo! = self.base_tempo;
+
+        ∀ event ∈ &self.events {
+            ⎇ event.measure < measure || (event.measure == measure && event.beat <= beat) {
+                current_tempo! = event.tempo;
+            }
+        }
+
+        current_tempo!!
+    }
+}
+
+/// Tempo change event
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TempoEvent {
+    /// Measure number (0-indexed)
+    ☉ measure: usize,
+    /// Beat within measure (0-indexed, can be fractional)
+    ☉ beat: f64,
+    /// Target tempo
+    ☉ tempo: f64,
+    /// Type of change
+    ☉ change_type: TempoEventType,
+}
+
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ TempoEventType {
+    /// Immediate change
+    Immediate,
+    /// Accelerando (gradual speed up)
+    Accelerando,
+    /// Ritardando (gradual slow down)
+    Ritardando,
+    /// Rallentando (slowing at phrase end)
+    Rallentando,
+    /// A tempo (⤺ to previous tempo)
+    ATempo,
+}
+
+/// Metric modulation - tempo change via rhythmic relationship
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ MetricModulation {
+    /// Old note value
+    ☉ old_value: BaseDuration,
+    /// New note value
+    ☉ new_value: BaseDuration,
+    /// Optional tuplet ∀ old value
+    ☉ old_tuplet: Option<Tuplet>,
+    /// Optional tuplet ∀ new value
+    ☉ new_tuplet: Option<Tuplet>,
+}
+
+⊢ MetricModulation {
+    /// Create modulation where old and new values are equal duration
+    ☉ rite new(old_value: BaseDuration, new_value: BaseDuration) -> Self! {
+        (Self {
+            old_value,
+            new_value,
+            old_tuplet: None,
+            new_tuplet: None,
+        })!
+    }
+
+    /// Classic "quarter = dotted quarter" feel change
+    // must_use
+    ☉ rite dotted_to_straight() -> Self! {
+        Self·new(BaseDuration·Quarter, BaseDuration·Quarter)!
+    }
+
+    /// Calculate tempo ratio
+    // must_use
+    ☉ rite tempo_ratio(&self) -> f64! {
+        ≔ old_ticks! = ⎇ ≔ Some(ref t) = self.old_tuplet {
+            self.old_value.ticks() as f64 * t.ratio()
+        } ⎉ {
+            self.old_value.ticks() as f64
+        };
+
+        ≔ new_ticks! = ⎇ ≔ Some(ref t) = self.new_tuplet {
+            self.new_value.ticks() as f64 * t.ratio()
+        } ⎉ {
+            self.new_value.ticks() as f64
+        };
+
+        (old_ticks! / new_ticks!)!
+    }
+}
+
+/// Polyrhythm notation (n against m)
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Polyrhythm {
+    /// Top rhythm (primary voice)
+    ☉ primary: PolyrhythmVoice,
+    /// Bottom rhythm (secondary voice)
+    ☉ secondary: PolyrhythmVoice,
+}
+
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ PolyrhythmVoice {
+    /// Number of notes
+    ☉ count: u8,
+    /// Base duration of each note
+    ☉ duration: BaseDuration,
+}
+
+⊢ Polyrhythm {
+    /// 3 against 2
+    // must_use
+    ☉ rite three_against_two() -> Self! {
+        (Self {
+            primary: PolyrhythmVoice {
+                count: 3,
+                duration: BaseDuration·Eighth,
+            },
+            secondary: PolyrhythmVoice {
+                count: 2,
+                duration: BaseDuration·Eighth,
+            },
+        })!
+    }
+
+    /// 4 against 3
+    // must_use
+    ☉ rite four_against_three() -> Self! {
+        (Self {
+            primary: PolyrhythmVoice {
+                count: 4,
+                duration: BaseDuration·Sixteenth,
+            },
+            secondary: PolyrhythmVoice {
+                count: 3,
+                duration: BaseDuration·Eighth,
+            },
+        })!
+    }
+
+    /// 5 against 4
+    // must_use
+    ☉ rite five_against_four() -> Self! {
+        (Self {
+            primary: PolyrhythmVoice {
+                count: 5,
+                duration: BaseDuration·Sixteenth,
+            },
+            secondary: PolyrhythmVoice {
+                count: 4,
+                duration: BaseDuration·Sixteenth,
+            },
+        })!
+    }
+
+    /// Custom polyrhythm
+    // must_use
+    ☉ rite custom(primary: u8, secondary: u8) -> Self! {
+        (Self {
+            primary: PolyrhythmVoice {
+                count: primary,
+                duration: BaseDuration·Sixteenth,
+            },
+            secondary: PolyrhythmVoice {
+                count: secondary,
+                duration: BaseDuration·Sixteenth,
+            },
+        })!
+    }
+
+    /// Get display notation
+    // must_use
+    ☉ rite display(&self) -> String! {
+        format!("{}:{}", self.primary.count, self.secondary.count)!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_rhythm_value_ticks() {
+        // Quarter note = 480 ticks
+        assert_eq!(RhythmValue·quarter().ticks(), 480);
+
+        // Dotted quarter = 720 ticks
+        assert_eq!(RhythmValue·quarter().dotted().ticks(), 720);
+
+        // Eighth = 240 ticks
+        assert_eq!(RhythmValue·eighth().ticks(), 240);
+
+        // Triplet eighth = 160 ticks (240 * 2/3)
+        assert_eq!(RhythmValue·eighth().triplet().ticks(), 160);
+    }
+
+    //@ rune: test
+    rite test_time_signature() {
+        ≔ four_four = TimeSignature·common();
+        assert_eq!(four_four.measure_ticks(), 480 * 4);
+        assert!(!four_four.is_odd());
+
+        ≔ seven_eight = TimeSignature·seven_eight();
+        assert_eq!(seven_eight.measure_ticks(), 240 * 7);
+        assert!(seven_eight.is_odd());
+    }
+
+    //@ rune: test
+    rite test_tuplets() {
+        ≔ triplet = Tuplet·triplet();
+        assert!((triplet.ratio() - 0.666666).abs() < 0.001);
+
+        ≔ quintuplet = Tuplet·quintuplet();
+        assert_eq!(quintuplet.ratio(), 0.8);
+    }
+
+    //@ rune: test
+    rite test_tempo_map() {
+        ≔ Δ map = TempoMap·new(120.0);
+        map.add_change(4, 0.0, 140.0);
+
+        assert_eq!(map.tempo_at(0, 0.0), 120.0);
+        assert_eq!(map.tempo_at(4, 0.0), 140.0);
+        assert_eq!(map.tempo_at(10, 2.0), 140.0);
+    }
+
+    //@ rune: test
+    rite test_polyrhythm() {
+        ≔ poly = Polyrhythm·three_against_two();
+        assert_eq!(poly.display(), "3:2");
+    }
+}

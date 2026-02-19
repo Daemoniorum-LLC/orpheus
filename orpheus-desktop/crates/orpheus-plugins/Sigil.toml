@@ -1,0 +1,75 @@
+# Sigil manifest for orpheus-plugins
+#
+# Plugin hosting for Orpheus - VST3/CLAP support.
+
+[package]
+name = "orpheus-plugins"
+version = "0.1.0"
+description = "Plugin hosting for Orpheus - VST3/CLAP support"
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+
+# Dynamic library loading
+libloading = "0.8"
+
+# Directory discovery
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    # Root
+    "src-sg/lib.sg",
+    "src-sg/format.sg",
+    "src-sg/host.sg",
+    "src-sg/scanner.sg",
+
+    # VST3
+    "src-sg/vst3/mod.sg",
+    "src-sg/vst3/com.sg",
+    "src-sg/vst3/ffi.sg",
+    "src-sg/vst3/host.sg",
+    "src-sg/vst3/plugin.sg",
+
+    # CLAP
+    "src-sg/clap/mod.sg",
+    "src-sg/clap/ffi.sg",
+    "src-sg/clap/host.sg",
+    "src-sg/clap/plugin.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error", "repr"]
+
+[build]
+target = "rust"
+output-dir = "src"
+
+[metadata]
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 5861
+file-count = 13

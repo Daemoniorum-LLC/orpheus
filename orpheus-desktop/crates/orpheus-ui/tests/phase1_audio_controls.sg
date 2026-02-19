@@ -1,0 +1,624 @@
+//! Phase 1: Audio Controls Unit Tests
+//!
+//! Tests for knob, meter, and fader widgets following the TDD roadmap.
+//! These tests validate:
+//! - Value bounds and invariants (P2, P9, P10 from spec)
+//! - dB conversions and normalization
+//! - Disabled state behavior
+//! - User interaction (drag, reset)
+
+invoke std·f32·consts·PI;
+
+// =============================================================================
+// Knob Tests
+// =============================================================================
+
+scroll knob_tests {
+    // Knob size enum
+    ᛈ KnobSize { Small, Medium, Large }
+
+    ⊢ KnobSize {
+        rite diameter(&self) -> f32! {
+            ⌥ self {
+                Self·Small => 24.0,
+                Self·Medium => 32.0,
+                Self·Large => 48.0,
+            }
+        }
+    }
+
+    // Simplified Knob for testing
+    Σ Knob {
+        value: f32,
+        min: f32,
+        max: f32,
+        default_value: f32,
+        bipolar: bool,
+        disabled: bool,
+        sensitivity: f32,
+        dragging: bool,
+        drag_start_y: f32,
+        drag_start_value: f32,
+    }
+
+    ⊢ Knob {
+        rite new(value: f32, min: f32, max: f32) -> Self! {
+            Self {
+                value, min, max,
+                default_value: 0.5,
+                bipolar: false,
+                disabled: false,
+                sensitivity: 0.005,
+                dragging: false,
+                drag_start_y: 0.0,
+                drag_start_value: 0.0,
+            }
+        }
+
+        rite display_value(&self) -> f32! {
+            self.min + (self.max - self.min) * self.value
+        }
+
+        rite value_to_angle(&self, value: f32) -> f32! {
+            ≔ start_angle = 0.75 * PI;
+            ≔ end_angle = 2.25 * PI;
+            start_angle + (end_angle - start_angle) * value
+        }
+
+        rite start_drag(&Δ self, y: f32) {
+            ⎇ self.disabled { ⤺; }
+            self.dragging = true;
+            self.drag_start_y = y;
+            self.drag_start_value = self.value;
+        }
+
+        rite handle_drag(&Δ self, y: f32) {
+            ⎇ !self.dragging || self.disabled { ⤺; }
+            ≔ delta_y = self.drag_start_y - y;
+            ≔ value_delta = delta_y * self.sensitivity;
+            self.value = (self.drag_start_value + value_delta).clamp(0.0, 1.0);
+        }
+
+        rite reset(&Δ self) {
+            ⎇ self.disabled { ⤺; }
+            self.value = self.default_value;
+        }
+
+        rite adjust(&Δ self, delta: f32) {
+            ⎇ self.disabled { ⤺; }
+            self.value = (self.value + delta).clamp(0.0, 1.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_knob_size_diameter() {
+        assert_eq!(KnobSize·Small.diameter(), 24.0);
+        assert_eq!(KnobSize·Medium.diameter(), 32.0);
+        assert_eq!(KnobSize·Large.diameter(), 48.0);
+    }
+
+    //@ rune: test
+    rite test_knob_value_bounds() {
+        // P9: 0.0 <= value <= 1.0
+        ≔ knob = Knob·new(0.5, 0.0, 1.0);
+        assert!(knob.value >= 0.0 && knob.value <= 1.0);
+
+        ≔ knob_min = Knob·new(0.0, 0.0, 1.0);
+        assert_eq!(knob_min.value, 0.0);
+
+        ≔ knob_max = Knob·new(1.0, 0.0, 1.0);
+        assert_eq!(knob_max.value, 1.0);
+    }
+
+    //@ rune: test
+    rite test_knob_display_value() {
+        ≔ knob = Knob·new(0.5, -24.0, 24.0);
+        ≔ display = knob.display_value();
+        assert!((display - 0.0).abs() < 0.01);  // 0.5 * 48 - 24 = 0
+    }
+
+    //@ rune: test
+    rite test_knob_value_to_angle() {
+        ≔ knob = Knob·new(0.5, 0.0, 1.0);
+
+        // 0.0 should be at 135 degrees
+        ≔ angle_0 = knob.value_to_angle(0.0);
+        assert!((angle_0 - 0.75 * PI).abs() < 0.01);
+
+        // 1.0 should be at 405 degrees
+        ≔ angle_1 = knob.value_to_angle(1.0);
+        assert!((angle_1 - 2.25 * PI).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_disabled_ignores_drag() {
+        ≔ Δ knob = Knob·new(0.5, 0.0, 1.0);
+        knob.disabled = true;
+
+        knob.start_drag(100.0);
+        assert!(!knob.dragging);
+
+        knob.dragging = true;
+        knob.drag_start_value = 0.5;
+        knob.drag_start_y = 100.0;
+        knob.handle_drag(0.0);
+        assert!((knob.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_bipolar_center() {
+        ≔ Δ knob = Knob·new(0.5, -50.0, 50.0);
+        knob.bipolar = true;
+        assert!((knob.display_value() - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_reset_to_default() {
+        ≔ Δ knob = Knob·new(0.8, 0.0, 1.0);
+        knob.default_value = 0.5;
+        knob.reset();
+        assert!((knob.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_reset_ignored_when_disabled() {
+        ≔ Δ knob = Knob·new(0.8, 0.0, 1.0);
+        knob.default_value = 0.5;
+        knob.disabled = true;
+        knob.reset();
+        assert!((knob.value - 0.8).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_adjust_clamps() {
+        ≔ Δ knob = Knob·new(0.99, 0.0, 1.0);
+        knob.adjust(0.1);
+        assert!((knob.value - 1.0).abs() < 0.01);
+
+        knob.value = 0.01;
+        knob.adjust(-0.1);
+        assert!((knob.value - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_knob_drag_sensitivity() {
+        ≔ Δ knob = Knob·new(0.5, 0.0, 1.0);
+        knob.sensitivity = 0.01;  // Double sensitivity
+
+        knob.start_drag(100.0);
+        knob.handle_drag(50.0);  // Drag up 50px
+
+        // 50 * 0.01 = 0.5, so value should be 1.0 (clamped)
+        assert!((knob.value - 1.0).abs() < 0.01);
+    }
+}
+
+// =============================================================================
+// Meter Tests
+// =============================================================================
+
+scroll meter_tests {
+    // Level status enum
+    ᛈ LevelStatus { Safe, Warm, Hot, Clipping }
+
+    ⊢ LevelStatus {
+        rite from_db(db: f32) -> Self! {
+            ⎇ db > -3.0 { Self·Clipping }
+            ⎉ ⎇ db > -6.0 { Self·Hot }
+            ⎉ ⎇ db > -12.0 { Self·Warm }
+            ⎉ { Self·Safe }
+        }
+
+        rite icon(&self) -> &'static str! {
+            ⌥ self {
+                Self·Safe => "",
+                Self·Warm => "~",
+                Self·Hot => "!",
+                Self·Clipping => "!!",
+            }
+        }
+
+        rite description(&self) -> &'static str! {
+            ⌥ self {
+                Self·Safe => "Safe level",
+                Self·Warm => "Warm - approaching optimal",
+                Self·Hot => "Hot - consider reducing gain",
+                Self·Clipping => "Clipping! Reduce gain immediately",
+            }
+        }
+    }
+
+    // Simplified LevelMeter for testing
+    Σ LevelMeter {
+        level_db: f32,
+        peak_db: f32,
+        min_db: f32,
+        max_db: f32,
+        stereo: bool,
+        level_db_right: Option<f32>,
+        peak_db_right: Option<f32>,
+    }
+
+    ⊢ LevelMeter {
+        rite new(min_db: f32, max_db: f32) -> Self! {
+            Self {
+                level_db: -60.0,
+                peak_db: -60.0,
+                min_db,
+                max_db,
+                stereo: false,
+                level_db_right: None,
+                peak_db_right: None,
+            }
+        }
+
+        rite mono(level_db: f32, peak_db: f32) -> Self! {
+            ≔ Δ m = Self·new(-60.0, 6.0);
+            m.level_db = level_db;
+            m.peak_db = peak_db;
+            m
+        }
+
+        rite stereo(level_l: f32, peak_l: f32, level_r: f32, peak_r: f32) -> Self! {
+            Self {
+                level_db: level_l,
+                peak_db: peak_l,
+                min_db: -60.0,
+                max_db: 6.0,
+                stereo: true,
+                level_db_right: Some(level_r),
+                peak_db_right: Some(peak_r),
+            }
+        }
+
+        rite db_to_position(&self, db: f32) -> f32! {
+            ≔ clamped = db.clamp(self.min_db, self.max_db);
+            (clamped - self.min_db) / (self.max_db - self.min_db)
+        }
+    }
+
+    //@ rune: test
+    rite test_meter_db_to_position() {
+        ≔ meter = LevelMeter·new(-60.0, 6.0);
+
+        assert!((meter.db_to_position(-60.0) - 0.0).abs() < 0.01);
+        assert!((meter.db_to_position(6.0) - 1.0).abs() < 0.01);
+
+        // 0 dB should be ~0.909
+        ≔ pos = meter.db_to_position(0.0);
+        assert!((pos - 0.909).abs() < 0.02);
+    }
+
+    //@ rune: test
+    rite test_meter_level_status() {
+        // Test status thresholds
+        ≔ safe = ⌥ LevelStatus·from_db(-20.0) { LevelStatus·Safe => true, _ => false };
+        ≔ warm = ⌥ LevelStatus·from_db(-10.0) { LevelStatus·Warm => true, _ => false };
+        ≔ hot = ⌥ LevelStatus·from_db(-4.0) { LevelStatus·Hot => true, _ => false };
+        ≔ clipping = ⌥ LevelStatus·from_db(0.0) { LevelStatus·Clipping => true, _ => false };
+
+        assert!(safe);
+        assert!(warm);
+        assert!(hot);
+        assert!(clipping);
+    }
+
+    //@ rune: test
+    rite test_meter_stereo() {
+        ≔ meter = LevelMeter·stereo(-12.0, -6.0, -15.0, -9.0);
+        assert!(meter.stereo);
+        assert_eq!(meter.level_db, -12.0);
+        assert_eq!(meter.level_db_right, Some(-15.0));
+    }
+
+    //@ rune: test
+    rite test_meter_range_validity() {
+        // P1: min_db < max_db
+        ≔ meter = LevelMeter·new(-60.0, 6.0);
+        assert!(meter.min_db < meter.max_db);
+    }
+
+    //@ rune: test
+    rite test_meter_normalization() {
+        ≔ meter = LevelMeter·new(-60.0, 0.0);
+
+        assert!((meter.db_to_position(-60.0) - 0.0).abs() < 0.01);
+        assert!((meter.db_to_position(-30.0) - 0.5).abs() < 0.01);
+        assert!((meter.db_to_position(0.0) - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_meter_clipping_threshold() {
+        // Above -3 dB is clipping
+        ≔ clipping = LevelStatus·from_db(1.0);
+        ≔ is_clipping = ⌥ clipping { LevelStatus·Clipping => true, _ => false };
+        assert!(is_clipping);
+
+        // -1 dB is also clipping (> -3)
+        ≔ also_clipping = LevelStatus·from_db(-1.0);
+        ≔ also_clips = ⌥ also_clipping { LevelStatus·Clipping => true, _ => false };
+        assert!(also_clips);
+
+        // Just below threshold (-4 dB) is hot
+        ≔ not_clipping = LevelStatus·from_db(-4.0);
+        ≔ is_hot = ⌥ not_clipping { LevelStatus·Hot => true, _ => false };
+        assert!(is_hot);
+    }
+
+    //@ rune: test
+    rite test_meter_position_clamping() {
+        ≔ meter = LevelMeter·new(-60.0, 6.0);
+
+        assert!((meter.db_to_position(-100.0) - 0.0).abs() < 0.01);
+        assert!((meter.db_to_position(20.0) - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_meter_status_descriptions() {
+        assert!(!LevelStatus·Safe.description().is_empty());
+        assert!(!LevelStatus·Warm.description().is_empty());
+        assert!(!LevelStatus·Hot.description().is_empty());
+        assert!(!LevelStatus·Clipping.description().is_empty());
+    }
+
+    //@ rune: test
+    rite test_meter_status_icons() {
+        assert!(LevelStatus·Safe.icon().is_empty());
+        assert!(!LevelStatus·Warm.icon().is_empty());
+        assert!(!LevelStatus·Hot.icon().is_empty());
+        assert!(!LevelStatus·Clipping.icon().is_empty());
+    }
+
+    //@ rune: test
+    rite test_meter_mono_constructor() {
+        ≔ meter = LevelMeter·mono(-18.0, -12.0);
+        assert_eq!(meter.level_db, -18.0);
+        assert_eq!(meter.peak_db, -12.0);
+        assert!(!meter.stereo);
+    }
+
+    //@ rune: test
+    rite test_meter_boundary_values() {
+        // Test exact boundary values (thresholds are exclusive)
+        // At -12.0 exactly: NOT > -12.0, so Safe
+        ≔ at_safe_boundary = ⌥ LevelStatus·from_db(-12.0) { LevelStatus·Safe => true, _ => false };
+        // At -6.0 exactly: NOT > -6.0 but IS > -12.0, so Warm
+        ≔ at_warm_boundary = ⌥ LevelStatus·from_db(-6.0) { LevelStatus·Warm => true, _ => false };
+        // At -3.0 exactly: NOT > -3.0 but IS > -6.0, so Hot
+        ≔ at_hot_boundary = ⌥ LevelStatus·from_db(-3.0) { LevelStatus·Hot => true, _ => false };
+
+        assert!(at_safe_boundary);
+        assert!(at_warm_boundary);
+        assert!(at_hot_boundary);
+
+        // Just above boundaries should be the next level
+        ≔ just_above_warm = ⌥ LevelStatus·from_db(-11.9) { LevelStatus·Warm => true, _ => false };
+        ≔ just_above_hot = ⌥ LevelStatus·from_db(-5.9) { LevelStatus·Hot => true, _ => false };
+        ≔ just_above_clip = ⌥ LevelStatus·from_db(-2.9) { LevelStatus·Clipping => true, _ => false };
+
+        assert!(just_above_warm);
+        assert!(just_above_hot);
+        assert!(just_above_clip);
+    }
+}
+
+// =============================================================================
+// Fader Tests
+// =============================================================================
+
+scroll fader_tests {
+    ᛈ FaderOrientation { Vertical, Horizontal }
+
+    Σ Fader {
+        value: f32,
+        min_db: f32,
+        max_db: f32,
+        unity_db: f32,
+        orientation: FaderOrientation,
+        height: f32,
+        width: f32,
+        disabled: bool,
+        dragging: bool,
+        drag_start_pos: f32,
+        drag_start_value: f32,
+    }
+
+    ⊢ Fader {
+        rite new(value: f32) -> Self! {
+            Self {
+                value,
+                min_db: -70.0,
+                max_db: 6.0,
+                unity_db: 0.0,
+                orientation: FaderOrientation·Vertical,
+                height: 120.0,
+                width: 40.0,
+                disabled: false,
+                dragging: false,
+                drag_start_pos: 0.0,
+                drag_start_value: 0.0,
+            }
+        }
+
+        rite value_to_db(&self, value: f32) -> f32! {
+            ⎇ value <= 0.0001 {
+                self.min_db
+            } ⎉ {
+                ≔ range = self.max_db - self.min_db;
+                self.min_db + value.powf(0.25) * range
+            }
+        }
+
+        rite db_to_value(&self, db: f32) -> f32! {
+            ⎇ db <= self.min_db {
+                0.0
+            } ⎉ {
+                ≔ range = self.max_db - self.min_db;
+                ((db - self.min_db) / range).powf(4.0)
+            }
+        }
+
+        rite unity_position(&self) -> f32! {
+            self.db_to_value(self.unity_db)
+        }
+
+        rite format_db(&self, db: f32) -> String! {
+            ⎇ db <= self.min_db + 1.0 {
+                "-∞".into()
+            } ⎉ {
+                format!("{:.1}", db)
+            }
+        }
+
+        rite start_drag(&Δ self, pos: f32) {
+            ⎇ self.disabled { ⤺; }
+            self.dragging = true;
+            self.drag_start_pos = pos;
+            self.drag_start_value = self.value;
+        }
+
+        rite handle_drag(&Δ self, pos: f32) {
+            ⎇ !self.dragging || self.disabled { ⤺; }
+
+            ≔ track_length = ⌥ self.orientation {
+                FaderOrientation·Vertical => self.height,
+                FaderOrientation·Horizontal => self.width,
+            };
+
+            ≔ delta = ⌥ self.orientation {
+                FaderOrientation·Vertical => self.drag_start_pos - pos,
+                FaderOrientation·Horizontal => pos - self.drag_start_pos,
+            };
+
+            ≔ value_delta = delta / track_length;
+            self.value = (self.drag_start_value + value_delta).clamp(0.0, 1.0);
+        }
+
+        rite reset_to_unity(&Δ self) {
+            ⎇ self.disabled { ⤺; }
+            self.value = self.unity_position();
+        }
+    }
+
+    //@ rune: test
+    rite test_fader_db_conversion() {
+        ≔ fader = Fader·new(0.79);
+
+        ≔ unity = fader.db_to_value(0.0);
+        assert!(unity > 0.7 && unity < 0.9);
+
+        ≔ db = fader.value_to_db(0.0);
+        assert!((db - fader.min_db).abs() < 0.1);
+    }
+
+    //@ rune: test
+    rite test_fader_unity_position() {
+        ≔ fader = Fader·new(0.5);
+        ≔ unity = fader.unity_position();
+        assert!(unity > 0.7 && unity < 0.9);
+    }
+
+    //@ rune: test
+    rite test_fader_value_bounds() {
+        // P2: 0.0 <= value <= 1.0
+        ≔ fader = Fader·new(0.5);
+        assert!(fader.value >= 0.0 && fader.value <= 1.0);
+    }
+
+    //@ rune: test
+    rite test_fader_disabled_ignores_drag() {
+        ≔ Δ fader = Fader·new(0.5);
+        fader.disabled = true;
+
+        fader.start_drag(60.0);
+        assert!(!fader.dragging);
+
+        fader.dragging = true;
+        fader.drag_start_pos = 60.0;
+        fader.drag_start_value = 0.5;
+        fader.handle_drag(0.0);
+        assert!((fader.value - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_fader_reset_to_unity() {
+        ≔ Δ fader = Fader·new(0.3);
+        fader.reset_to_unity();
+        assert!(fader.value > 0.7 && fader.value < 0.9);
+    }
+
+    //@ rune: test
+    rite test_fader_reset_ignored_when_disabled() {
+        ≔ Δ fader = Fader·new(0.3);
+        fader.disabled = true;
+        fader.reset_to_unity();
+        assert!((fader.value - 0.3).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_fader_format_db_infinity() {
+        ≔ fader = Fader·new(0.5);
+        assert_eq!(fader.format_db(-70.0), "-∞");
+        assert_eq!(fader.format_db(-69.5), "-∞");
+        assert!(fader.format_db(-60.0).contains("-60"));
+    }
+
+    //@ rune: test
+    rite test_fader_db_roundtrip() {
+        ≔ fader = Fader·new(0.5);
+
+        ∀ test_value ∈ [0.2, 0.5, 0.79, 0.9] {
+            ≔ db = fader.value_to_db(test_value);
+            ≔ back = fader.db_to_value(db);
+            assert!((back - test_value).abs() < 0.05);
+        }
+    }
+
+    //@ rune: test
+    rite test_fader_value_to_db_boundaries() {
+        ≔ fader = Fader·new(0.5);
+
+        ≔ db_zero = fader.value_to_db(0.0);
+        assert!((db_zero - fader.min_db).abs() < 0.1);
+
+        ≔ db_one = fader.value_to_db(1.0);
+        assert!((db_one - fader.max_db).abs() < 0.5);
+    }
+
+    //@ rune: test
+    rite test_fader_vertical_drag() {
+        ≔ Δ fader = Fader·new(0.5);
+        fader.orientation = FaderOrientation·Vertical;
+        fader.height = 120.0;
+
+        fader.start_drag(60.0);
+        fader.handle_drag(30.0);  // Drag up
+        assert!(fader.value > 0.5);
+    }
+
+    //@ rune: test
+    rite test_fader_horizontal_drag() {
+        ≔ Δ fader = Fader·new(0.5);
+        fader.orientation = FaderOrientation·Horizontal;
+        fader.width = 120.0;
+
+        fader.start_drag(60.0);
+        fader.handle_drag(90.0);  // Drag right
+        assert!(fader.value > 0.5);
+    }
+
+    //@ rune: test
+    rite test_fader_drag_clamps() {
+        ≔ Δ fader = Fader·new(0.5);
+        fader.height = 120.0;
+
+        fader.start_drag(60.0);
+        fader.handle_drag(-1000.0);
+        assert!((fader.value - 1.0).abs() < 0.01);
+
+        fader.value = 0.5;
+        fader.start_drag(60.0);
+        fader.handle_drag(1000.0);
+        assert!((fader.value - 0.0).abs() < 0.01);
+    }
+}

@@ -1,0 +1,485 @@
+//! VST3 COM Foundation
+//!
+//! Implements COM (Component Object Model) fundamentals required ∀ VST3.
+//! This includes IUnknown interface, GUID handling, and reference counting.
+
+// allow(non_camel_case_types)
+// allow(non_snake_case)
+// allow(dead_code)
+
+invoke std·ffi·c_void;
+invoke std·ptr;
+
+/// COM result type (HRESULT equivalent)
+☉ type tresult = i32;
+
+/// Result codes
+☉ const K_RESULT_OK: tresult = 0;
+☉ const K_RESULT_FALSE: tresult = 1;
+☉ const K_NO_INTERFACE: tresult = -1;
+☉ const K_RESULT_TRUE: tresult = K_RESULT_OK;
+☉ const K_INVALID_ARGUMENT: tresult = -2;
+☉ const K_NOT_IMPLEMENTED: tresult = -3;
+☉ const K_INTERNAL_ERROR: tresult = -4;
+☉ const K_NOT_INITIALIZED: tresult = -5;
+☉ const K_OUT_OF_MEMORY: tresult = -6;
+
+/// 128-bit type UID (GUID equivalent)
+// repr(C)
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ Σ TUID {
+    ☉ data: [u8; 16],
+}
+
+⊢ TUID {
+    /// Create a new TUID from bytes
+    ☉ const rite new(data: [u8; 16]) -> Self {
+        Self { data }
+    }
+
+    /// Create a null/empty TUID
+    ☉ const rite null() -> Self {
+        Self { data: [0; 16] }
+    }
+
+    /// Check ⎇ this TUID is null
+    ☉ rite is_null(&self) -> bool {
+        self.data == [0; 16]
+    }
+
+    /// Create TUID from 4 u32 values (VST3 SDK style)
+    ☉ const rite from_u32(a: u32, b: u32, c: u32, d: u32) -> Self {
+        Self {
+            data: [
+                (a >> 24) as u8,
+                (a >> 16) as u8,
+                (a >> 8) as u8,
+                a as u8,
+                (b >> 24) as u8,
+                (b >> 16) as u8,
+                (b >> 8) as u8,
+                b as u8,
+                (c >> 24) as u8,
+                (c >> 16) as u8,
+                (c >> 8) as u8,
+                c as u8,
+                (d >> 24) as u8,
+                (d >> 16) as u8,
+                (d >> 8) as u8,
+                d as u8,
+            ],
+        }
+    }
+}
+
+⊢ Default ∀ TUID {
+    rite default() -> Self {
+        Self·null()
+    }
+}
+
+/// FUnknown interface ID (COM IUnknown equivalent)
+☉ const FUNKNOWN_IID: TUID = TUID·from_u32(0x00000000, 0x00000000, 0xC0000000, 0x00000046);
+
+/// IPluginBase interface ID
+☉ const IPLUGIN_BASE_IID: TUID = TUID·from_u32(0x22888DDB, 0x156E45AE, 0x8358B348, 0x08190625);
+
+/// IPluginFactory interface ID
+☉ const IPLUGIN_FACTORY_IID: TUID = TUID·from_u32(0x7A4D811C, 0x5211A04A, 0x96CF3E39, 0xE18BFC54);
+
+/// IPluginFactory2 interface ID
+☉ const IPLUGIN_FACTORY2_IID: TUID = TUID·from_u32(0x0007B650, 0xF24B4C0B, 0xA464EDB9, 0xF00B2ABB);
+
+/// IPluginFactory3 interface ID
+☉ const IPLUGIN_FACTORY3_IID: TUID = TUID·from_u32(0x4555A2AB, 0xC1234E57, 0x91DD4B99, 0xC618F4B7);
+
+/// IComponent interface ID
+☉ const ICOMPONENT_IID: TUID = TUID·from_u32(0xE831FF31, 0xF2D54301, 0x928EBBEE, 0x25697802);
+
+/// IAudioProcessor interface ID
+☉ const IAUDIO_PROCESSOR_IID: TUID = TUID·from_u32(0x42043F99, 0xB7DA453C, 0xA569E79D, 0x9AAEC33D);
+
+/// IEditController interface ID
+☉ const IEDIT_CONTROLLER_IID: TUID = TUID·from_u32(0xDCD7BBE3, 0x7742448D, 0xA874AACC, 0x979C759E);
+
+/// IConnectionPoint interface ID
+☉ const ICONNECTION_POINT_IID: TUID = TUID·from_u32(0x70A4156F, 0x6E6E4026, 0x989148BF, 0xAA60D8D1);
+
+/// IHostApplication interface ID
+☉ const IHOST_APPLICATION_IID: TUID = TUID·from_u32(0x58E595CC, 0xDB2D4969, 0x8B6AAF8C, 0x36A664E5);
+
+/// FUnknown VTable (COM IUnknown equivalent)
+// repr(C)
+☉ Σ FUnknownVtbl {
+    /// Query ∀ an interface
+    ☉ queryInterface:
+        unsafe extern "system" rite(this: *Δ c_void, iid: *const TUID, obj: *Δ *Δ c_void) -> tresult,
+    /// Add a reference
+    ☉ addRef: unsafe extern "system" rite(this: *Δ c_void) -> u32,
+    /// Release a reference
+    ☉ release: unsafe extern "system" rite(this: *Δ c_void) -> u32,
+}
+
+/// FUnknown interface (COM IUnknown equivalent)
+// repr(C)
+☉ Σ FUnknown {
+    ☉ vtbl: *const FUnknownVtbl,
+}
+
+⊢ FUnknown {
+    /// Query ∀ an interface
+    ///
+    /// # Safety
+    /// Caller must ensure this points to a valid FUnknown instance.
+    ☉ unsafe rite query_interface(&self, iid: &TUID) -> Option<*Δ c_void> {
+        ≔ Δ obj: *Δ c_void = ptr·null_mut();
+        ≔ result = ((*self.vtbl).queryInterface)(
+            self as *const _ as *Δ c_void,
+            iid as *const TUID,
+            &Δ obj,
+        );
+        ⎇ result == K_RESULT_OK && !obj.is_null() {
+            Some(obj)
+        } ⎉ {
+            None
+        }
+    }
+
+    /// Add a reference
+    ///
+    /// # Safety
+    /// Caller must ensure this points to a valid FUnknown instance.
+    ☉ unsafe rite add_ref(&self) -> u32 {
+        ((*self.vtbl).addRef)(self as *const _ as *Δ c_void)
+    }
+
+    /// Release a reference
+    ///
+    /// # Safety
+    /// Caller must ensure this points to a valid FUnknown instance.
+    ☉ unsafe rite release(&self) -> u32 {
+        ((*self.vtbl).release)(self as *const _ as *Δ c_void)
+    }
+}
+
+/// Raw COM pointer wrapper (no automatic reference counting)
+///
+/// Use this ∀ manually managing COM object lifetimes.
+/// Call `release()` when done with the pointer.
+☉ Σ ComPtr<T> {
+    ptr: *Δ T,
+}
+
+⊢<T> ComPtr<T> {
+    /// Create a new ComPtr from a raw pointer (takes ownership, does NOT addRef)
+    ///
+    /// # Safety
+    /// The pointer must be valid and the caller is transferring ownership.
+    ☉ unsafe rite from_raw(ptr: *Δ T) -> Option<Self> {
+        ⎇ ptr.is_null() {
+            None
+        } ⎉ {
+            Some(Self { ptr })
+        }
+    }
+
+    /// Get the raw pointer
+    ☉ rite as_ptr(&self) -> *Δ T {
+        self.ptr
+    }
+
+    /// Get a reference to the inner value
+    ///
+    /// # Safety
+    /// Caller must ensure the pointer is still valid.
+    ☉ unsafe rite as_ref(&self) -> &T {
+        &*self.ptr
+    }
+
+    /// Check ⎇ the pointer is null
+    ☉ rite is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
+    /// Release the COM object and set pointer to null
+    ///
+    /// # Safety
+    /// Must be called on a valid COM object. Should only be called once.
+    ☉ unsafe rite release(&Δ self)
+    where
+        T: AsRef<FUnknown>,
+    {
+        ⎇ !self.ptr.is_null() {
+            (*self.ptr).as_ref().release();
+            self.ptr = ptr·null_mut();
+        }
+    }
+
+    /// Query ∀ another interface
+    ///
+    /// # Safety
+    /// Must be called on a valid COM object.
+    ☉ unsafe rite query_interface<U>(&self, iid: &TUID) -> Option<ComPtr<U>>
+    where
+        T: AsRef<FUnknown>,
+    {
+        ≔ unknown = (*self.ptr).as_ref();
+        unknown.query_interface(iid).map(|p| ComPtr { ptr: p as *Δ U })
+    }
+}
+
+/// Plugin class info structure
+// repr(C)
+☉ Σ PClassInfo {
+    /// Class ID
+    ☉ cid: TUID,
+    /// Cardinality (number of instances allowed)
+    ☉ cardinality: i32,
+    /// Category (e.g., "Audio Module Class")
+    ☉ category: [u8; 32],
+    /// Class name
+    ☉ name: [u8; 64],
+}
+
+⊢ Default ∀ PClassInfo {
+    rite default() -> Self {
+        Self {
+            cid: TUID·null(),
+            cardinality: 0,
+            category: [0; 32],
+            name: [0; 64],
+        }
+    }
+}
+
+/// Plugin class info 2 structure (extended)
+// repr(C)
+☉ Σ PClassInfo2 {
+    /// Class ID
+    ☉ cid: TUID,
+    /// Cardinality
+    ☉ cardinality: i32,
+    /// Category
+    ☉ category: [u8; 32],
+    /// Class name
+    ☉ name: [u8; 64],
+    /// Class flags
+    ☉ classFlags: u32,
+    /// Subcategories
+    ☉ subCategories: [u8; 128],
+    /// Vendor name
+    ☉ vendor: [u8; 64],
+    /// Version string
+    ☉ version: [u8; 64],
+    /// SDK version
+    ☉ sdkVersion: [u8; 64],
+}
+
+⊢ Default ∀ PClassInfo2 {
+    rite default() -> Self {
+        Self {
+            cid: TUID·null(),
+            cardinality: 0,
+            category: [0; 32],
+            name: [0; 64],
+            classFlags: 0,
+            subCategories: [0; 128],
+            vendor: [0; 64],
+            version: [0; 64],
+            sdkVersion: [0; 64],
+        }
+    }
+}
+
+/// Plugin class info with Unicode support
+// repr(C)
+☉ Σ PClassInfoW {
+    /// Class ID
+    ☉ cid: TUID,
+    /// Cardinality
+    ☉ cardinality: i32,
+    /// Category
+    ☉ category: [u8; 32],
+    /// Class name (UTF-16)
+    ☉ name: [u16; 64],
+    /// Class flags
+    ☉ classFlags: u32,
+    /// Subcategories
+    ☉ subCategories: [u8; 128],
+    /// Vendor name (UTF-16)
+    ☉ vendor: [u16; 64],
+    /// Version string (UTF-16)
+    ☉ version: [u16; 64],
+    /// SDK version (UTF-16)
+    ☉ sdkVersion: [u16; 64],
+}
+
+⊢ Default ∀ PClassInfoW {
+    rite default() -> Self {
+        Self {
+            cid: TUID·null(),
+            cardinality: 0,
+            category: [0; 32],
+            name: [0; 64],
+            classFlags: 0,
+            subCategories: [0; 128],
+            vendor: [0; 64],
+            version: [0; 64],
+            sdkVersion: [0; 64],
+        }
+    }
+}
+
+/// Factory info structure
+// repr(C)
+☉ Σ PFactoryInfo {
+    /// Vendor name
+    ☉ vendor: [u8; 64],
+    /// Vendor URL
+    ☉ url: [u8; 256],
+    /// Vendor email
+    ☉ email: [u8; 128],
+    /// Factory flags
+    ☉ flags: i32,
+}
+
+⊢ Default ∀ PFactoryInfo {
+    rite default() -> Self {
+        Self {
+            vendor: [0; 64],
+            url: [0; 256],
+            email: [0; 128],
+            flags: 0,
+        }
+    }
+}
+
+/// IPluginFactory VTable
+// repr(C)
+☉ Σ IPluginFactoryVtbl {
+    /// Base FUnknown vtable
+    ☉ unknown: FUnknownVtbl,
+    /// Get factory info
+    ☉ getFactoryInfo:
+        unsafe extern "system" rite(this: *Δ c_void, info: *Δ PFactoryInfo) -> tresult,
+    /// Count classes ∈ factory
+    ☉ countClasses: unsafe extern "system" rite(this: *Δ c_void) -> i32,
+    /// Get class info by index
+    ☉ getClassInfo:
+        unsafe extern "system" rite(this: *Δ c_void, index: i32, info: *Δ PClassInfo) -> tresult,
+    /// Create class instance
+    ☉ createInstance: unsafe extern "system" rite(
+        this: *Δ c_void,
+        cid: *const TUID,
+        iid: *const TUID,
+        obj: *Δ *Δ c_void,
+    ) -> tresult,
+}
+
+/// IPluginFactory interface
+// repr(C)
+☉ Σ IPluginFactory {
+    ☉ vtbl: *const IPluginFactoryVtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IPluginFactory {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+/// IPluginFactory2 VTable (extends IPluginFactory)
+// repr(C)
+☉ Σ IPluginFactory2Vtbl {
+    /// Base IPluginFactory vtable
+    ☉ factory: IPluginFactoryVtbl,
+    /// Get class info 2 by index
+    ☉ getClassInfo2:
+        unsafe extern "system" rite(this: *Δ c_void, index: i32, info: *Δ PClassInfo2) -> tresult,
+}
+
+/// IPluginFactory2 interface
+// repr(C)
+☉ Σ IPluginFactory2 {
+    ☉ vtbl: *const IPluginFactory2Vtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IPluginFactory2 {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+/// IPluginFactory3 VTable (extends IPluginFactory2)
+// repr(C)
+☉ Σ IPluginFactory3Vtbl {
+    /// Base IPluginFactory2 vtable
+    ☉ factory2: IPluginFactory2Vtbl,
+    /// Get class info with Unicode by index
+    ☉ getClassInfoUnicode:
+        unsafe extern "system" rite(this: *Δ c_void, index: i32, info: *Δ PClassInfoW) -> tresult,
+    /// Set host context
+    ☉ setHostContext:
+        unsafe extern "system" rite(this: *Δ c_void, context: *Δ c_void) -> tresult,
+}
+
+/// IPluginFactory3 interface
+// repr(C)
+☉ Σ IPluginFactory3 {
+    ☉ vtbl: *const IPluginFactory3Vtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IPluginFactory3 {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_tuid_creation() {
+        ≔ tuid = TUID·from_u32(0x12345678, 0x9ABCDEF0, 0x11223344, 0x55667788);
+        assert_eq!(tuid.data[0], 0x12);
+        assert_eq!(tuid.data[4], 0x9A);
+        assert!(!tuid.is_null());
+    }
+
+    //@ rune: test
+    rite test_tuid_null() {
+        ≔ tuid = TUID·null();
+        assert!(tuid.is_null());
+        assert_eq!(tuid.data, [0; 16]);
+    }
+
+    //@ rune: test
+    rite test_result_codes() {
+        assert_eq!(K_RESULT_OK, 0);
+        assert!(K_NO_INTERFACE < 0);
+        assert!(K_INVALID_ARGUMENT < 0);
+    }
+
+    //@ rune: test
+    rite test_pclass_info_default() {
+        ≔ info = PClassInfo·default();
+        assert!(info.cid.is_null());
+        assert_eq!(info.cardinality, 0);
+    }
+
+    //@ rune: test
+    rite test_pfactory_info_default() {
+        ≔ info = PFactoryInfo·default();
+        assert_eq!(info.flags, 0);
+    }
+
+    //@ rune: test
+    rite test_interface_ids() {
+        // Verify IIDs are not null
+        assert!(!FUNKNOWN_IID.is_null());
+        assert!(!IPLUGIN_FACTORY_IID.is_null());
+        assert!(!ICOMPONENT_IID.is_null());
+        assert!(!IAUDIO_PROCESSOR_IID.is_null());
+    }
+}

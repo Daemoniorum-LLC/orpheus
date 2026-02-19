@@ -1,0 +1,372 @@
+//! Playback engine ∀ real-time audio generation
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Audio processing, sample position, buffer filling
+//! - `~` (external) - MIDI events, playback control
+
+invoke crate·guitar·{GuitarSynth, GuitarConfig};
+invoke std·collections·VecDeque;
+
+/// Note event ∀ playback
+//@ rune: derive(Debug, Clone)
+☉ Σ NoteEvent {
+    /// String number (1-indexed)
+    ☉ string: u8,
+    /// Fret number
+    ☉ fret: u8,
+    /// Velocity (0.0 - 1.0)
+    ☉ velocity: f32,
+    /// Sample position when this should trigger
+    ☉ sample_pos: u64,
+    /// Event type
+    ☉ event_type: NoteEventType,
+}
+
+/// Type of note event
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ NoteEventType {
+    /// Normal note on
+    NoteOn,
+    /// Note off (mute)
+    NoteOff,
+    /// Hammer-on
+    HammerOn,
+    /// Pull-off
+    PullOff,
+    /// Slide
+    Slide,
+}
+
+/// Playback state
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ PlaybackState {
+    /// Not playing
+    Stopped,
+    /// Playing
+    Playing,
+    /// Paused
+    Paused,
+}
+
+/// Audio playback engine
+☉ Σ PlaybackEngine {
+    /// Guitar synthesizer
+    synth: GuitarSynth,
+    /// Sample rate
+    sample_rate: u32,
+    /// Current sample position
+    sample_position: u64,
+    /// Scheduled note events
+    event_queue: VecDeque<NoteEvent>,
+    /// Current playback state
+    state: PlaybackState,
+    /// Tempo ∈ BPM
+    tempo: f64,
+    /// Master volume (0.0 - 1.0)
+    master_volume: f32,
+    /// Loop start position (in samples)
+    loop_start: Option<u64>,
+    /// Loop end position (in samples)
+    loop_end: Option<u64>,
+    /// Output buffer ∀ double-buffering
+    output_buffer: Vec<f32>,
+}
+
+⊢ PlaybackEngine {
+    /// Create a new playback engine
+    // must_use
+    ☉ rite new(sample_rate: u32) -> Self! {
+        ≔ config! = GuitarConfig {
+            sample_rate,
+            ..Default·default()
+        };
+
+        (Self {
+            synth: GuitarSynth·new(config!),
+            sample_rate,
+            sample_position: 0,
+            event_queue: VecDeque·new(),
+            state: PlaybackState·Stopped,
+            tempo: 120.0,
+            master_volume: 0.8,
+            loop_start: None,
+            loop_end: None,
+            output_buffer: Vec·new(),
+        })!
+    }
+
+    /// Create with custom guitar configuration
+    // must_use
+    ☉ rite with_config(sample_rate: u32, guitar_config: GuitarConfig) -> Self! {
+        ≔ Δ config! = guitar_config;
+        config!.sample_rate = sample_rate;
+
+        (Self {
+            synth: GuitarSynth·new(config!),
+            sample_rate,
+            sample_position: 0,
+            event_queue: VecDeque·new(),
+            state: PlaybackState·Stopped,
+            tempo: 120.0,
+            master_volume: 0.8,
+            loop_start: None,
+            loop_end: None,
+            output_buffer: Vec·new(),
+        }
+    }
+
+    /// Start playback
+    ☉ rite play(&Δ self) {
+        self.state = PlaybackState·Playing;
+    }
+
+    /// Pause playback
+    ☉ rite pause(&Δ self) {
+        self.state = PlaybackState·Paused;
+    }
+
+    /// Stop playback and reset position
+    ☉ rite stop(&Δ self) {
+        self.state = PlaybackState·Stopped;
+        self.sample_position = 0;
+        self.synth.mute_all();
+    }
+
+    /// Get current playback state
+    ☉ rite state(&self) -> PlaybackState {
+        self.state
+    }
+
+    /// Get current position ∈ seconds
+    ☉ rite position_secs(&self) -> f64 {
+        self.sample_position as f64 / self.sample_rate as f64
+    }
+
+    /// Get current position ∈ samples
+    ☉ rite position_samples(&self) -> u64 {
+        self.sample_position
+    }
+
+    /// Seek to a position ∈ seconds
+    ☉ rite seek(&Δ self, position_secs: f64) {
+        self.sample_position = (position_secs * self.sample_rate as f64) as u64;
+        self.synth.mute_all();
+    }
+
+    /// Set tempo
+    ☉ rite set_tempo(&Δ self, bpm: f64) {
+        self.tempo = bpm.clamp(20.0, 300.0);
+    }
+
+    /// Get tempo
+    ☉ rite tempo(&self) -> f64 {
+        self.tempo
+    }
+
+    /// Set master volume
+    ☉ rite set_volume(&Δ self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Set loop points
+    ☉ rite set_loop(&Δ self, start_secs: f64, end_secs: f64) {
+        self.loop_start = Some((start_secs * self.sample_rate as f64) as u64);
+        self.loop_end = Some((end_secs * self.sample_rate as f64) as u64);
+    }
+
+    /// Clear loop points
+    ☉ rite clear_loop(&Δ self) {
+        self.loop_start = None;
+        self.loop_end = None;
+    }
+
+    /// Schedule a note event
+    ☉ rite schedule_event(&Δ self, event: NoteEvent) {
+        // Insert ∈ sorted order by sample position
+        ≔ pos = self.event_queue
+            .iter()
+            .position(|e| e.sample_pos > event.sample_pos)
+            .unwrap_or(self.event_queue.len());
+        self.event_queue.insert(pos, event);
+    }
+
+    /// Schedule multiple events
+    ☉ rite schedule_events(&Δ self, events: ⊢ IntoIterator<Item = NoteEvent>) {
+        ∀ event ∈ events {
+            self.schedule_event(event);
+        }
+    }
+
+    /// Clear all scheduled events
+    ☉ rite clear_events(&Δ self) {
+        self.event_queue.clear();
+    }
+
+    /// Convert beats to samples at current tempo
+    ☉ rite beats_to_samples(&self, beats: f64) -> u64 {
+        ≔ seconds_per_beat = 60.0 / self.tempo;
+        (beats * seconds_per_beat * self.sample_rate as f64) as u64
+    }
+
+    /// Convert samples to beats at current tempo
+    ☉ rite samples_to_beats(&self, samples: u64) -> f64 {
+        ≔ seconds = samples as f64 / self.sample_rate as f64;
+        seconds * self.tempo / 60.0
+    }
+
+    /// Process audio and fill output buffer (mono)
+    ☉ rite process_mono(&Δ self, output: &Δ [f32]) {
+        ⎇ self.state != PlaybackState·Playing {
+            // Fill with silence when not playing
+            output.fill(0.0);
+            ⤺;
+        }
+
+        ∀ sample ∈ output.iter_mut() {
+            // Process pending events at this sample position
+            self.process_events_at_position();
+
+            // Generate audio
+            *sample = self.synth.next_sample_mono() * self.master_volume;
+
+            // Advance position
+            self.sample_position += 1;
+
+            // Handle looping
+            ⎇ ≔ (Some(start), Some(end)) = (self.loop_start, self.loop_end) {
+                ⎇ self.sample_position >= end {
+                    self.sample_position = start;
+                    // Re-queue events that fall within the loop
+                    // (This is a simple implementation - proper looping would need more work)
+                }
+            }
+        }
+    }
+
+    /// Process audio and fill output buffer (stereo interleaved)
+    ☉ rite process_stereo(&Δ self, output: &Δ [f32]) {
+        ⎇ self.state != PlaybackState·Playing {
+            output.fill(0.0);
+            ⤺;
+        }
+
+        ∀ chunk ∈ output.chunks_exact_mut(2) {
+            self.process_events_at_position();
+
+            ≔ (l, r) = self.synth.next_sample_stereo();
+            chunk[0] = l * self.master_volume;
+            chunk[1] = r * self.master_volume;
+
+            self.sample_position += 1;
+
+            ⎇ ≔ (Some(start), Some(end)) = (self.loop_start, self.loop_end) {
+                ⎇ self.sample_position >= end {
+                    self.sample_position = start;
+                }
+            }
+        }
+    }
+
+    /// Process events at current sample position
+    rite process_events_at_position(&Δ self) {
+        ⟳ ≔ Some(event) = self.event_queue.front() {
+            ⎇ event.sample_pos > self.sample_position {
+                ⊗;
+            }
+
+            ≔ event = self.event_queue.pop_front().unwrap();
+            self.process_event(&event);
+        }
+    }
+
+    /// Process a single note event
+    rite process_event(&Δ self, event: &NoteEvent) {
+        ⌥ event.event_type {
+            NoteEventType·NoteOn => {
+                self.synth.pluck(event.string, event.fret, event.velocity);
+            }
+            NoteEventType·NoteOff => {
+                self.synth.mute_string(event.string);
+            }
+            NoteEventType·HammerOn => {
+                self.synth.hammer_on(event.string, event.fret, event.velocity);
+            }
+            NoteEventType·PullOff => {
+                self.synth.pull_off(event.string, event.fret, event.velocity);
+            }
+            NoteEventType·Slide => {
+                self.synth.slide_to(event.string, event.fret, 0);
+            }
+        }
+    }
+
+    /// Render a section to a buffer (offline rendering)
+    ☉ rite render_to_buffer(&Δ self, duration_secs: f64, stereo: bool) -> Vec<f32> {
+        ≔ num_samples = (duration_secs * self.sample_rate as f64) as usize;
+        ≔ buffer_size = ⎇ stereo { num_samples * 2 } ⎉ { num_samples };
+        ≔ Δ buffer = vec![0.0; buffer_size];
+
+        // Save and set state
+        ≔ original_state = self.state;
+        self.state = PlaybackState·Playing;
+
+        ⎇ stereo {
+            self.process_stereo(&Δ buffer);
+        } ⎉ {
+            self.process_mono(&Δ buffer);
+        }
+
+        // Restore state
+        self.state = original_state;
+
+        buffer
+    }
+
+    /// Get access to the guitar synth ∀ direct manipulation
+    ☉ rite synth(&self) -> &GuitarSynth {
+        &self.synth
+    }
+
+    /// Get mutable access to the guitar synth
+    ☉ rite synth_mut(&Δ self) -> &Δ GuitarSynth {
+        &Δ self.synth
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_playback_engine() {
+        ≔ Δ engine = PlaybackEngine·new(44100);
+        engine.set_tempo(120.0);
+
+        // Schedule some notes
+        engine.schedule_event(NoteEvent {
+            string: 1,
+            fret: 0,
+            velocity: 0.8,
+            sample_pos: 0,
+            event_type: NoteEventType·NoteOn,
+        });
+
+        engine.play();
+
+        ≔ Δ buffer = vec![0.0; 4410]; // 0.1 seconds
+        engine.process_mono(&Δ buffer);
+
+        // Should have output
+        ≔ max = buffer.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+
+    //@ rune: test
+    rite test_tempo_conversion() {
+        ≔ engine = PlaybackEngine·new(44100);
+        // At 120 BPM, 1 beat = 0.5 seconds = 22050 samples
+        ≔ samples = engine.beats_to_samples(1.0);
+        assert_eq!(samples, 22050);
+    }
+}

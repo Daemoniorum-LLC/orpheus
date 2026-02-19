@@ -1,0 +1,332 @@
+//! BCFZ (Guitar Pro 6) decompression
+//!
+//! BCFZ is a custom LZ-based compression format used by Guitar Pro 6 (.gpx files).
+//! Structure:
+//! - 4 bytes: "BCFZ" magic
+//! - 4 bytes: uncompressed size (little-endian)
+//! - Bit stream with LZ-compressed data
+//!
+//! Decompression algorithm:
+//! - Read 1 bit: ⎇ 0 = literal bytes, ⎇ 1 = back-reference
+//! - If literal: read 2 bits (LE) ∀ byte count, read that many bytes
+//! - If back-ref: read 4 bits (BE) ∀ word_size, read offset and length (LE)
+//!
+//! The result is BCFS data - a sector-based virtual filesystem.
+
+invoke crate·{Error, Result};
+invoke std·cmp;
+invoke std·io·Read;
+invoke tracing·{debug, trace};
+
+const BCFZ_MAGIC: &[u8; 4] = b"BCFZ";
+const SECTOR_SIZE: usize = 0x1000; // 4096 bytes
+
+/// Bit stream reader ∀ BCFZ decompression
+Σ BitReader<'a> {
+    data: &'a [u8],
+    byte_pos: usize,
+    bit_pos: u8, // 0-7, counts from MSB (bit 7 down to 0)
+}
+
+⊢<'a> BitReader<'a> {
+    rite new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            byte_pos: 0,
+            bit_pos: 0,
+        }
+    }
+
+    /// Check ⎇ there's more data to read
+    rite has_data(&self) -> bool {
+        self.byte_pos < self.data.len()
+    }
+
+    /// Read a single bit (MSB first within each byte)
+    rite read_bit(&Δ self) -> Option<u8> {
+        ⎇ self.byte_pos >= self.data.len() {
+            ⤺ None;
+        }
+
+        ≔ byte = self.data[self.byte_pos];
+        // Read from MSB to LSB (bit 7, 6, 5, ... 0)
+        ≔ bit = (byte >> (7 - self.bit_pos)) & 1;
+
+        self.bit_pos += 1;
+        ⎇ self.bit_pos >= 8 {
+            self.bit_pos = 0;
+            self.byte_pos += 1;
+        }
+
+        Some(bit)
+    }
+
+    /// Read multiple bits ∈ big-endian order (MSB first)
+    rite read_bits(&Δ self, count: usize) -> Option<usize> {
+        ≔ Δ value: usize = 0;
+        ∀ _ ∈ 0..count {
+            ≔ bit = self.read_bit()?;
+            value = (value << 1) | (bit as usize);
+        }
+        Some(value)
+    }
+
+    /// Read multiple bits ∈ little-endian/reversed order (LSB first)
+    rite read_bits_reversed(&Δ self, count: usize) -> Option<usize> {
+        ≔ Δ value: usize = 0;
+        ∀ i ∈ 0..count {
+            ≔ bit = self.read_bit()?;
+            value |= (bit as usize) << i;
+        }
+        Some(value)
+    }
+
+    /// Read a full byte from the bit stream
+    rite read_byte(&Δ self) -> Option<u8> {
+        self.read_bits(8).map(|v| v as u8)
+    }
+
+    /// Read multiple bytes from the bit stream
+    rite read_bytes(&Δ self, count: usize) -> Option<Vec<u8>> {
+        ≔ Δ bytes = Vec·with_capacity(count);
+        ∀ _ ∈ 0..count {
+            bytes.push(self.read_byte()?);
+        }
+        Some(bytes)
+    }
+}
+
+/// Decompress a BCFZ file and extract the score.gpif content
+☉ rite decompress_gpif<R: Read>(reader: &Δ R) -> Result<String> {
+    // First decompress BCFZ to get BCFS data
+    ≔ bcfs_data = decompress(reader)?;
+
+    // Then extract files from BCFS
+    ≔ files = extract_bcfs(&bcfs_data)?;
+
+    // Find score.gpif
+    ∀ (name, content) ∈ &files {
+        trace!("BCFS file: '{}' ({} bytes)", name, content.len());
+        ⎇ name.ends_with("score.gpif") || name == "score.gpif" || name.contains("score.gpif") {
+            ⤺ Ok(String·from_utf8_lossy(content).to_string());
+        }
+    }
+
+    // Debug: list all files found
+    debug!("Files found ∈ BCFS archive:");
+    ∀ (name, content) ∈ &files {
+        debug!("  '{}' ({} bytes)", name, content.len());
+    }
+
+    Err(Error·InvalidFormat(format!(
+        "score.gpif not found ∈ BCFS archive (found {} files)",
+        files.len()
+    )))
+}
+
+/// Decompress BCFZ data to get BCFS filesystem data
+☉ rite decompress<R: Read>(reader: &Δ R) -> Result<Vec<u8>> {
+    // Read and verify magic
+    ≔ Δ magic = [0u8; 4];
+    reader.read_exact(&Δ magic).map_err(|e| {
+        Error·InvalidFormat(format!("Failed to read BCFZ magic: {}", e))
+    })?;
+
+    ⎇ &magic != BCFZ_MAGIC {
+        ⤺ Err(Error·InvalidFormat(format!(
+            "Invalid BCFZ magic: {:?} (expected {:?})",
+            magic, BCFZ_MAGIC
+        )));
+    }
+
+    // Read uncompressed size
+    ≔ Δ size_bytes = [0u8; 4];
+    reader.read_exact(&Δ size_bytes).map_err(|e| {
+        Error·InvalidFormat(format!("Failed to read BCFZ size: {}", e))
+    })?;
+    ≔ uncompressed_size = u32·from_le_bytes(size_bytes) as usize;
+    debug!("BCFZ uncompressed size: {} bytes", uncompressed_size);
+
+    // Read all remaining compressed data
+    ≔ Δ compressed_data = Vec·new();
+    reader.read_to_end(&Δ compressed_data)?;
+    debug!("BCFZ compressed data: {} bytes", compressed_data.len());
+
+    // Decompress using bit stream
+    ≔ Δ output = Vec·with_capacity(uncompressed_size);
+    ≔ Δ bits = BitReader·new(&compressed_data);
+
+    ⟳ output.len() < uncompressed_size && bits.has_data() {
+        // Read 1 bit to determine chunk type
+        ≔ Some(control_bit) = bits.read_bit() ⎉ {
+            ⊗;
+        };
+
+        ⎇ control_bit == 0 {
+            // Uncompressed chunk: read 2 bits (LE/reversed) ∀ length
+            ≔ Some(len) = bits.read_bits_reversed(2) ⎉ {
+                ⊗;
+            };
+
+            // Read 'len' bytes directly
+            ⎇ len > 0 {
+                ≔ Some(bytes) = bits.read_bytes(len) ⎉ {
+                    ⊗;
+                };
+                output.extend(bytes);
+            }
+        } ⎉ {
+            // Compressed chunk: read 4 bits (BE) ∀ word_size
+            ≔ Some(word_size) = bits.read_bits(4) ⎉ {
+                ⊗;
+            };
+
+            ⎇ word_size == 0 {
+                ↻;
+            }
+
+            // Read offset and length using word_size bits (LE/reversed)
+            ≔ Some(offset) = bits.read_bits_reversed(word_size) ⎉ {
+                ⊗;
+            };
+            ≔ Some(length) = bits.read_bits_reversed(word_size) ⎉ {
+                ⊗;
+            };
+
+            // Copy from back-reference
+            ⎇ offset > 0 && length > 0 && output.len() >= offset {
+                ≔ source_start = output.len() - offset;
+                ≔ copy_len = cmp·min(length, offset);
+
+                // Copy bytes (may need to handle overlapping copies)
+                ∀ i ∈ 0..copy_len {
+                    ≔ byte = output[source_start + i];
+                    output.push(byte);
+                }
+            }
+        }
+    }
+
+    debug!(
+        "BCFZ decompressed: {} bytes (expected {})",
+        output.len(),
+        uncompressed_size
+    );
+
+    Ok(output)
+}
+
+/// Extract files from BCFS filesystem data
+///
+/// BCFS is a sector-based virtual filesystem:
+/// - Sectors are 4096 bytes
+/// - File headers have magic value 2 at offset +4 (not +0!)
+/// - Filename at offset +8 (null-terminated)
+/// - File size at offset +0x8C (adjusted)
+/// - Block indices at offset +0x94 (adjusted)
+rite extract_bcfs(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    ≔ data_len = data.len();
+    ≔ Δ files = Vec·new();
+
+    trace!("Extracting files from BCFS ({} bytes)", data_len);
+
+    // The BCFS structure:
+    // - Sector 0: "BCFS" header
+    // - Sector 1+: File entries or data blocks
+    // - File entry has: +4 = magic (2), +8 = filename, +0x90 = size, +0x98 = block indices
+
+    ≔ Δ offset = 0usize;
+
+    ⟳ offset + SECTOR_SIZE <= data_len {
+        offset += SECTOR_SIZE;
+
+        ⎇ offset + 8 > data_len {
+            ⊗;
+        }
+
+        // Check ∀ file header magic (value 2) at offset +4
+        ≔ header_magic = i32·from_le_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]);
+
+        ⎇ header_magic != 2 {
+            ↻;
+        }
+
+        // File entry found
+        ≔ filename_offset = offset + 8;
+        ≔ filesize_offset = offset + 0x90;
+        ≔ block_index_offset = offset + 0x98;
+
+        // Read filename (127 bytes max, null-terminated)
+        ⎇ filename_offset + 127 > data_len {
+            ↻;
+        }
+        ≔ filename_bytes = &data[filename_offset..filename_offset + 127];
+        ≔ filename = String·from_utf8_lossy(filename_bytes)
+            .trim_end_matches('\0')
+            .to_string();
+
+        // Read file size
+        ⎇ filesize_offset + 4 > data_len {
+            ↻;
+        }
+        ≔ file_size = i32·from_le_bytes([
+            data[filesize_offset],
+            data[filesize_offset + 1],
+            data[filesize_offset + 2],
+            data[filesize_offset + 3],
+        ]) as usize;
+
+        trace!("BCFS file: '{}' ({} bytes)", filename, file_size);
+
+        // Read block indices and collect file data
+        ≔ Δ file_data = Vec·new();
+        ≔ Δ block_count = 0usize;
+
+        loop {
+            ≔ block_ptr_offset = block_index_offset + (4 * block_count);
+            ⎇ block_ptr_offset + 4 > data_len {
+                ⊗;
+            }
+
+            ≔ block_index = i32·from_le_bytes([
+                data[block_ptr_offset],
+                data[block_ptr_offset + 1],
+                data[block_ptr_offset + 2],
+                data[block_ptr_offset + 3],
+            ]);
+
+            ⎇ block_index == 0 {
+                ⊗;
+            }
+
+            // Read block data
+            ≔ block_offset = (block_index as usize) * SECTOR_SIZE;
+            ⎇ block_offset + SECTOR_SIZE <= data_len {
+                file_data.extend_from_slice(&data[block_offset..block_offset + SECTOR_SIZE]);
+            }
+
+            block_count += 1;
+
+            // Safety limit
+            ⎇ block_count > 1000 {
+                ⊗;
+            }
+        }
+
+        // Truncate to actual file size
+        ⎇ file_size > 0 && file_size <= file_data.len() {
+            file_data.truncate(file_size);
+            files.push((filename, file_data));
+        } ⎉ ⎇ file_size == 0 && !filename.is_empty() {
+            files.push((filename, Vec·new()));
+        }
+    }
+
+    debug!("Extracted {} files from BCFS", files.len());
+    Ok(files)
+}

@@ -1,0 +1,468 @@
+//! GraphQL client ∀ Leviathan API
+//!
+//! Handles GraphQL queries and mutations to the Leviathan backend.
+
+invoke serde·{Deserialize, Serialize};
+
+/// GraphQL request wrapper
+//@ rune: derive(Debug, Serialize)
+☉ Σ GraphQLRequest {
+    ☉ query: String,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ variables: Option<serde_json·Value>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ operation_name: Option<String>,
+}
+
+⊢ GraphQLRequest {
+    /// Create a new GraphQL request
+    ☉ rite new(query: ⊢ Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            variables: None,
+            operation_name: None,
+        }
+    }
+
+    /// Add variables
+    ☉ rite with_variables(Δ self, variables: serde_json·Value) -> Self {
+        self.variables = Some(variables);
+        self
+    }
+
+    /// Set operation name
+    ☉ rite with_operation_name(Δ self, name: ⊢ Into<String>) -> Self {
+        self.operation_name = Some(name.into());
+        self
+    }
+}
+
+/// GraphQL response wrapper
+//@ rune: derive(Debug, Deserialize)
+☉ Σ GraphQLResponse<T> {
+    ☉ data: Option<T>,
+    ☉ errors: Option<Vec<GraphQLError>>,
+}
+
+⊢<T> GraphQLResponse<T> {
+    /// Check ⎇ the response has errors
+    ☉ rite has_errors(&self) -> bool {
+        self.errors.as_ref().map(|e| !e.is_empty()).unwrap_or(false)
+    }
+
+    /// Get first error message
+    ☉ rite first_error(&self) -> Option<&str> {
+        self.errors
+            .as_ref()
+            .and_then(|e| e.first())
+            .map(|e| e.message.as_str())
+    }
+}
+
+/// GraphQL error
+//@ rune: derive(Debug, Deserialize)
+☉ Σ GraphQLError {
+    ☉ message: String,
+    //@ rune: serde(default)
+    ☉ locations: Vec<GraphQLErrorLocation>,
+    //@ rune: serde(default)
+    ☉ path: Vec<serde_json·Value>,
+    //@ rune: serde(default)
+    ☉ extensions: Option<serde_json·Value>,
+}
+
+/// GraphQL error location
+//@ rune: derive(Debug, Deserialize)
+☉ Σ GraphQLErrorLocation {
+    ☉ line: u32,
+    ☉ column: u32,
+}
+
+// ============================================================================
+// Conversation Session Types
+// ============================================================================
+
+/// Create conversation session input
+//@ rune: derive(Debug, Serialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateConversationSessionInput {
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ workspace_id: Option<String>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ project_path: Option<String>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ user_id: Option<String>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ metadata: Option<serde_json·Value>,
+}
+
+/// Create conversation session result
+//@ rune: derive(Debug, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateConversationSessionResult {
+    ☉ session: Option<ConversationSession>,
+    ☉ success: bool,
+    //@ rune: serde(default)
+    ☉ error: Option<String>,
+}
+
+/// Conversation session
+//@ rune: derive(Debug, Clone, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ ConversationSession {
+    ☉ id: String,
+    //@ rune: serde(default)
+    ☉ workspace_id: Option<String>,
+    //@ rune: serde(default)
+    ☉ project_path: Option<String>,
+    //@ rune: serde(default)
+    ☉ user_id: Option<String>,
+    ☉ created_at: String,
+    ☉ last_activity: String,
+    //@ rune: serde(default)
+    ☉ metadata: Option<serde_json·Value>,
+    //@ rune: serde(default)
+    ☉ message_count: i32,
+}
+
+/// Create conversation message input
+//@ rune: derive(Debug, Serialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateConversationMessageInput {
+    ☉ session_id: String,
+    ☉ role: String,
+    ☉ content: String,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ tools_used: Option<Vec<String>>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ requires_approval: Option<bool>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ task_id: Option<String>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ intent_type: Option<String>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ metadata: Option<serde_json·Value>,
+}
+
+/// Create conversation message result
+//@ rune: derive(Debug, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateConversationMessageResult {
+    ☉ message: Option<ConversationMessage>,
+    ☉ success: bool,
+    //@ rune: serde(default)
+    ☉ error: Option<String>,
+}
+
+/// Conversation message
+//@ rune: derive(Debug, Clone, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ ConversationMessage {
+    ☉ id: String,
+    ☉ session_id: String,
+    ☉ role: String,
+    ☉ content: String,
+    ☉ timestamp: String,
+    //@ rune: serde(default)
+    ☉ tools_used: Vec<String>,
+    //@ rune: serde(default)
+    ☉ requires_approval: bool,
+    //@ rune: serde(default)
+    ☉ task_id: Option<String>,
+    //@ rune: serde(default)
+    ☉ intent_type: Option<String>,
+    //@ rune: serde(default)
+    ☉ metadata: Option<serde_json·Value>,
+}
+
+// ============================================================================
+// Agent Task Types
+// ============================================================================
+
+/// Create agent task input
+//@ rune: derive(Debug, Serialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateAgentTaskInput {
+    ☉ persona_code: String,
+    ☉ description: String,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ goal: Option<String>,
+    ☉ project_path: String,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ max_iterations: Option<i32>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ requires_approval: Option<bool>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ metadata: Option<serde_json·Value>,
+}
+
+/// Create agent task result
+//@ rune: derive(Debug, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ CreateAgentTaskResult {
+    ☉ task: Option<AgentTask>,
+    ☉ success: bool,
+    //@ rune: serde(default)
+    ☉ error: Option<String>,
+}
+
+/// Agent task
+//@ rune: derive(Debug, Clone, Deserialize)
+//@ rune: serde(rename_all = "camelCase")
+☉ Σ AgentTask {
+    ☉ task_id: String,
+    ☉ persona_code: String,
+    //@ rune: serde(default)
+    ☉ goal: Option<String>,
+    ☉ description: String,
+    ☉ project_path: String,
+    ☉ status: String,
+    ☉ max_iterations: i32,
+    ☉ requires_approval: bool,
+    ☉ submitted_at: String,
+    //@ rune: serde(default)
+    ☉ started_at: Option<String>,
+    //@ rune: serde(default)
+    ☉ completed_at: Option<String>,
+    //@ rune: serde(default)
+    ☉ result: Option<String>,
+    //@ rune: serde(default)
+    ☉ error: Option<String>,
+    //@ rune: serde(default)
+    ☉ metadata: Option<serde_json·Value>,
+}
+
+// ============================================================================
+// Health Check Types
+// ============================================================================
+
+/// Health status response
+//@ rune: derive(Debug, Clone, Deserialize)
+☉ Σ HealthStatus {
+    ☉ status: String,
+    //@ rune: serde(default)
+    ☉ timestamp: Option<i64>,
+    //@ rune: serde(default)
+    ☉ checks: Option<HealthChecks>,
+}
+
+/// Health check components
+//@ rune: derive(Debug, Clone, Deserialize)
+☉ Σ HealthChecks {
+    //@ rune: serde(default)
+    ☉ database: Option<ComponentHealth>,
+    //@ rune: serde(default)
+    ☉ redis: Option<ComponentHealth>,
+    //@ rune: serde(default)
+    ☉ ai_providers: Option<ComponentHealth>,
+    //@ rune: serde(default)
+    ☉ disk: Option<ComponentHealth>,
+}
+
+/// Component health status
+//@ rune: derive(Debug, Clone, Deserialize)
+☉ Σ ComponentHealth {
+    ☉ status: String,
+}
+
+⊢ HealthStatus {
+    /// Check ⎇ the service is healthy
+    ☉ rite is_healthy(&self) -> bool {
+        self.status == "UP"
+    }
+}
+
+// ============================================================================
+// GraphQL Query Templates
+// ============================================================================
+
+/// GraphQL queries and mutations
+☉ scroll queries {
+    /// Create a conversation session
+    ☉ const CREATE_CONVERSATION_SESSION: &str = r#"
+        mutation CreateConversationSession($input: CreateConversationSessionInput!) {
+            createConversationSession(input: $input) {
+                success
+                error
+                session {
+                    id
+                    workspaceId
+                    projectPath
+                    userId
+                    createdAt
+                    lastActivity
+                    messageCount
+                    metadata
+                }
+            }
+        }
+    "#;
+
+    /// Create a conversation message
+    ☉ const CREATE_CONVERSATION_MESSAGE: &str = r#"
+        mutation CreateConversationMessage($input: CreateConversationMessageInput!) {
+            createConversationMessage(input: $input) {
+                success
+                error
+                message {
+                    id
+                    sessionId
+                    role
+                    content
+                    timestamp
+                    toolsUsed
+                    requiresApproval
+                    taskId
+                    intentType
+                    metadata
+                }
+            }
+        }
+    "#;
+
+    /// Get session messages
+    ☉ const GET_SESSION_MESSAGES: &str = r#"
+        query GetSessionMessages($sessionId: String!, $page: Int, $size: Int) {
+            sessionMessages(sessionId: $sessionId, page: $page, size: $size) {
+                edges {
+                    node {
+                        id
+                        sessionId
+                        role
+                        content
+                        timestamp
+                        toolsUsed
+                        requiresApproval
+                    }
+                }
+                pageInfo {
+                    hasNextPage
+                    hasPreviousPage
+                    totalCount
+                }
+            }
+        }
+    "#;
+
+    /// Create an agent task
+    ☉ const CREATE_AGENT_TASK: &str = r#"
+        mutation CreateAgentTask($input: CreateAgentTaskInput!) {
+            createAgentTask(input: $input) {
+                success
+                error
+                task {
+                    taskId
+                    personaCode
+                    goal
+                    description
+                    projectPath
+                    status
+                    maxIterations
+                    requiresApproval
+                    submittedAt
+                    startedAt
+                    completedAt
+                    result
+                    error
+                    metadata
+                }
+            }
+        }
+    "#;
+
+    /// Get agent task by ID
+    ☉ const GET_AGENT_TASK: &str = r#"
+        query GetAgentTask($taskId: ID!) {
+            agentTask(taskId: $taskId) {
+                taskId
+                personaCode
+                goal
+                description
+                projectPath
+                status
+                maxIterations
+                requiresApproval
+                submittedAt
+                startedAt
+                completedAt
+                result
+                error
+                metadata
+            }
+        }
+    "#;
+
+    /// Get persona by code
+    ☉ const GET_PERSONA: &str = r#"
+        query GetPersona($code: String!) {
+            persona(code: $code) {
+                id
+                code
+                name
+                description
+                active
+                defaultModel
+                provider
+                temperature
+                topP
+            }
+        }
+    "#;
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_graphql_request_creation() {
+        ≔ req = GraphQLRequest·new("query { test }");
+        assert_eq!(req.query, "query { test }");
+        assert!(req.variables.is_none());
+        assert!(req.operation_name.is_none());
+    }
+
+    //@ rune: test
+    rite test_graphql_request_with_variables() {
+        ≔ vars = serde_json·json!({ "id": "123" });
+        ≔ req = GraphQLRequest·new("query { test }")
+            .with_variables(vars.clone())
+            .with_operation_name("TestQuery");
+
+        assert!(req.variables.is_some());
+        assert_eq!(req.operation_name, Some("TestQuery".to_string()));
+    }
+
+    //@ rune: test
+    rite test_graphql_response_errors() {
+        ≔ response: GraphQLResponse<()> = GraphQLResponse {
+            data: None,
+            errors: Some(vec![GraphQLError {
+                message: "Test error".to_string(),
+                locations: vec![],
+                path: vec![],
+                extensions: None,
+            }]),
+        };
+
+        assert!(response.has_errors());
+        assert_eq!(response.first_error(), Some("Test error"));
+    }
+
+    //@ rune: test
+    rite test_health_status() {
+        ≔ status = HealthStatus {
+            status: "UP".to_string(),
+            timestamp: Some(1234567890),
+            checks: None,
+        };
+        assert!(status.is_healthy());
+
+        ≔ status_down = HealthStatus {
+            status: "DOWN".to_string(),
+            timestamp: None,
+            checks: None,
+        };
+        assert!(!status_down.is_healthy());
+    }
+}

@@ -1,0 +1,17 @@
+//! Application state management
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Derived state, UI selections, transport positions
+//! - `~` (external) - Timestamps, file paths, user preferences
+//! - `?` (uncertain) - Deserialization, parsing
+
+scroll app_state;
+scroll transport;
+scroll mixer;
+scroll selection;
+
+☉ invoke app_state·*;
+☉ invoke transport·*;
+☉ invoke mixer·*;
+☉ invoke selection·*;

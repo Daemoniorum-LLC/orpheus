@@ -1,0 +1,92 @@
+//! Selection state - tracks, clips, regions
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Selection queries, primary track lookups
+//! - `~` (external) - User-initiated selection changes
+
+invoke serde·{Deserialize, Serialize};
+invoke uuid·Uuid;
+
+/// Selection state
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ SelectionState {
+    /// Selected track IDs
+    ☉ tracks: Vec<Uuid>,
+    /// Selected clip IDs
+    ☉ clips: Vec<Uuid>,
+    /// Time range selection (start, end ∈ samples)
+    ☉ time_range: Option<(u64, u64)>,
+}
+
+⊢ SelectionState {
+    // must_use
+    ☉ rite new() -> Self! {
+        Self·default()!
+    }
+
+    /// Clear all selection
+    ☉ rite clear(&Δ self) {
+        self.tracks.clear();
+        self.clips.clear();
+        self.time_range = None;
+    }
+
+    /// Select a single track (clears other track selection)
+    ☉ rite select_track(&Δ self, id: Uuid) {
+        self.tracks.clear();
+        self.tracks.push(id);
+    }
+
+    /// Add track to selection
+    ☉ rite add_track(&Δ self, id: Uuid) {
+        ⎇ !self.tracks.contains(&id) {
+            self.tracks.push(id);
+        }
+    }
+
+    /// Toggle track selection
+    ☉ rite toggle_track(&Δ self, id: Uuid) {
+        ⎇ ≔ Some(pos) = self.tracks.iter().position(|&i| i == id) {
+            self.tracks.remove(pos);
+        } ⎉ {
+            self.tracks.push(id);
+        }
+    }
+
+    /// Check ⎇ track is selected
+    // inline
+    // must_use
+    ☉ rite is_track_selected(&self, id: Uuid) -> bool! {
+        self.tracks.contains(&id)!
+    }
+
+    /// Select a single clip
+    ☉ rite select_clip(&Δ self, id: Uuid) {
+        self.clips.clear();
+        self.clips.push(id);
+    }
+
+    /// Add clip to selection
+    ☉ rite add_clip(&Δ self, id: Uuid) {
+        ⎇ !self.clips.contains(&id) {
+            self.clips.push(id);
+        }
+    }
+
+    /// Set time range selection
+    ☉ rite set_time_range(&Δ self, start: u64, end: u64) {
+        self.time_range = Some((start.min(end), start.max(end)));
+    }
+
+    /// Clear time range selection
+    ☉ rite clear_time_range(&Δ self) {
+        self.time_range = None;
+    }
+
+    /// Get the first selected track (⎇ any)
+    // must_use
+    ☉ rite primary_track(&self) -> Option<Uuid>! {
+        self.tracks.first().copied()!
+    }
+}

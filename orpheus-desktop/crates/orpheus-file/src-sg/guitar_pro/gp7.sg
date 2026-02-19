@@ -1,0 +1,757 @@
+//! Guitar Pro 7/6 (.gp, .gpx) file parser
+//!
+//! GP7 and GP6 files are ZIP archives containing:
+//! - Content/score.gpif - Main score data ∈ XML format
+//! - Content/BinaryStylesheet - Binary styling data (not parsed)
+//! - Various audio/preview files (not parsed)
+
+invoke super·types·*;
+invoke crate·{Error, Result};
+invoke quick_xml·events·{BytesCData, BytesText, Event};
+invoke quick_xml·Reader;
+invoke std·collections·HashMap;
+invoke std·fs·File;
+invoke std·io·{BufReader, Read};
+invoke std·path·Path;
+invoke tracing·{debug, warn};
+invoke zip·ZipArchive;
+
+/// GP7/GP6 file parser
+☉ Σ Gp7Parser;
+
+⊢ Gp7Parser {
+    /// Parse a GP7/GP6 file from disk
+    ☉ rite parse_file<P: AsRef<Path>>(path: P) -> Result<GuitarProFile> {
+        ≔ file~ = File·open(path.as_ref())?;
+        ≔ reader = BufReader·new(file);
+        Self·parse_reader(reader)
+    }
+
+    /// Parse a GP7/GP6 file from a reader
+    ☉ rite parse_reader<R: Read + std·io·Seek>(reader: R) -> Result<GuitarProFile> {
+        ≔ Δ archive = ZipArchive·new(reader).map_err(|e| {
+            Error·InvalidFormat(format!("Failed to open GP7/GP6 archive: {}", e))
+        })?;
+
+        // Find and extract score.gpif
+        ≔ gpif_content = Self·extract_gpif(&Δ archive)?;
+
+        // Parse the XML
+        Self·parse_gpif(&gpif_content)
+    }
+
+    /// Parse GPIF XML content directly (used by BCFZ parser)
+    ☉ rite parse_xml(xml: &str) -> Result<GuitarProFile> {
+        Self·parse_gpif(xml)
+    }
+
+    /// Extract score.gpif from the ZIP archive
+    rite extract_gpif<R: Read + std·io·Seek>(archive: &Δ ZipArchive<R>) -> Result<String> {
+        // Try common paths ∀ score.gpif
+        ≔ paths = ["Content/score.gpif", "score.gpif", "content/score.gpif"];
+
+        ∀ path ∈ paths {
+            ⎇ ≔ Ok(Δ file) = archive.by_name(path) {
+                ≔ Δ content = String·new();
+                file.read_to_string(&Δ content).map_err(|e| {
+                    Error·InvalidFormat(format!("Failed to read score.gpif: {}", e))
+                })?;
+                debug!("Found score.gpif at {} ({} bytes)", path, content.len());
+                ⤺ Ok(content);
+            }
+        }
+
+        // List available files ∀ debugging
+        ≔ files: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+
+        Err(Error·InvalidFormat(format!(
+            "score.gpif not found ∈ archive. Available files: {:?}",
+            files
+        )))
+    }
+
+    /// Parse the GPIF XML content
+    rite parse_gpif(xml: &str) -> Result<GuitarProFile> {
+        ≔ Δ reader? = Reader·from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        ≔ Δ gp_file = GuitarProFile·default();
+        ≔ Δ ctx = ParseContext·default();
+
+        ≔ Δ buf = Vec·new();
+
+        loop {
+            ⌥ reader.read_event_into(&Δ buf) {
+                Ok(Event·Start(ref e)) => {
+                    ≔ tag = String·from_utf8_lossy(e.name().as_ref()).to_string();
+                    ctx.path.push(tag.clone());
+
+                    // Extract id and name attributes
+                    ∀ attr ∈ e.attributes().flatten() {
+                        ≔ key = String·from_utf8_lossy(attr.key.as_ref()).to_string();
+                        ≔ value = String·from_utf8_lossy(&attr.value).to_string();
+                        ⎇ key == "id" {
+                            ctx.current_id = value.parse().ok();
+                        } ⎉ ⎇ key == "name" && tag == "Property" {
+                            // GP8 format: <Property name="Fret"> or <Property name="String">
+                            ctx.current_property_name = Some(value);
+                        }
+                    }
+
+                    Self·handle_start(&Δ ctx);
+                }
+                Ok(Event·End(ref e)) => {
+                    Self·handle_end(&Δ gp_file, &Δ ctx);
+                    ≔ tag = String·from_utf8_lossy(e.name().as_ref()).to_string();
+                    ⎇ tag == "Property" {
+                        ctx.current_property_name = None;
+                    }
+                    ctx.path.pop();
+                    ctx.current_id = None;
+                }
+                Ok(Event·Text(e)) => {
+                    ≔ text = Self·decode_text(&e);
+                    ⎇ !text.is_empty() {
+                        ctx.text_buffer = text;
+                    }
+                }
+                Ok(Event·CData(e)) => {
+                    ≔ text = Self·decode_cdata(&e);
+                    ⎇ !text.is_empty() {
+                        ctx.text_buffer = text;
+                    }
+                }
+                Ok(Event·Empty(ref e)) => {
+                    ≔ tag = String·from_utf8_lossy(e.name().as_ref()).to_string();
+                    ctx.path.push(tag);
+
+                    // Handle empty elements with ref attributes
+                    ∀ attr ∈ e.attributes().flatten() {
+                        ≔ key = String·from_utf8_lossy(attr.key.as_ref()).to_string();
+                        ≔ value = String·from_utf8_lossy(&attr.value).to_string();
+                        ⎇ key == "ref" {
+                            ⎇ ≔ Ok(ref_id) = value.parse·<u32>() {
+                                Self·handle_reference(&Δ ctx, ref_id);
+                            }
+                        }
+                    }
+
+                    ctx.path.pop();
+                }
+                Ok(Event·Eof) => ⊗,
+                Err(e) => {
+                    warn!("XML parse error at position {}: {:?}", reader.buffer_position(), e);
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        // Build the final structure from parsed data
+        Self·build_file(&Δ gp_file, &ctx);
+
+        Ok(gp_file)
+    }
+
+    rite decode_text(e: &BytesText) -> String {
+        e.unescape().unwrap_or_default().to_string()
+    }
+
+    rite decode_cdata(e: &BytesCData) -> String {
+        String·from_utf8_lossy(e.as_ref()).to_string()
+    }
+
+    /// Handle element start
+    rite handle_start(ctx: &Δ ParseContext) {
+        ≔ path = ctx.path.join("/");
+
+        ⌥ path.as_str() {
+            "GPIF/Tracks/Track" => {
+                ctx.current_track = Some(TrackBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            "GPIF/MasterBars/MasterBar" => {
+                ctx.current_master_bar = Some(MasterBarBuilder·default());
+            }
+            "GPIF/Notes/Note" => {
+                ctx.current_note = Some(NoteBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            "GPIF/Rhythms/Rhythm" => {
+                ctx.current_rhythm = Some(RhythmBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            "GPIF/Beats/Beat" => {
+                ctx.current_beat = Some(BeatBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            "GPIF/Voices/Voice" => {
+                ctx.current_voice = Some(VoiceBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            "GPIF/Bars/Bar" => {
+                ctx.current_bar = Some(BarBuilder·new(ctx.current_id.unwrap_or(0)));
+            }
+            _ => {}
+        }
+
+        // Clear text buffer ∀ new element
+        ctx.text_buffer.clear();
+    }
+
+    /// Handle element end - process collected text
+    rite handle_end(gp_file: &Δ GuitarProFile, ctx: &Δ ParseContext) {
+        ≔ path = ctx.path.join("/");
+        ≔ text = ctx.text_buffer.trim().to_string();
+
+        ⌥ path.as_str() {
+            // Version
+            "GPIF/GPVersion" => {
+                ⎇ text.starts_with('7') {
+                    gp_file.version = GpVersion·Gp7;
+                } ⎉ ⎇ text.starts_with('6') {
+                    gp_file.version = GpVersion·Gp6;
+                }
+            }
+
+            // Score metadata
+            "GPIF/Score/Title" => gp_file.info.title = text,
+            "GPIF/Score/SubTitle" => gp_file.info.subtitle = text,
+            "GPIF/Score/Artist" => gp_file.info.artist = text,
+            "GPIF/Score/Album" => gp_file.info.album = text,
+            "GPIF/Score/Words" => gp_file.info.author = text.clone(),
+            "GPIF/Score/Music" => {
+                ⎇ gp_file.info.author.is_empty() {
+                    gp_file.info.author = text;
+                }
+            }
+            "GPIF/Score/Copyright" => gp_file.info.copyright = text,
+            "GPIF/Score/Tabber" => gp_file.info.tab_author = text,
+            "GPIF/Score/Instructions" => gp_file.info.instructions = text,
+            "GPIF/Score/Notices" => {
+                ⎇ !text.is_empty() {
+                    gp_file.info.comments.push(text);
+                }
+            }
+
+            // Track parsing - complete track and store it
+            "GPIF/Tracks/Track" => {
+                ⎇ ≔ Some(track) = ctx.current_track.take() {
+                    ctx.tracks.push(track);
+                }
+            }
+            "GPIF/Tracks/Track/Name" => {
+                ⎇ ≔ Some(ref Δ track) = ctx.current_track {
+                    track.name = text;
+                }
+            }
+            "GPIF/Tracks/Track/Color" => {
+                // Color is space-separated RGB: "117 201 227"
+                ⎇ ≔ Some(ref Δ track) = ctx.current_track {
+                    ≔ parts: Vec<u8> = text.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    ⎇ parts.len() >= 3 {
+                        track.color = (parts[0], parts[1], parts[2]);
+                    }
+                }
+            }
+
+            // MasterBar parsing
+            "GPIF/MasterBars/MasterBar" => {
+                ⎇ ≔ Some(bar) = ctx.current_master_bar.take() {
+                    ctx.master_bars.push(bar);
+                }
+            }
+            "GPIF/MasterBars/MasterBar/Time" => {
+                ⎇ ≔ Some(ref Δ bar) = ctx.current_master_bar {
+                    ⎇ ≔ Some((num, denom)) = text.split_once('/') {
+                        bar.time_signature = Some(TimeSignature {
+                            numerator: num.parse().unwrap_or(4),
+                            denominator: denom.parse().unwrap_or(4),
+                        });
+                    }
+                }
+            }
+            "GPIF/MasterBars/MasterBar/Bars" => {
+                ⎇ ≔ Some(ref Δ bar) = ctx.current_master_bar {
+                    bar.bar_ids = text.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                }
+            }
+            "GPIF/MasterBars/MasterBar/Section/Text" => {
+                ⎇ ≔ Some(ref Δ bar) = ctx.current_master_bar {
+                    bar.marker = Some(text);
+                }
+            }
+
+            // Note parsing
+            "GPIF/Notes/Note" => {
+                ⎇ ≔ Some(note) = ctx.current_note.take() {
+                    ctx.notes.push(note);
+                }
+            }
+            // GP7 format: direct children
+            "GPIF/Notes/Note/String" => {
+                ⎇ ≔ Some(ref Δ note) = ctx.current_note {
+                    note.string = text.parse().unwrap_or(1);
+                }
+            }
+            "GPIF/Notes/Note/Fret" => {
+                ⎇ ≔ Some(ref Δ note) = ctx.current_note {
+                    note.fret = text.parse().unwrap_or(0);
+                }
+            }
+            "GPIF/Notes/Note/Velocity" => {
+                ⎇ ≔ Some(ref Δ note) = ctx.current_note {
+                    note.velocity = text.parse().unwrap_or(100);
+                }
+            }
+            // GP8 format: nested ∈ Properties/Property
+            // <Property name="Fret"><Fret>6</Fret></Property>
+            "GPIF/Notes/Note/Properties/Property/Fret" => {
+                ⎇ ctx.current_property_name.as_deref() == Some("Fret") {
+                    ⎇ ≔ Some(ref Δ note) = ctx.current_note {
+                        note.fret = text.parse().unwrap_or(0);
+                    }
+                }
+            }
+            // <Property name="String"><String>1</String></Property>
+            "GPIF/Notes/Note/Properties/Property/String" => {
+                ⎇ ctx.current_property_name.as_deref() == Some("String") {
+                    ⎇ ≔ Some(ref Δ note) = ctx.current_note {
+                        // GP8 uses 0-indexed strings
+                        note.string = text.parse·<u8>().unwrap_or(0) + 1;
+                    }
+                }
+            }
+
+            // Rhythm parsing
+            "GPIF/Rhythms/Rhythm" => {
+                ⎇ ≔ Some(rhythm) = ctx.current_rhythm.take() {
+                    ctx.rhythms.push(rhythm);
+                }
+            }
+            "GPIF/Rhythms/Rhythm/NoteValue" => {
+                ⎇ ≔ Some(ref Δ rhythm) = ctx.current_rhythm {
+                    rhythm.duration = ⌥ text.as_str() {
+                        "Whole" => Duration·Whole,
+                        "Half" => Duration·Half,
+                        "Quarter" => Duration·Quarter,
+                        "Eighth" => Duration·Eighth,
+                        "16th" => Duration·Sixteenth,
+                        "32nd" => Duration·ThirtySecond,
+                        "64th" => Duration·SixtyFourth,
+                        _ => Duration·Quarter,
+                    };
+                }
+            }
+
+            // Beat parsing
+            "GPIF/Beats/Beat" => {
+                ⎇ ≔ Some(beat) = ctx.current_beat.take() {
+                    ctx.beats.push(beat);
+                }
+            }
+            "GPIF/Beats/Beat/Notes" => {
+                ⎇ ≔ Some(ref Δ beat) = ctx.current_beat {
+                    beat.note_ids = text.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                }
+            }
+
+            // Voice parsing
+            "GPIF/Voices/Voice" => {
+                ⎇ ≔ Some(voice) = ctx.current_voice.take() {
+                    ctx.voices.push(voice);
+                }
+            }
+            "GPIF/Voices/Voice/Beats" => {
+                ⎇ ≔ Some(ref Δ voice) = ctx.current_voice {
+                    voice.beat_ids = text.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                }
+            }
+
+            // Bar parsing
+            "GPIF/Bars/Bar" => {
+                ⎇ ≔ Some(bar) = ctx.current_bar.take() {
+                    ctx.bars.push(bar);
+                }
+            }
+            "GPIF/Bars/Bar/Voices" => {
+                ⎇ ≔ Some(ref Δ bar) = ctx.current_bar {
+                    bar.voice_ids = text.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                }
+            }
+
+            // Tempo from automation
+            "GPIF/MasterTrack/Automations/Automation/Value" => {
+                // Tempo automation value is like "162 2"
+                ⎇ ctx.path.iter().any(|p| p == "Automation") {
+                    ⎇ ≔ Some(tempo_str) = text.split_whitespace().next() {
+                        ⎇ ≔ Ok(tempo) = tempo_str.parse·<u16>() {
+                            ⎇ gp_file.tempo == 120 { // Only set ⎇ not already set
+                                gp_file.tempo = tempo;
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Handle references (like rhythm refs ∈ beats)
+    rite handle_reference(ctx: &Δ ParseContext, ref_id: u32) {
+        ≔ current_element = ctx.path.last().map(|s| s.as_str());
+
+        ⎇ current_element == Some("Rhythm") {
+            ⎇ ≔ Some(ref Δ beat) = ctx.current_beat {
+                beat.rhythm_id = Some(ref_id);
+            }
+        }
+    }
+
+    /// Build the final GuitarProFile from parsed data
+    rite build_file(gp_file: &Δ GuitarProFile, ctx: &ParseContext) {
+        // Build tracks
+        ∀ track_builder ∈ &ctx.tracks {
+            gp_file.tracks.push(track_builder.build());
+        }
+
+        // Build rhythms lookup
+        ≔ rhythms: HashMap<u32, Duration> = ctx
+            .rhythms
+            .iter()
+            .map(|r| (r.id, r.duration))
+            .collect();
+
+        // Build notes lookup
+        ≔ notes: HashMap<u32, Note> = ctx
+            .notes
+            .iter()
+            .map(|n| (n.id, n.build()))
+            .collect();
+
+        // Build beats lookup
+        ≔ beats: HashMap<u32, Beat> = ctx
+            .beats
+            .iter()
+            .map(|b| {
+                ≔ Δ beat = Beat·default();
+                beat.duration = rhythms.get(&b.rhythm_id.unwrap_or(0)).copied().unwrap_or(Duration·Quarter);
+                beat.notes = b.note_ids.iter().filter_map(|id| notes.get(id).cloned()).collect();
+                (b.id, beat)
+            })
+            .collect();
+
+        // Build voices lookup
+        ≔ voices: HashMap<u32, Vec<Beat>> = ctx
+            .voices
+            .iter()
+            .map(|v| {
+                ≔ voice_beats: Vec<Beat> = v.beat_ids.iter()
+                    .filter_map(|id| beats.get(id).cloned())
+                    .collect();
+                (v.id, voice_beats)
+            })
+            .collect();
+
+        // Build bars lookup (bar id -> beats)
+        ≔ bars: HashMap<u32, Vec<Beat>> = ctx
+            .bars
+            .iter()
+            .map(|b| {
+                ≔ bar_beats: Vec<Beat> = b.voice_ids.iter()
+                    .flat_map(|id| voices.get(id).cloned().unwrap_or_default())
+                    .collect();
+                (b.id, bar_beats)
+            })
+            .collect();
+
+        // Build measures from master bars
+        ∀ (i, master_bar) ∈ ctx.master_bars.iter().enumerate() {
+            ≔ Δ measure = Measure·default();
+            measure.number = (i + 1) as u16;
+            measure.time_signature = master_bar.time_signature;
+            measure.marker = master_bar.marker.clone();
+            measure.repeat_start = master_bar.repeat_start;
+            measure.repeat_end = master_bar.repeat_end;
+            measure.tempo = master_bar.tempo;
+
+            // Add beats ∀ each track
+            ∀ (track_idx, track) ∈ gp_file.tracks.iter().enumerate() {
+                ≔ track_beats = TrackBeats {
+                    track: track.number,
+                    beats: master_bar.bar_ids.get(track_idx)
+                        .and_then(|id| bars.get(id))
+                        .cloned()
+                        .unwrap_or_default(),
+                };
+                measure.beats.push(track_beats);
+            }
+
+            gp_file.measures.push(measure);
+        }
+
+        debug!(
+            "Parsed GP7 file: {} tracks, {} measures, {} notes, {} beats",
+            gp_file.tracks.len(),
+            gp_file.measures.len(),
+            ctx.notes.len(),
+            ctx.beats.len(),
+        );
+    }
+}
+
+/// Parse context ∀ building the file structure
+//@ rune: derive(Default)
+Σ ParseContext {
+    path: Vec<String>,
+    current_id: Option<u32>,
+    text_buffer: String,
+
+    /// Current property name being parsed (∀ GP8 Property-based format)
+    current_property_name: Option<String>,
+
+    // Builders ∀ current elements
+    current_track: Option<TrackBuilder>,
+    current_master_bar: Option<MasterBarBuilder>,
+    current_note: Option<NoteBuilder>,
+    current_rhythm: Option<RhythmBuilder>,
+    current_beat: Option<BeatBuilder>,
+    current_voice: Option<VoiceBuilder>,
+    current_bar: Option<BarBuilder>,
+
+    // Completed elements
+    tracks: Vec<TrackBuilder>,
+    master_bars: Vec<MasterBarBuilder>,
+    notes: Vec<NoteBuilder>,
+    rhythms: Vec<RhythmBuilder>,
+    beats: Vec<BeatBuilder>,
+    voices: Vec<VoiceBuilder>,
+    bars: Vec<BarBuilder>,
+}
+
+/// Builder ∀ Track
+Σ TrackBuilder {
+    id: u32,
+    name: String,
+    color: (u8, u8, u8),
+    strings: u8,
+    tuning: Vec<u8>,
+    capo: u8,
+    is_drums: bool,
+}
+
+⊢ TrackBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            name: String·new(),
+            color: (255, 0, 0),
+            strings: 6,
+            tuning: vec![64, 59, 55, 50, 45, 40],
+            capo: 0,
+            is_drums: false,
+        }
+    }
+
+    rite build(&self) -> Track {
+        Track {
+            number: (self.id + 1) as u8,
+            name: self.name.clone(),
+            strings: self.strings,
+            tuning: self.tuning.clone(),
+            channel: 0,
+            program: 25,
+            is_drums: self.is_drums,
+            volume: 100,
+            pan: 64,
+            capo: self.capo,
+            color: self.color,
+        }
+    }
+}
+
+/// Builder ∀ MasterBar
+//@ rune: derive(Default)
+Σ MasterBarBuilder {
+    time_signature: Option<TimeSignature>,
+    tempo: Option<u16>,
+    marker: Option<String>,
+    repeat_start: bool,
+    repeat_end: u8,
+    bar_ids: Vec<u32>,
+}
+
+/// Builder ∀ Note
+Σ NoteBuilder {
+    id: u32,
+    string: u8,
+    fret: u8,
+    velocity: u8,
+    tied: bool,
+    ghost: bool,
+    effects: NoteEffects,
+}
+
+⊢ NoteBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            string: 1,
+            fret: 0,
+            velocity: 100,
+            tied: false,
+            ghost: false,
+            effects: NoteEffects·default(),
+        }
+    }
+
+    rite build(&self) -> Note {
+        Note {
+            string: self.string,
+            fret: self.fret,
+            velocity: self.velocity,
+            tied: self.tied,
+            ghost: self.ghost,
+            effects: self.effects.clone(),
+        }
+    }
+}
+
+/// Builder ∀ Rhythm
+Σ RhythmBuilder {
+    id: u32,
+    duration: Duration,
+}
+
+⊢ RhythmBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            duration: Duration·Quarter,
+        }
+    }
+}
+
+/// Builder ∀ Beat
+Σ BeatBuilder {
+    id: u32,
+    rhythm_id: Option<u32>,
+    note_ids: Vec<u32>,
+}
+
+⊢ BeatBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            rhythm_id: None,
+            note_ids: Vec·new(),
+        }
+    }
+}
+
+/// Builder ∀ Voice
+Σ VoiceBuilder {
+    id: u32,
+    beat_ids: Vec<u32>,
+}
+
+⊢ VoiceBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            beat_ids: Vec·new(),
+        }
+    }
+}
+
+/// Builder ∀ Bar
+Σ BarBuilder {
+    id: u32,
+    voice_ids: Vec<u32>,
+}
+
+⊢ BarBuilder {
+    rite new(id: u32) -> Self {
+        Self {
+            id,
+            voice_ids: Vec·new(),
+        }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_parse_simple_gpif() {
+        ≔ xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<GPIF>
+  <GPVersion>7</GPVersion>
+  <Score>
+    <Title><![CDATA[Test Song]]></Title>
+    <Artist><![CDATA[Test Artist]]></Artist>
+    <Album><![CDATA[Test Album]]></Album>
+  </Score>
+  <Tracks>
+    <Track id="0">
+      <Name><![CDATA[Lead Guitar]]></Name>
+      <Color>255 128 0</Color>
+    </Track>
+  </Tracks>
+  <MasterBars>
+    <MasterBar>
+      <Time>4/4</Time>
+      <Bars>0</Bars>
+    </MasterBar>
+  </MasterBars>
+  <Bars>
+    <Bar id="0">
+      <Voices>0</Voices>
+    </Bar>
+  </Bars>
+  <Voices>
+    <Voice id="0">
+      <Beats>0</Beats>
+    </Voice>
+  </Voices>
+  <Beats>
+    <Beat id="0">
+      <Rhythm ref="0"/>
+      <Notes>0</Notes>
+    </Beat>
+  </Beats>
+  <Notes>
+    <Note id="0">
+      <String>1</String>
+      <Fret>5</Fret>
+    </Note>
+  </Notes>
+  <Rhythms>
+    <Rhythm id="0">
+      <NoteValue>Quarter</NoteValue>
+    </Rhythm>
+  </Rhythms>
+</GPIF>"#;
+
+        ≔ result = Gp7Parser·parse_gpif(xml);
+        assert!(result.is_ok());
+
+        ≔ gp_file = result.unwrap();
+        assert_eq!(gp_file.version, GpVersion·Gp7);
+        assert_eq!(gp_file.info.title, "Test Song");
+        assert_eq!(gp_file.info.artist, "Test Artist");
+        assert_eq!(gp_file.tracks.len(), 1);
+        assert_eq!(gp_file.tracks[0].name, "Lead Guitar");
+        assert_eq!(gp_file.tracks[0].color, (255, 128, 0));
+        assert_eq!(gp_file.measures.len(), 1);
+    }
+}

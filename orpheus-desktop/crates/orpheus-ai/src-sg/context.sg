@@ -1,0 +1,597 @@
+//! Composition Context
+//!
+//! Musical context types ∀ AI-assisted composition.
+
+invoke serde·{Deserialize, Serialize};
+
+/// Musical key signature
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)
+☉ ᛈ Key {
+    // Major keys
+    //@ rune: default
+    CMajor,
+    GMajor,
+    DMajor,
+    AMajor,
+    EMajor,
+    BMajor,
+    FSharpMajor,
+    CSharpMajor,
+    FMajor,
+    BFlatMajor,
+    EFlatMajor,
+    AFlatMajor,
+    DFlatMajor,
+    GFlatMajor,
+
+    // Minor keys
+    AMinor,
+    EMinor,
+    BMinor,
+    FSharpMinor,
+    CSharpMinor,
+    GSharpMinor,
+    DSharpMinor,
+    DMinor,
+    GMinor,
+    CMinor,
+    FMinor,
+    BFlatMinor,
+    EFlatMinor,
+}
+
+⊢ Key {
+    /// Get display name
+    ☉ rite display_name(&self) -> &'static str {
+        ⌥ self {
+            Key·CMajor => "C Major",
+            Key·GMajor => "G Major",
+            Key·DMajor => "D Major",
+            Key·AMajor => "A Major",
+            Key·EMajor => "E Major",
+            Key·BMajor => "B Major",
+            Key·FSharpMajor => "F# Major",
+            Key·CSharpMajor => "C# Major",
+            Key·FMajor => "F Major",
+            Key·BFlatMajor => "Bb Major",
+            Key·EFlatMajor => "Eb Major",
+            Key·AFlatMajor => "Ab Major",
+            Key·DFlatMajor => "Db Major",
+            Key·GFlatMajor => "Gb Major",
+            Key·AMinor => "A Minor",
+            Key·EMinor => "E Minor",
+            Key·BMinor => "B Minor",
+            Key·FSharpMinor => "F# Minor",
+            Key·CSharpMinor => "C# Minor",
+            Key·GSharpMinor => "G# Minor",
+            Key·DSharpMinor => "D# Minor",
+            Key·DMinor => "D Minor",
+            Key·GMinor => "G Minor",
+            Key·CMinor => "C Minor",
+            Key·FMinor => "F Minor",
+            Key·BFlatMinor => "Bb Minor",
+            Key·EFlatMinor => "Eb Minor",
+        }
+    }
+
+    /// Check ⎇ major key
+    ☉ rite is_major(&self) -> bool {
+        matches!(
+            self,
+            Key·CMajor
+                | Key·GMajor
+                | Key·DMajor
+                | Key·AMajor
+                | Key·EMajor
+                | Key·BMajor
+                | Key·FSharpMajor
+                | Key·CSharpMajor
+                | Key·FMajor
+                | Key·BFlatMajor
+                | Key·EFlatMajor
+                | Key·AFlatMajor
+                | Key·DFlatMajor
+                | Key·GFlatMajor
+        )
+    }
+
+    /// Check ⎇ minor key
+    ☉ rite is_minor(&self) -> bool {
+        !self.is_major()
+    }
+
+    /// Get relative key
+    ☉ rite relative(&self) -> Key {
+        ⌥ self {
+            Key·CMajor => Key·AMinor,
+            Key·GMajor => Key·EMinor,
+            Key·DMajor => Key·BMinor,
+            Key·AMajor => Key·FSharpMinor,
+            Key·EMajor => Key·CSharpMinor,
+            Key·BMajor => Key·GSharpMinor,
+            Key·FSharpMajor => Key·DSharpMinor,
+            Key·CSharpMajor => Key·GSharpMinor, // Enharmonic
+            Key·FMajor => Key·DMinor,
+            Key·BFlatMajor => Key·GMinor,
+            Key·EFlatMajor => Key·CMinor,
+            Key·AFlatMajor => Key·FMinor,
+            Key·DFlatMajor => Key·BFlatMinor,
+            Key·GFlatMajor => Key·EFlatMinor,
+            Key·AMinor => Key·CMajor,
+            Key·EMinor => Key·GMajor,
+            Key·BMinor => Key·DMajor,
+            Key·FSharpMinor => Key·AMajor,
+            Key·CSharpMinor => Key·EMajor,
+            Key·GSharpMinor => Key·BMajor,
+            Key·DSharpMinor => Key·FSharpMajor,
+            Key·DMinor => Key·FMajor,
+            Key·GMinor => Key·BFlatMajor,
+            Key·CMinor => Key·EFlatMajor,
+            Key·FMinor => Key·AFlatMajor,
+            Key·BFlatMinor => Key·DFlatMajor,
+            Key·EFlatMinor => Key·GFlatMajor,
+        }
+    }
+}
+
+
+/// Chord type/quality
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ ChordType {
+    /// Major triad
+    Major,
+    /// Minor triad
+    Minor,
+    /// Diminished triad
+    Diminished,
+    /// Augmented triad
+    Augmented,
+    /// Dominant 7th
+    Dominant7,
+    /// Major 7th
+    Major7,
+    /// Minor 7th
+    Minor7,
+    /// Half-diminished 7th
+    HalfDiminished7,
+    /// Diminished 7th
+    Diminished7,
+    /// Suspended 2nd
+    Sus2,
+    /// Suspended 4th
+    Sus4,
+    /// Add9
+    Add9,
+    /// Power chord (5th)
+    Power,
+}
+
+⊢ ChordType {
+    /// Get display suffix
+    ☉ rite suffix(&self) -> &'static str {
+        ⌥ self {
+            ChordType·Major => "",
+            ChordType·Minor => "m",
+            ChordType·Diminished => "dim",
+            ChordType·Augmented => "aug",
+            ChordType·Dominant7 => "7",
+            ChordType·Major7 => "maj7",
+            ChordType·Minor7 => "m7",
+            ChordType·HalfDiminished7 => "ø7",
+            ChordType·Diminished7 => "dim7",
+            ChordType·Sus2 => "sus2",
+            ChordType·Sus4 => "sus4",
+            ChordType·Add9 => "add9",
+            ChordType·Power => "5",
+        }
+    }
+}
+
+/// A chord ∈ the composition
+//@ rune: derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+☉ Σ Chord {
+    /// Root note name (e.g., "C", "F#", "Bb")
+    ☉ root: String,
+    /// Chord type/quality
+    ☉ chord_type: ChordType,
+    /// Bass note ⎇ different from root (e.g., "G" ∀ C/G)
+    ☉ bass: Option<String>,
+}
+
+⊢ Chord {
+    /// Create a new chord
+    ☉ rite new(root: ⊢ Into<String>, chord_type: ChordType) -> Self {
+        Self {
+            root: root.into(),
+            chord_type,
+            bass: None,
+        }
+    }
+
+    /// Create a chord with a bass note
+    ☉ rite with_bass(Δ self, bass: ⊢ Into<String>) -> Self {
+        self.bass = Some(bass.into());
+        self
+    }
+
+    /// Get display name
+    ☉ rite display_name(&self) -> String {
+        ≔ base = format!("{}{}", self.root, self.chord_type.suffix());
+        ⎇ ≔ Some(ref bass) = self.bass {
+            format!("{}/{}", base, bass)
+        } ⎉ {
+            base
+        }
+    }
+
+    /// Common chord constructors
+    ☉ rite c_major() -> Self {
+        Self·new("C", ChordType·Major)
+    }
+
+    ☉ rite g_major() -> Self {
+        Self·new("G", ChordType·Major)
+    }
+
+    ☉ rite d_major() -> Self {
+        Self·new("D", ChordType·Major)
+    }
+
+    ☉ rite a_minor() -> Self {
+        Self·new("A", ChordType·Minor)
+    }
+
+    ☉ rite e_minor() -> Self {
+        Self·new("E", ChordType·Minor)
+    }
+}
+
+/// Time signature
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ Σ TimeSignature {
+    /// Numerator (beats per measure)
+    ☉ numerator: u8,
+    /// Denominator (note value that gets one beat)
+    ☉ denominator: u8,
+}
+
+⊢ TimeSignature {
+    /// Create a new time signature
+    ☉ rite new(numerator: u8, denominator: u8) -> Self {
+        Self { numerator, denominator }
+    }
+
+    /// Common time signatures
+    ☉ rite common() -> Self {
+        Self·new(4, 4)
+    }
+
+    ☉ rite waltz() -> Self {
+        Self·new(3, 4)
+    }
+
+    ☉ rite cut_time() -> Self {
+        Self·new(2, 2)
+    }
+
+    ☉ rite six_eight() -> Self {
+        Self·new(6, 8)
+    }
+
+    /// Get display string
+    ☉ rite display(&self) -> String {
+        format!("{}/{}", self.numerator, self.denominator)
+    }
+}
+
+⊢ Default ∀ TimeSignature {
+    rite default() -> Self {
+        Self·common()
+    }
+}
+
+/// Genre/style hint ∀ the AI
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Genre {
+    Rock,
+    Pop,
+    Jazz,
+    Blues,
+    Metal,
+    Folk,
+    Classical,
+    Electronic,
+    Country,
+    RnB,
+    HipHop,
+    Funk,
+    Reggae,
+    Indie,
+    Progressive,
+}
+
+⊢ Genre {
+    /// Get display name
+    ☉ rite display_name(&self) -> &'static str {
+        ⌥ self {
+            Genre·Rock => "Rock",
+            Genre·Pop => "Pop",
+            Genre·Jazz => "Jazz",
+            Genre·Blues => "Blues",
+            Genre·Metal => "Metal",
+            Genre·Folk => "Folk",
+            Genre·Classical => "Classical",
+            Genre·Electronic => "Electronic",
+            Genre·Country => "Country",
+            Genre·RnB => "R&B",
+            Genre·HipHop => "Hip Hop",
+            Genre·Funk => "Funk",
+            Genre·Reggae => "Reggae",
+            Genre·Indie => "Indie",
+            Genre·Progressive => "Progressive",
+        }
+    }
+}
+
+/// Composition context ∀ AI suggestions
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ CompositionContext {
+    /// Current key signature
+    ☉ key: Key,
+    /// Current tempo ∈ BPM
+    ☉ tempo: f64,
+    /// Time signature
+    ☉ time_signature: TimeSignature,
+    /// Current chord (⎇ any)
+    ☉ current_chord: Option<Chord>,
+    /// Previous chords ∈ progression
+    ☉ chord_history: Vec<Chord>,
+    /// Genre hint
+    ☉ genre: Option<Genre>,
+    /// Current position ∈ bars
+    ☉ position_bars: f64,
+    /// Current section (verse, chorus, etc.)
+    ☉ section: Option<String>,
+    /// Additional notes/context
+    ☉ notes: Option<String>,
+}
+
+⊢ Default ∀ CompositionContext {
+    rite default() -> Self {
+        Self {
+            key: Key·CMajor,
+            tempo: 120.0,
+            time_signature: TimeSignature·common(),
+            current_chord: None,
+            chord_history: Vec·new(),
+            genre: None,
+            position_bars: 0.0,
+            section: None,
+            notes: None,
+        }
+    }
+}
+
+⊢ CompositionContext {
+    /// Create a new composition context
+    ☉ rite new(key: Key, tempo: f64) -> Self {
+        Self {
+            key,
+            tempo,
+            ..Default·default()
+        }
+    }
+
+    /// Set time signature
+    ☉ rite with_time_signature(Δ self, time_sig: TimeSignature) -> Self {
+        self.time_signature = time_sig;
+        self
+    }
+
+    /// Set genre
+    ☉ rite with_genre(Δ self, genre: Genre) -> Self {
+        self.genre = Some(genre);
+        self
+    }
+
+    /// Set current chord
+    ☉ rite with_current_chord(Δ self, chord: Chord) -> Self {
+        self.current_chord = Some(chord);
+        self
+    }
+
+    /// Add chord to history
+    ☉ rite add_chord(&Δ self, chord: Chord) {
+        // Move current chord to history ⎇ exists
+        ⎇ ≔ Some(current) = self.current_chord.take() {
+            self.chord_history.push(current);
+        }
+        self.current_chord = Some(chord);
+    }
+
+    /// Get last N chords from history
+    ☉ rite recent_chords(&self, n: usize) -> Vec<&Chord> {
+        ≔ start = self.chord_history.len().saturating_sub(n);
+        self.chord_history[start..].iter().collect()
+    }
+
+    /// Convert to JSON ∀ AI prompt
+    ☉ rite to_json(&self) -> serde_json·Value {
+        serde_json·json!({
+            "key": self.key.display_name(),
+            "tempo": self.tempo,
+            "time_signature": self.time_signature.display(),
+            "current_chord": self.current_chord.as_ref().map(|c| c.display_name()),
+            "recent_chords": self.recent_chords(4).iter().map(|c| c.display_name()).collect·<Vec<_>>(),
+            "genre": self.genre.map(|g| g.display_name()),
+            "position_bars": self.position_bars,
+            "section": self.section,
+        })
+    }
+}
+
+/// Suggestion type from AI
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ ᛈ SuggestionType {
+    /// Next chord ∈ progression
+    NextChord(Chord),
+    /// Melody notes
+    MelodyNotes(Vec<u8>),
+    /// Rhythm pattern
+    RhythmPattern(String),
+    /// Key modulation
+    KeyModulation(Key),
+    /// Tempo change
+    TempoChange(f64),
+    /// General text advice
+    Advice(String),
+}
+
+/// An AI suggestion ∀ composition
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ CompositionSuggestion {
+    /// Suggestion type
+    ☉ suggestion_type: SuggestionType,
+    /// Confidence level (0.0 - 1.0)
+    ☉ confidence: f64,
+    /// Explanation text
+    ☉ explanation: String,
+    /// Alternative suggestions
+    ☉ alternatives: Vec<SuggestionType>,
+}
+
+⊢ CompositionSuggestion {
+    /// Create a chord suggestion
+    ☉ rite chord(chord: Chord, confidence: f64, explanation: ⊢ Into<String>) -> Self {
+        Self {
+            suggestion_type: SuggestionType·NextChord(chord),
+            confidence,
+            explanation: explanation.into(),
+            alternatives: Vec·new(),
+        }
+    }
+
+    /// Create an advice suggestion
+    ☉ rite advice(text: ⊢ Into<String>) -> Self {
+        Self {
+            suggestion_type: SuggestionType·Advice(text.into()),
+            confidence: 1.0,
+            explanation: String·new(),
+            alternatives: Vec·new(),
+        }
+    }
+
+    /// Add alternative
+    ☉ rite with_alternative(Δ self, alt: SuggestionType) -> Self {
+        self.alternatives.push(alt);
+        self
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_key_properties() {
+        assert!(Key·CMajor.is_major());
+        assert!(!Key·CMajor.is_minor());
+        assert!(Key·AMinor.is_minor());
+        assert!(!Key·AMinor.is_major());
+    }
+
+    //@ rune: test
+    rite test_key_relative() {
+        assert_eq!(Key·CMajor.relative(), Key·AMinor);
+        assert_eq!(Key·AMinor.relative(), Key·CMajor);
+        assert_eq!(Key·GMajor.relative(), Key·EMinor);
+        assert_eq!(Key·EMinor.relative(), Key·GMajor);
+    }
+
+    //@ rune: test
+    rite test_chord_display() {
+        ≔ c = Chord·new("C", ChordType·Major);
+        assert_eq!(c.display_name(), "C");
+
+        ≔ am = Chord·new("A", ChordType·Minor);
+        assert_eq!(am.display_name(), "Am");
+
+        ≔ g7 = Chord·new("G", ChordType·Dominant7);
+        assert_eq!(g7.display_name(), "G7");
+
+        ≔ cmaj7 = Chord·new("C", ChordType·Major7);
+        assert_eq!(cmaj7.display_name(), "Cmaj7");
+
+        ≔ c_over_g = Chord·new("C", ChordType·Major).with_bass("G");
+        assert_eq!(c_over_g.display_name(), "C/G");
+    }
+
+    //@ rune: test
+    rite test_time_signature() {
+        ≔ common = TimeSignature·common();
+        assert_eq!(common.numerator, 4);
+        assert_eq!(common.denominator, 4);
+        assert_eq!(common.display(), "4/4");
+
+        ≔ waltz = TimeSignature·waltz();
+        assert_eq!(waltz.display(), "3/4");
+    }
+
+    //@ rune: test
+    rite test_composition_context() {
+        ≔ Δ ctx = CompositionContext·new(Key·GMajor, 100.0)
+            .with_genre(Genre·Rock)
+            .with_time_signature(TimeSignature·common())
+            .with_current_chord(Chord·g_major());
+
+        assert_eq!(ctx.key, Key·GMajor);
+        assert!((ctx.tempo - 100.0).abs() < 0.01);
+        assert_eq!(ctx.genre, Some(Genre·Rock));
+        assert!(ctx.current_chord.is_some());
+
+        // Add some chords
+        ctx.add_chord(Chord·c_major());
+        ctx.add_chord(Chord·d_major());
+
+        // G should now be ∈ history
+        assert_eq!(ctx.chord_history.len(), 2);
+        assert_eq!(ctx.current_chord.as_ref().unwrap().root, "D");
+
+        // Recent chords
+        ≔ recent = ctx.recent_chords(2);
+        assert_eq!(recent.len(), 2);
+    }
+
+    //@ rune: test
+    rite test_composition_context_to_json() {
+        ≔ ctx = CompositionContext·new(Key·AMajor, 140.0)
+            .with_genre(Genre·Blues)
+            .with_current_chord(Chord·new("A", ChordType·Dominant7));
+
+        ≔ json = ctx.to_json();
+        assert_eq!(json["key"], "A Major");
+        assert_eq!(json["tempo"], 140.0);
+        assert_eq!(json["genre"], "Blues");
+        assert_eq!(json["current_chord"], "A7");
+    }
+
+    //@ rune: test
+    rite test_composition_suggestion() {
+        ≔ suggestion = CompositionSuggestion·chord(
+            Chord·new("D", ChordType·Major),
+            0.85,
+            "D major provides a strong resolution from G7",
+        )
+        .with_alternative(SuggestionType·NextChord(Chord·new("E", ChordType·Minor)));
+
+        assert!((suggestion.confidence - 0.85).abs() < 0.01);
+        assert_eq!(suggestion.alternatives.len(), 1);
+    }
+
+    //@ rune: test
+    rite test_genre_display() {
+        assert_eq!(Genre·Jazz.display_name(), "Jazz");
+        assert_eq!(Genre·RnB.display_name(), "R&B");
+        assert_eq!(Genre·HipHop.display_name(), "Hip Hop");
+    }
+}

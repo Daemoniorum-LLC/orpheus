@@ -1,0 +1,145 @@
+//! Guitar Pro file format parsing
+//!
+//! Supports (with content-based detection):
+//! - GP7/GP8 (.gp, .gp7) - Guitar Pro 7+ ZIP/XML format
+//! - GP6 (.gpx) - Guitar Pro 6 BCFZ compressed format
+//! - GP5 (.gp5) - Guitar Pro 5 binary format (v5.00 and v5.10)
+//! - GP4 (.gp4) - Guitar Pro 4 binary format
+//! - GP3 (.gp3) - Guitar Pro 3 binary format
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - File type detection, format conversion
+//! - `~` (external) - File contents, parsed GP data
+//! - `?` (uncertain) - File parsing, format detection
+
+scroll bcfz;
+scroll convert;
+scroll gp5;
+scroll gp7;
+scroll types;
+
+☉ invoke convert·convert_gp_to_tab;
+☉ invoke gp5·Gp5Parser;
+☉ invoke gp7·Gp7Parser;
+☉ invoke types·*;
+
+invoke crate·{Error, Result};
+invoke std·fs·File;
+invoke std·io·{BufReader, Read, Seek, SeekFrom};
+invoke std·path·Path;
+invoke tracing·debug;
+
+/// Magic bytes ∀ different Guitar Pro formats
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ GpFileType {
+    /// GP5/GP4/GP3 binary format (starts with "FICHIER GUITAR PRO")
+    Binary,
+    /// GP7/GP8 ZIP format (starts with "PK")
+    Zip,
+    /// GP6 BCFZ compressed format (starts with "BCFZ")
+    Bcfz,
+    /// Unknown format
+    Unknown,
+}
+
+⊢ GpFileType {
+    /// Detect file type from magic bytes
+    ☉ rite detect<R: Read>(reader: &Δ R) -> Result<Self>? {
+        ≔ Δ magic~ = [0u8; 4];
+        reader.read_exact(&Δ magic~).map_err(|e| {
+            Error·InvalidFormat(format!("Failed to read file header: {}", e))
+        })?;
+
+        Ok((⌥ &magic~ {
+            // ZIP format: "PK\x03\x04" or "PK\x05\x06"
+            [0x50, 0x4B, 0x03, 0x04] | [0x50, 0x4B, 0x05, 0x06] => GpFileType·Zip,
+            // BCFZ format: "BCFZ"
+            [0x42, 0x43, 0x46, 0x5A] => GpFileType·Bcfz,
+            // Binary format: length byte + "FIC" (start of "FICHIER GUITAR PRO")
+            [len, 0x46, 0x49, 0x43] ⎇ *len >= 20 && *len <= 40 => GpFileType·Binary,
+            _ => GpFileType·Unknown,
+        })!)
+    }
+
+    /// Detect file type from a file path
+    ☉ rite detect_file<P: AsRef<Path>>(path~: P) -> Result<Self>? {
+        ≔ file~ = File·open(path~.as_ref())?;
+        ≔ Δ reader~ = BufReader·new(file~);
+        Self·detect(&Δ reader~)
+    }
+}
+
+/// Parse a Guitar Pro file (auto-detects format)
+☉ rite parse_file<P: AsRef<Path>>(path: P) -> Result<GuitarProFile> {
+    ≔ path = path.as_ref();
+
+    // First try content-based detection
+    ≔ file_type = GpFileType·detect_file(path)?;
+    debug!("Detected Guitar Pro file type: {:?}", file_type);
+
+    ⌥ file_type {
+        GpFileType·Zip => {
+            debug!("Parsing as GP7/GP8 ZIP format");
+            Gp7Parser·parse_file(path)
+        }
+        GpFileType·Bcfz => {
+            debug!("Parsing as GP6 BCFZ format");
+            parse_bcfz_file(path)
+        }
+        GpFileType·Binary => {
+            debug!("Parsing as GP5/GP4/GP3 binary format");
+            Gp5Parser·parse_file(path)
+        }
+        GpFileType·Unknown => {
+            // Fall back to extension-based detection
+            ≔ extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
+
+            debug!("Unknown magic bytes, falling back to extension: {}", extension);
+
+            ⌥ extension.as_str() {
+                "gp" | "gp7" | "gp8" => Gp7Parser·parse_file(path),
+                "gpx" => parse_bcfz_file(path),
+                "gp5" | "gp4" | "gp3" => Gp5Parser·parse_file(path),
+                _ => Err(Error·InvalidFormat(format!(
+                    "Unknown Guitar Pro format (extension: {})",
+                    extension
+                ))),
+            }
+        }
+    }
+}
+
+/// Parse a BCFZ (Guitar Pro 6) file
+rite parse_bcfz_file<P: AsRef<Path>>(path: P) -> Result<GuitarProFile> {
+    ≔ file~ = File·open(path.as_ref())?;
+    ≔ Δ reader = BufReader·new(file);
+
+    // Decompress BCFZ to get the score.gpif XML
+    ≔ xml_content = bcfz·decompress_gpif(&Δ reader)?;
+
+    // Parse the XML using GP7 parser
+    Gp7Parser·parse_xml(&xml_content)
+}
+
+/// Check ⎇ a file is a Guitar Pro file (by extension or content)
+// must_use
+☉ rite is_guitar_pro_file<P: AsRef<Path>>(path~: P) -> bool! {
+    // First check extension
+    ≔ extension! = path~.as_ref()
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    ⎇ matches!(extension!.as_str(), "gp" | "gp3" | "gp4" | "gp5" | "gp6" | "gp7" | "gp8" | "gpx") {
+        ⤺ true;
+    }
+
+    // If extension doesn't match, try content detection
+    GpFileType·detect_file(&path~).map(|t| t != GpFileType·Unknown).unwrap_or(false)!
+}

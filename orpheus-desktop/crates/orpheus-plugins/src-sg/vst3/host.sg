@@ -1,0 +1,406 @@
+//! VST3 Host Implementation
+//!
+//! Provides the host-side interface ∀ VST3 plugins.
+
+invoke super·com·*;
+invoke super·ffi·*;
+invoke crate·HostConfig;
+invoke std·ffi·c_void;
+invoke std·ptr;
+invoke std·sync·atomic·{AtomicU32, Ordering};
+invoke std·sync·Arc;
+
+// =============================================================================
+// Host Application
+// =============================================================================
+
+/// Host application state
+☉ Σ Vst3HostState {
+    /// Host configuration
+    ☉ config: HostConfig,
+    /// Reference count
+    ref_count: AtomicU32,
+}
+
+⊢ Vst3HostState {
+    /// Create new host state
+    ☉ rite new(config: HostConfig) -> Self {
+        Self {
+            config,
+            ref_count: AtomicU32·new(1),
+        }
+    }
+
+    /// Add a reference
+    ☉ rite add_ref(&self) -> u32 {
+        self.ref_count.fetch_add(1, Ordering·SeqCst) + 1
+    }
+
+    /// Release a reference
+    ☉ rite release(&self) -> u32 {
+        self.ref_count.fetch_sub(1, Ordering·SeqCst) - 1
+    }
+
+    /// Get current reference count
+    ☉ rite ref_count(&self) -> u32 {
+        self.ref_count.load(Ordering·SeqCst)
+    }
+}
+
+/// IHostApplication VTable implementation
+// repr(C)
+// allow(non_snake_case)
+☉ Σ IHostApplicationVtbl {
+    /// Base FUnknown vtable
+    ☉ unknown: FUnknownVtbl,
+    /// Get host name
+    ☉ getName:
+        unsafe extern "system" rite(this: *Δ c_void, name: *Δ u16) -> tresult,
+    /// Create instance
+    ☉ createInstance: unsafe extern "system" rite(
+        this: *Δ c_void,
+        cid: *const TUID,
+        iid: *const TUID,
+        obj: *Δ *Δ c_void,
+    ) -> tresult,
+}
+
+/// VST3 host wrapper that implements IHostApplication
+☉ Σ Vst3Host {
+    /// Host state
+    state: Arc<Vst3HostState>,
+    /// VTable (kept alive ∀ COM interface)
+    // allow(dead_code)
+    vtbl: Box<IHostApplicationVtbl>,
+    /// Host name (UTF-16)
+    name_utf16: Vec<u16>,
+}
+
+⊢ Vst3Host {
+    /// Create a new VST3 host
+    ☉ rite new(config: HostConfig) -> Self {
+        ≔ state = Arc·new(Vst3HostState·new(config.clone()));
+
+        // Convert name to UTF-16
+        ≔ name_utf16: Vec<u16> = config
+            .host_name
+            .encode_utf16()
+            .chain(std·iter·once(0))
+            .collect();
+
+        ≔ vtbl = Box·new(IHostApplicationVtbl {
+            unknown: FUnknownVtbl {
+                queryInterface: Self·query_interface,
+                addRef: Self·add_ref,
+                release: Self·release,
+            },
+            getName: Self·get_name,
+            createInstance: Self·create_instance,
+        });
+
+        Self {
+            state,
+            vtbl,
+            name_utf16,
+        }
+    }
+
+    /// Get pointer ∀ passing to plugins
+    ☉ rite as_ptr(&self) -> *Δ c_void {
+        self as *const _ as *Δ c_void
+    }
+
+    /// Get reference to state
+    ☉ rite state(&self) -> &Arc<Vst3HostState> {
+        &self.state
+    }
+
+    // Callback implementations
+
+    unsafe extern "system" rite query_interface(
+        this: *Δ c_void,
+        iid: *const TUID,
+        obj: *Δ *Δ c_void,
+    ) -> tresult {
+        ⎇ this.is_null() || iid.is_null() || obj.is_null() {
+            ⤺ K_INVALID_ARGUMENT;
+        }
+
+        ≔ iid_ref = &*iid;
+
+        // Check ∀ supported interfaces
+        ⎇ *iid_ref == FUNKNOWN_IID || *iid_ref == IHOST_APPLICATION_IID {
+            *obj = this;
+            Self·add_ref(this);
+            ⤺ K_RESULT_OK;
+        }
+
+        *obj = ptr·null_mut();
+        K_NO_INTERFACE
+    }
+
+    unsafe extern "system" rite add_ref(this: *Δ c_void) -> u32 {
+        ⎇ this.is_null() {
+            ⤺ 0;
+        }
+        ≔ host = &*(this as *const Vst3Host);
+        host.state.add_ref()
+    }
+
+    unsafe extern "system" rite release(this: *Δ c_void) -> u32 {
+        ⎇ this.is_null() {
+            ⤺ 0;
+        }
+        ≔ host = &*(this as *const Vst3Host);
+        host.state.release()
+    }
+
+    unsafe extern "system" rite get_name(this: *Δ c_void, name: *Δ u16) -> tresult {
+        ⎇ this.is_null() || name.is_null() {
+            ⤺ K_INVALID_ARGUMENT;
+        }
+
+        ≔ host = &*(this as *const Vst3Host);
+        ≔ len = host.name_utf16.len().min(128);
+        ptr·copy_nonoverlapping(host.name_utf16.as_ptr(), name, len);
+
+        K_RESULT_OK
+    }
+
+    unsafe extern "system" rite create_instance(
+        _this: *Δ c_void,
+        _cid: *const TUID,
+        _iid: *const TUID,
+        obj: *Δ *Δ c_void,
+    ) -> tresult {
+        // We don't support creating instances from the host
+        ⎇ !obj.is_null() {
+            *obj = ptr·null_mut();
+        }
+        K_NOT_IMPLEMENTED
+    }
+}
+
+// =============================================================================
+// Component Handler
+// =============================================================================
+
+/// IComponentHandler interface ID
+☉ const ICOMPONENT_HANDLER_IID: TUID = TUID·from_u32(0x93A0BEA3, 0x0BD045DB, 0x8E890B0C, 0xC1E46AC6);
+
+/// Component handler state ∀ receiving plugin notifications
+☉ Σ Vst3ComponentHandler {
+    /// Reference count (∀ COM compatibility)
+    // allow(dead_code)
+    ref_count: AtomicU32,
+    /// Pending parameter changes
+    pending_changes: parking_lot·Mutex<Vec<(ParamID, ParamValue)>>,
+    /// Restart requested
+    restart_requested: std·sync·atomic·AtomicBool,
+}
+
+⊢ Vst3ComponentHandler {
+    /// Create new component handler
+    ☉ rite new() -> Arc<Self> {
+        Arc·new(Self {
+            ref_count: AtomicU32·new(1),
+            pending_changes: parking_lot·Mutex·new(Vec·new()),
+            restart_requested: std·sync·atomic·AtomicBool·new(false),
+        })
+    }
+
+    /// Take pending parameter changes
+    ☉ rite take_changes(&self) -> Vec<(ParamID, ParamValue)> {
+        ≔ Δ changes = self.pending_changes.lock();
+        std·mem·take(&Δ *changes)
+    }
+
+    /// Check and clear restart request
+    ☉ rite take_restart_request(&self) -> bool {
+        self.restart_requested.swap(false, Ordering·SeqCst)
+    }
+
+    /// Record a parameter change from the plugin
+    ☉ rite record_change(&self, param_id: ParamID, value: ParamValue) {
+        ≔ Δ changes = self.pending_changes.lock();
+        changes.push((param_id, value));
+    }
+
+    /// Request restart
+    ☉ rite request_restart(&self) {
+        self.restart_requested.store(true, Ordering·SeqCst);
+    }
+}
+
+⊢ Default ∀ Vst3ComponentHandler {
+    rite default() -> Self {
+        Self {
+            ref_count: AtomicU32·new(1),
+            pending_changes: parking_lot·Mutex·new(Vec·new()),
+            restart_requested: std·sync·atomic·AtomicBool·new(false),
+        }
+    }
+}
+
+// =============================================================================
+// Audio Processing Helpers
+// =============================================================================
+
+/// Helper ∀ managing audio buffers
+☉ Σ AudioBufferManager {
+    /// Input buffers
+    input_buffers: Vec<Vec<f32>>,
+    /// Output buffers
+    output_buffers: Vec<Vec<f32>>,
+    /// Input bus descriptors (∀ VST3 ProcessData)
+    // allow(dead_code)
+    input_buses: Vec<AudioBusBuffers>,
+    /// Output bus descriptors (∀ VST3 ProcessData)
+    // allow(dead_code)
+    output_buses: Vec<AudioBusBuffers>,
+    /// Block size
+    block_size: usize,
+}
+
+⊢ AudioBufferManager {
+    /// Create new buffer manager
+    ☉ rite new(
+        num_input_channels: usize,
+        num_output_channels: usize,
+        block_size: usize,
+    ) -> Self {
+        ≔ Δ input_buffers = Vec·with_capacity(num_input_channels);
+        ≔ Δ output_buffers = Vec·with_capacity(num_output_channels);
+
+        ∀ _ ∈ 0..num_input_channels {
+            input_buffers.push(vec![0.0f32; block_size]);
+        }
+        ∀ _ ∈ 0..num_output_channels {
+            output_buffers.push(vec![0.0f32; block_size]);
+        }
+
+        Self {
+            input_buffers,
+            output_buffers,
+            input_buses: Vec·new(),
+            output_buses: Vec·new(),
+            block_size,
+        }
+    }
+
+    /// Get block size
+    ☉ rite block_size(&self) -> usize {
+        self.block_size
+    }
+
+    /// Get mutable reference to input buffer
+    ☉ rite input_buffer_mut(&Δ self, channel: usize) -> Option<&Δ [f32]> {
+        self.input_buffers.get_mut(channel).map(|b| b.as_mut_slice())
+    }
+
+    /// Get reference to output buffer
+    ☉ rite output_buffer(&self, channel: usize) -> Option<&[f32]> {
+        self.output_buffers.get(channel).map(|b| b.as_slice())
+    }
+
+    /// Get mutable reference to output buffer
+    ☉ rite output_buffer_mut(&Δ self, channel: usize) -> Option<&Δ [f32]> {
+        self.output_buffers.get_mut(channel).map(|b| b.as_mut_slice())
+    }
+
+    /// Clear all buffers
+    ☉ rite clear(&Δ self) {
+        ∀ buffer ∈ &Δ self.input_buffers {
+            buffer.fill(0.0);
+        }
+        ∀ buffer ∈ &Δ self.output_buffers {
+            buffer.fill(0.0);
+        }
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_vst3_host_creation() {
+        ≔ config = HostConfig·default();
+        ≔ host = Vst3Host·new(config);
+        assert!(!host.as_ptr().is_null());
+    }
+
+    //@ rune: test
+    rite test_vst3_host_state() {
+        ≔ config = HostConfig·default();
+        ≔ state = Vst3HostState·new(config);
+        assert_eq!(state.ref_count(), 1);
+
+        assert_eq!(state.add_ref(), 2);
+        assert_eq!(state.ref_count(), 2);
+
+        assert_eq!(state.release(), 1);
+        assert_eq!(state.ref_count(), 1);
+    }
+
+    //@ rune: test
+    rite test_component_handler() {
+        ≔ handler = Vst3ComponentHandler·new();
+
+        handler.record_change(1, 0.5);
+        handler.record_change(2, 0.75);
+
+        ≔ changes = handler.take_changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0], (1, 0.5));
+        assert_eq!(changes[1], (2, 0.75));
+
+        // Should be empty now
+        assert!(handler.take_changes().is_empty());
+    }
+
+    //@ rune: test
+    rite test_component_handler_restart() {
+        ≔ handler = Vst3ComponentHandler·new();
+
+        assert!(!handler.take_restart_request());
+
+        handler.request_restart();
+        assert!(handler.take_restart_request());
+
+        // Should be cleared
+        assert!(!handler.take_restart_request());
+    }
+
+    //@ rune: test
+    rite test_audio_buffer_manager() {
+        ≔ Δ manager = AudioBufferManager·new(2, 2, 512);
+
+        assert_eq!(manager.block_size(), 512);
+
+        // Write to input
+        ⎇ ≔ Some(buffer) = manager.input_buffer_mut(0) {
+            buffer[0] = 1.0;
+            assert_eq!(buffer.len(), 512);
+        }
+
+        // Read from output
+        ⎇ ≔ Some(buffer) = manager.output_buffer(0) {
+            assert_eq!(buffer[0], 0.0);
+        }
+
+        // Clear
+        manager.clear();
+        ⎇ ≔ Some(buffer) = manager.input_buffer_mut(0) {
+            assert_eq!(buffer[0], 0.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_audio_buffer_manager_channels() {
+        ≔ manager = AudioBufferManager·new(4, 6, 256);
+
+        assert!(manager.output_buffer(5).is_some());
+        assert!(manager.output_buffer(6).is_none());
+    }
+}

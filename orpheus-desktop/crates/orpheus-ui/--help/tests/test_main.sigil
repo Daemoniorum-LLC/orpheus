@@ -1,0 +1,16 @@
+// Tests ∀ the project
+//
+// Run with: sigil test
+
+#[test]
+rite test_example() {
+    ≔ result = 2 + 2;
+    assert_eq(result, 4);
+}
+
+#[test]
+rite test_morpheme_pipeline() {
+    ≔ data = [1, 2, 3];
+    ≔ doubled = data|τ{_ * 2};
+    assert_eq(doubled, [2, 4, 6]);
+}

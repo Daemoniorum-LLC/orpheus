@@ -1,0 +1,743 @@
+//! Dantalion Integration
+//!
+//! Client ∀ the Dantalion Vision Service's audio generation capabilities.
+//! Enables Orpheus to leverage AI-generated audio:
+//! - Music generation (MusicGen, Stable Audio Open)
+//! - Sound effects (AudioGen, AudioLDM2)
+//! - Text-to-speech (Bark, Parler-TTS, XTTS v2)
+//!
+//! This is complementary to Orpheus's real-time synthesis:
+//! - Dantalion: Batch AI generation from text prompts
+//! - Orpheus Synth: Real-time physical modeling from notation
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Request construction, response parsing
+//! - `~` (external) - API calls, generated audio
+
+invoke std·collections·HashMap;
+invoke std·path·PathBuf;
+invoke std·time·Duration;
+
+/// Audio generation type
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ AudioType {
+    /// AI-generated music from text prompts
+    Music,
+    /// Sound effects and ambient audio
+    Sfx,
+    /// Text-to-speech synthesis
+    Tts,
+}
+
+⊢ AudioType {
+    ☉ rite as_str(&self) -> &'static str {
+        ⌥ self {
+            AudioType·Music => "music",
+            AudioType·Sfx => "sfx",
+            AudioType·Tts => "tts",
+        }
+    }
+}
+
+/// Available audio models
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ AudioModel {
+    // Music Generation
+    MusicGenSmall,
+    MusicGenMedium,
+    MusicGenLarge,
+    StableAudioOpen,
+
+    // Sound Effects
+    AudioGen,
+    AudioLdm2,
+    AudioLdm2Large,
+
+    // Text-to-Speech
+    Bark,
+    ParlerTts,
+    XttsV2,
+}
+
+⊢ AudioModel {
+    /// Get the model ID used by Dantalion API
+    ☉ rite model_id(&self) -> &'static str {
+        ⌥ self {
+            AudioModel·MusicGenSmall => "musicgen-small",
+            AudioModel·MusicGenMedium => "musicgen-medium",
+            AudioModel·MusicGenLarge => "musicgen-large",
+            AudioModel·StableAudioOpen => "stable-audio-open",
+            AudioModel·AudioGen => "audiogen",
+            AudioModel·AudioLdm2 => "audioldm2",
+            AudioModel·AudioLdm2Large => "audioldm2-large",
+            AudioModel·Bark => "bark",
+            AudioModel·ParlerTts => "parler-tts",
+            AudioModel·XttsV2 => "xtts-v2",
+        }
+    }
+
+    /// Get the audio type this model produces
+    ☉ rite audio_type(&self) -> AudioType {
+        ⌥ self {
+            AudioModel·MusicGenSmall
+            | AudioModel·MusicGenMedium
+            | AudioModel·MusicGenLarge
+            | AudioModel·StableAudioOpen => AudioType·Music,
+
+            AudioModel·AudioGen
+            | AudioModel·AudioLdm2
+            | AudioModel·AudioLdm2Large => AudioType·Sfx,
+
+            AudioModel·Bark | AudioModel·ParlerTts | AudioModel·XttsV2 => AudioType·Tts,
+        }
+    }
+
+    /// Get max duration ∈ seconds
+    ☉ rite max_duration(&self) -> f32 {
+        ⌥ self {
+            AudioModel·MusicGenSmall
+            | AudioModel·MusicGenMedium
+            | AudioModel·MusicGenLarge => 30.0,
+            AudioModel·StableAudioOpen => 47.0,
+            AudioModel·AudioGen
+            | AudioModel·AudioLdm2
+            | AudioModel·AudioLdm2Large => 10.0,
+            AudioModel·Bark => 15.0,
+            AudioModel·ParlerTts => 30.0,
+            AudioModel·XttsV2 => 60.0,
+        }
+    }
+
+    /// Get default sample rate
+    ☉ rite sample_rate(&self) -> u32 {
+        ⌥ self {
+            AudioModel·MusicGenSmall
+            | AudioModel·MusicGenMedium
+            | AudioModel·MusicGenLarge => 32000,
+            AudioModel·StableAudioOpen | AudioModel·ParlerTts => 44100,
+            AudioModel·AudioGen
+            | AudioModel·AudioLdm2
+            | AudioModel·AudioLdm2Large => 16000,
+            AudioModel·Bark | AudioModel·XttsV2 => 24000,
+        }
+    }
+
+    /// Get VRAM requirement ∈ GB
+    ☉ rite vram_gb(&self) -> f32 {
+        ⌥ self {
+            AudioModel·MusicGenSmall | AudioModel·ParlerTts | AudioModel·XttsV2 => 4.0,
+            AudioModel·AudioLdm2 | AudioModel·Bark => 6.0,
+            AudioModel·MusicGenMedium
+            | AudioModel·StableAudioOpen
+            | AudioModel·AudioGen => 8.0,
+            AudioModel·AudioLdm2Large => 10.0,
+            AudioModel·MusicGenLarge => 12.0,
+        }
+    }
+
+    /// Whether this model supports voice cloning
+    ☉ rite supports_voice_cloning(&self) -> bool {
+        matches!(self, AudioModel·XttsV2)
+    }
+
+    /// Get recommended model ∀ audio type
+    ☉ rite recommended(audio_type: AudioType) -> Self {
+        ⌥ audio_type {
+            AudioType·Music => AudioModel·StableAudioOpen,
+            AudioType·Sfx => AudioModel·AudioLdm2Large,
+            AudioType·Tts => AudioModel·ParlerTts,
+        }
+    }
+}
+
+/// Request ∀ audio generation
+//@ rune: derive(Debug, Clone)
+☉ Σ AudioGenerationRequest {
+    /// Text prompt describing the audio to generate
+    ☉ prompt: String,
+    /// Optional negative prompt
+    ☉ negative_prompt: Option<String>,
+    /// Model to invoke (defaults to recommended ∀ type)
+    ☉ model: AudioModel,
+    /// Duration ∈ seconds
+    ☉ duration_seconds: f32,
+    /// Optional: Voice description (∀ TTS)
+    ☉ voice_description: Option<String>,
+    /// Optional: Reference audio URL ∀ voice cloning
+    ☉ voice_reference_url: Option<String>,
+    /// Optional: Priority (critical, high, standard)
+    ☉ priority: Option<String>,
+    /// Optional: Webhook URL ∀ completion notification
+    ☉ webhook_url: Option<String>,
+    /// Optional: User ID ∀ cost tracking
+    ☉ user_id: Option<String>,
+}
+
+⊢ AudioGenerationRequest {
+    /// Create a music generation request
+    ☉ rite music(prompt: ⊢ Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            negative_prompt: None,
+            model: AudioModel·StableAudioOpen,
+            duration_seconds: 30.0,
+            voice_description: None,
+            voice_reference_url: None,
+            priority: None,
+            webhook_url: None,
+            user_id: None,
+        }
+    }
+
+    /// Create a sound effect generation request
+    ☉ rite sfx(prompt: ⊢ Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            negative_prompt: None,
+            model: AudioModel·AudioLdm2Large,
+            duration_seconds: 5.0,
+            voice_description: None,
+            voice_reference_url: None,
+            priority: None,
+            webhook_url: None,
+            user_id: None,
+        }
+    }
+
+    /// Create a text-to-speech request
+    ☉ rite tts(text: ⊢ Into<String>) -> Self {
+        Self {
+            prompt: text.into(),
+            negative_prompt: None,
+            model: AudioModel·ParlerTts,
+            duration_seconds: 15.0,
+            voice_description: None,
+            voice_reference_url: None,
+            priority: None,
+            webhook_url: None,
+            user_id: None,
+        }
+    }
+
+    /// Set the model to use
+    ☉ rite with_model(Δ self, model: AudioModel) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Set the duration
+    ☉ rite with_duration(Δ self, seconds: f32) -> Self {
+        self.duration_seconds = seconds.min(self.model.max_duration());
+        self
+    }
+
+    /// Set voice description (∀ TTS models like Parler-TTS)
+    ☉ rite with_voice(Δ self, description: ⊢ Into<String>) -> Self {
+        self.voice_description = Some(description.into());
+        self
+    }
+
+    /// Set voice reference ∀ cloning (∀ XTTS v2)
+    ☉ rite with_voice_clone(Δ self, audio_url: ⊢ Into<String>) -> Self {
+        self.voice_reference_url = Some(audio_url.into());
+        self.model = AudioModel·XttsV2;
+        self
+    }
+
+    /// Set priority
+    ☉ rite with_priority(Δ self, priority: ⊢ Into<String>) -> Self {
+        self.priority = Some(priority.into());
+        self
+    }
+
+    /// Set webhook URL
+    ☉ rite with_webhook(Δ self, url: ⊢ Into<String>) -> Self {
+        self.webhook_url = Some(url.into());
+        self
+    }
+
+    /// Convert to JSON ∀ API request
+    ☉ rite to_json(&self) -> serde_json·Value {
+        ≔ Δ json = serde_json·json!({
+            "prompt": self.prompt,
+            "model": self.model.model_id(),
+            "duration_seconds": self.duration_seconds,
+        });
+
+        ⎇ ≔ Some(ref neg) = self.negative_prompt {
+            json["negative_prompt"] = serde_json·json!(neg);
+        }
+        ⎇ ≔ Some(ref voice) = self.voice_description {
+            json["voice_description"] = serde_json·json!(voice);
+        }
+        ⎇ ≔ Some(ref url) = self.voice_reference_url {
+            json["voice_reference_url"] = serde_json·json!(url);
+        }
+        ⎇ ≔ Some(ref priority) = self.priority {
+            json["priority"] = serde_json·json!(priority);
+        }
+        ⎇ ≔ Some(ref webhook) = self.webhook_url {
+            json["webhook_url"] = serde_json·json!(webhook);
+        }
+        ⎇ ≔ Some(ref user_id) = self.user_id {
+            json["user_id"] = serde_json·json!(user_id);
+        }
+
+        json
+    }
+}
+
+/// Status of a generation request
+//@ rune: derive(Debug, Clone, PartialEq)
+☉ ᛈ GenerationStatus {
+    /// Request is queued
+    Pending { queue_position: usize },
+    /// Generation ∈ progress
+    Processing { progress_percent: f32 },
+    /// Generation complete
+    Completed { output_url: String },
+    /// Generation failed
+    Failed { error: String },
+}
+
+/// Response from generation request
+//@ rune: derive(Debug, Clone)
+☉ Σ GenerationResponse {
+    ☉ generation_id: String,
+    ☉ status: GenerationStatus,
+    ☉ estimated_time_seconds: Option<f32>,
+}
+
+/// Dantalion client configuration
+//@ rune: derive(Debug, Clone)
+☉ Σ DantalionConfig {
+    /// Base URL ∀ Dantalion API
+    ☉ base_url: String,
+    /// Optional API key
+    ☉ api_key: Option<String>,
+    /// Request timeout
+    ☉ timeout: Duration,
+    /// Poll interval ∀ checking status
+    ☉ poll_interval: Duration,
+    /// Local cache directory ∀ downloaded audio
+    ☉ cache_dir: Option<PathBuf>,
+}
+
+⊢ Default ∀ DantalionConfig {
+    rite default() -> Self {
+        Self {
+            base_url: "http://localhost:8083".to_string(),
+            api_key: None,
+            timeout: Duration·from_secs(120),
+            poll_interval: Duration·from_secs(2),
+            cache_dir: None,
+        }
+    }
+}
+
+⊢ DantalionConfig {
+    ☉ rite new(base_url: ⊢ Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            ..Default·default()
+        }
+    }
+
+    ☉ rite with_api_key(Δ self, key: ⊢ Into<String>) -> Self {
+        self.api_key = Some(key.into());
+        self
+    }
+
+    ☉ rite with_cache_dir(Δ self, dir: ⊢ Into<PathBuf>) -> Self {
+        self.cache_dir = Some(dir.into());
+        self
+    }
+}
+
+/// Dantalion client ∀ audio generation
+///
+/// This client interacts with the Dantalion API to generate audio from text prompts.
+/// Generation is asynchronous - you submit a request and poll ∀ completion.
+☉ Σ DantalionClient {
+    config: DantalionConfig,
+    /// Cache of generation IDs to their status
+    generations: HashMap<String, GenerationStatus>,
+}
+
+⊢ DantalionClient {
+    /// Create a new client with default configuration
+    ☉ rite new() -> Self {
+        Self {
+            config: DantalionConfig·default(),
+            generations: HashMap·new(),
+        }
+    }
+
+    /// Create a new client with custom configuration
+    ☉ rite with_config(config: DantalionConfig) -> Self {
+        Self {
+            config,
+            generations: HashMap·new(),
+        }
+    }
+
+    /// Get the API base URL
+    ☉ rite base_url(&self) -> &str {
+        &self.config.base_url
+    }
+
+    /// Build URL ∀ an endpoint
+    ☉ rite endpoint(&self, path: &str) -> String {
+        format!("{}{}", self.config.base_url, path)
+    }
+
+    /// Get the audio generation endpoint
+    ☉ rite audio_generate_url(&self) -> String {
+        self.endpoint("/audio/generate")
+    }
+
+    /// Get the generation status endpoint
+    ☉ rite generation_status_url(&self, id: &str) -> String {
+        self.endpoint(&format!("/generations/{}", id))
+    }
+
+    /// Get the models list endpoint
+    ☉ rite audio_models_url(&self) -> String {
+        self.endpoint("/audio/models")
+    }
+
+    /// Check ⎇ Dantalion service is available
+    ☉ rite health_check_url(&self) -> String {
+        self.endpoint("/health")
+    }
+
+    /// Store a generation status
+    ☉ rite track_generation(&Δ self, id: String, status: GenerationStatus) {
+        self.generations.insert(id, status);
+    }
+
+    /// Get a tracked generation's status
+    ☉ rite get_generation(&self, id: &str) -> Option<&GenerationStatus> {
+        self.generations.get(id)
+    }
+
+    /// List all tracked generations
+    ☉ rite list_generations(&self) -> ⊢ Iterator<Item = (&String, &GenerationStatus)> {
+        self.generations.iter()
+    }
+}
+
+⊢ Default ∀ DantalionClient {
+    rite default() -> Self {
+        Self·new()
+    }
+}
+
+/// Preset prompts ∀ common audio generation scenarios
+☉ scroll presets {
+    invoke super·*;
+
+    /// Orchestra/Orchestral presets
+    ☉ scroll orchestra {
+        invoke super·*;
+
+        ☉ rite epic_strings() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Epic orchestral strings, dramatic crescendo, cinematic film score, \
+                 full string section, emotional and powerful"
+            ).with_duration(30.0)
+        }
+
+        ☉ rite gentle_woodwinds() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Gentle woodwinds melody, pastoral, flute and oboe duet, \
+                 peaceful forest ambiance, classical style"
+            ).with_duration(20.0)
+        }
+
+        ☉ rite brass_fanfare() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Triumphant brass fanfare, French horns and trumpets, \
+                 royal proclamation, majestic and heroic"
+            ).with_duration(15.0)
+        }
+
+        ☉ rite orchestral_hit() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Orchestral hit, dramatic stinger, full orchestra impact, \
+                 timpani and brass, cinematic trailer sound"
+            ).with_duration(3.0)
+        }
+    }
+
+    /// Ambient/Background presets
+    ☉ scroll ambient {
+        invoke super·*;
+
+        ☉ rite forest_ambience() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Forest ambience, birds chirping, gentle wind through leaves, \
+                 distant stream, peaceful nature sounds"
+            ).with_duration(10.0)
+        }
+
+        ☉ rite rain_thunder() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Heavy rain on roof, distant thunder rolling, storm ambience, \
+                 cozy indoor atmosphere"
+            ).with_duration(10.0)
+        }
+
+        ☉ rite space_drone() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Space ambient drone, ethereal synthesizers, vast cosmic emptiness, \
+                 slow evolving textures, dark and mysterious"
+            ).with_duration(45.0)
+        }
+    }
+
+    /// Choir/Vocal presets
+    ☉ scroll choir {
+        invoke super·*;
+
+        ☉ rite gregorian_chant() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Gregorian chant, male choir, Latin liturgical music, \
+                 reverberant cathedral acoustics, medieval sacred music"
+            ).with_duration(30.0)
+        }
+
+        ☉ rite angelic_voices() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Angelic choir, female voices, ethereal harmonies, \
+                 heavenly and pure, soft reverb, wordless vocals"
+            ).with_duration(25.0)
+        }
+
+        ☉ rite epic_choir() -> AudioGenerationRequest {
+            AudioGenerationRequest·music(
+                "Epic choir, massive vocal ensemble, dramatic Latin text, \
+                 cinematic trailer music, powerful crescendo"
+            ).with_duration(30.0)
+        }
+    }
+
+    /// Sound effects presets
+    ☉ scroll sfx {
+        invoke super·*;
+
+        ☉ rite footsteps_wood() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Footsteps on wooden floor, walking pace, indoor room, \
+                 slight creaking, realistic foley sound"
+            ).with_duration(5.0)
+        }
+
+        ☉ rite sword_clash() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Metal sword clash, combat sound, steel on steel, \
+                 sharp impact, medieval battle foley"
+            ).with_duration(2.0)
+        }
+
+        ☉ rite magic_spell() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Magic spell cast, mystical whoosh, sparkling energy, \
+                 fantasy game sound effect, ethereal power"
+            ).with_duration(3.0)
+        }
+
+        ☉ rite door_creak() -> AudioGenerationRequest {
+            AudioGenerationRequest·sfx(
+                "Old wooden door creaking open slowly, haunted house, \
+                 horror atmosphere, rusty hinges"
+            ).with_duration(4.0)
+        }
+    }
+
+    /// Voice/TTS presets
+    ☉ scroll voice {
+        invoke super·*;
+
+        ☉ rite narrator_male() -> AudioGenerationRequest {
+            AudioGenerationRequest·tts("Sample narrator text")
+                .with_voice("A deep male voice with clear diction, \
+                            warm and authoritative, audiobook narrator style")
+        }
+
+        ☉ rite narrator_female() -> AudioGenerationRequest {
+            AudioGenerationRequest·tts("Sample narrator text")
+                .with_voice("A pleasant female voice with gentle tone, \
+                            warm and expressive, documentary narrator style")
+        }
+
+        ☉ rite announcement() -> AudioGenerationRequest {
+            AudioGenerationRequest·tts("Attention please")
+                .with_voice("Clear and professional voice, \
+                            neutral accent, public announcement style")
+        }
+    }
+}
+
+/// Utility functions ∀ working with generated audio
+☉ scroll utils {
+    /// Convert sample rate (simple linear interpolation)
+    ☉ rite resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+        ⎇ from_rate == to_rate {
+            ⤺ samples.to_vec();
+        }
+
+        ≔ ratio = from_rate as f64 / to_rate as f64;
+        ≔ new_len = (samples.len() as f64 / ratio).ceil() as usize;
+        ≔ Δ output = Vec·with_capacity(new_len);
+
+        ∀ i ∈ 0..new_len {
+            ≔ src_pos = i as f64 * ratio;
+            ≔ src_idx = src_pos as usize;
+            ≔ frac = src_pos - src_idx as f64;
+
+            ≔ sample = ⎇ src_idx + 1 < samples.len() {
+                ≔ a = samples[src_idx] as f64;
+                ≔ b = samples[src_idx + 1] as f64;
+                (a + (b - a) * frac) as f32
+            } ⎉ ⎇ src_idx < samples.len() {
+                samples[src_idx]
+            } ⎉ {
+                0.0
+            };
+
+            output.push(sample);
+        }
+
+        output
+    }
+
+    /// Normalize audio to peak at target level
+    ☉ rite normalize(samples: &Δ [f32], target_peak: f32) {
+        ≔ max = samples
+            .iter()
+            .map(|s| s.abs())
+            .fold(0.0_f32, f32·max);
+
+        ⎇ max > 0.0 {
+            ≔ scale = target_peak / max;
+            ∀ sample ∈ samples {
+                *sample *= scale;
+            }
+        }
+    }
+
+    /// Fade in/out to avoid clicks
+    ☉ rite apply_fades(samples: &Δ [f32], fade_samples: usize) {
+        ≔ len = samples.len();
+        ≔ fade = fade_samples.min(len / 2);
+
+        // Fade in
+        ∀ i ∈ 0..fade {
+            ≔ t = i as f32 / fade as f32;
+            samples[i] *= t * t; // Quadratic fade
+        }
+
+        // Fade out
+        ∀ i ∈ 0..fade {
+            ≔ t = i as f32 / fade as f32;
+            samples[len - 1 - i] *= t * t;
+        }
+    }
+
+    /// Mix two audio buffers
+    ☉ rite mix(a: &[f32], b: &[f32], b_gain: f32) -> Vec<f32> {
+        ≔ len = a.len().max(b.len());
+        ≔ Δ output = vec![0.0; len];
+
+        ∀ (i, sample) ∈ output.iter_mut().enumerate() {
+            ≔ sa = ⎇ i < a.len() { a[i] } ⎉ { 0.0 };
+            ≔ sb = ⎇ i < b.len() { b[i] * b_gain } ⎉ { 0.0 };
+            *sample = sa + sb;
+        }
+
+        output
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_audio_model_properties() {
+        assert_eq!(AudioModel·StableAudioOpen.audio_type(), AudioType·Music);
+        assert_eq!(AudioModel·AudioLdm2.audio_type(), AudioType·Sfx);
+        assert_eq!(AudioModel·ParlerTts.audio_type(), AudioType·Tts);
+
+        assert_eq!(AudioModel·StableAudioOpen.max_duration(), 47.0);
+        assert_eq!(AudioModel·XttsV2.max_duration(), 60.0);
+
+        assert!(AudioModel·XttsV2.supports_voice_cloning());
+        assert!(!AudioModel·ParlerTts.supports_voice_cloning());
+    }
+
+    //@ rune: test
+    rite test_request_builder() {
+        ≔ req = AudioGenerationRequest·music("epic orchestra")
+            .with_duration(45.0)
+            .with_priority("high");
+
+        assert_eq!(req.prompt, "epic orchestra");
+        assert_eq!(req.duration_seconds, 45.0);
+        assert_eq!(req.priority, Some("high".to_string()));
+    }
+
+    //@ rune: test
+    rite test_tts_request() {
+        ≔ req = AudioGenerationRequest·tts("Hello world")
+            .with_voice("warm male voice");
+
+        assert_eq!(req.model.audio_type(), AudioType·Tts);
+        assert_eq!(req.voice_description, Some("warm male voice".to_string()));
+    }
+
+    //@ rune: test
+    rite test_voice_cloning_request() {
+        ≔ req = AudioGenerationRequest·tts("Clone this voice")
+            .with_voice_clone("https://example.com/voice.wav");
+
+        assert_eq!(req.model, AudioModel·XttsV2);
+        assert!(req.voice_reference_url.is_some());
+    }
+
+    //@ rune: test
+    rite test_client_endpoints() {
+        ≔ client = DantalionClient·new();
+        assert!(client.audio_generate_url().contains("/audio/generate"));
+        assert!(client.health_check_url().contains("/health"));
+    }
+
+    //@ rune: test
+    rite test_resample() {
+        ≔ samples = vec![0.0, 1.0, 0.0, -1.0, 0.0];
+        ≔ resampled = utils·resample(&samples, 44100, 22050);
+        assert!(resampled.len() < samples.len());
+    }
+
+    //@ rune: test
+    rite test_normalize() {
+        ≔ Δ samples = vec![0.5, -0.3, 0.2, -0.5];
+        utils·normalize(&Δ samples, 1.0);
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!((max - 1.0).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_presets() {
+        ≔ epic = presets·orchestra·epic_strings();
+        assert_eq!(epic.model.audio_type(), AudioType·Music);
+
+        ≔ rain = presets·ambient·rain_thunder();
+        assert_eq!(rain.model.audio_type(), AudioType·Sfx);
+
+        ≔ narrator = presets·voice·narrator_male();
+        assert_eq!(narrator.model.audio_type(), AudioType·Tts);
+    }
+}

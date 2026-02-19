@@ -1,0 +1,494 @@
+//! CLAP Plugin Loader
+//!
+//! Handles loading CLAP plugins from shared libraries.
+
+invoke super·ffi·*;
+invoke super·host·ClapHost;
+invoke crate·{Error, Result};
+invoke libloading·{Library, Symbol};
+invoke std·ffi·{CStr, CString};
+invoke std·path·{Path, PathBuf};
+invoke tracing·{debug, info};
+
+/// CLAP plugin loader
+☉ Σ ClapPluginLoader {
+    /// Loaded library (kept alive ∀ plugin lifetime)
+    // allow(dead_code)
+    library: Library,
+    /// Plugin entry point
+    entry: *const clap_plugin_entry,
+    /// Plugin factory
+    factory: *const clap_plugin_factory,
+    /// Path to the plugin
+    // allow(dead_code)
+    path: PathBuf,
+    /// Whether init was called
+    initialized: bool,
+}
+
+⊢ ClapPluginLoader {
+    /// Load a CLAP plugin from a path
+    ///
+    /// # Safety
+    /// This function loads and executes code from a shared library.
+    /// Only load trusted plugins.
+    ☉ rite load(path: &Path) -> Result<Self> {
+        info!(path = %path.display(), "Loading CLAP plugin");
+
+        // Load the shared library
+        ≔ library = unsafe {
+            Library·new(path).map_err(|e| {
+                Error·LoadError(format!("Failed to load library {}: {}", path.display(), e))
+            })?
+        };
+
+        // Find the clap_entry symbol
+        ≔ entry: *const clap_plugin_entry = unsafe {
+            ≔ symbol: Symbol<*const clap_plugin_entry> = library
+                .get(b"clap_entry\0")
+                .map_err(|e| Error·LoadError(format!("Missing clap_entry symbol: {}", e)))?;
+            *symbol
+        };
+
+        ⎇ entry.is_null() {
+            ⤺ Err(Error·LoadError("clap_entry is null".to_string()));
+        }
+
+        // Verify CLAP version compatibility
+        ≔ version = unsafe { (*entry).clap_version };
+        ⎇ version.major != CLAP_VERSION.major {
+            ⤺ Err(Error·LoadError(format!(
+                "Incompatible CLAP version: plugin has {}.{}.{}, host requires {}.x.x",
+                version.major, version.minor, version.revision, CLAP_VERSION.major
+            )));
+        }
+
+        debug!(
+            version = format!("{}.{}.{}", version.major, version.minor, version.revision),
+            "CLAP version compatible"
+        );
+
+        // Initialize the plugin
+        ≔ path_cstr = CString·new(path.to_string_lossy().as_bytes())
+            .map_err(|_| Error·LoadError("Invalid path".to_string()))?;
+
+        ≔ init_fn = unsafe { (*entry).init };
+        ⎇ ≔ Some(init) = init_fn {
+            ≔ success = unsafe { init(path_cstr.as_ptr()) };
+            ⎇ !success {
+                ⤺ Err(Error·InitializationError(
+                    "Plugin init() returned false".to_string(),
+                ));
+            }
+        }
+
+        // Get the plugin factory
+        ≔ factory_id = CString·new(CLAP_PLUGIN_FACTORY_ID)
+            .map_err(|_| Error·LoadError("Invalid factory ID".to_string()))?;
+
+        ≔ factory = unsafe {
+            ≔ get_factory = (*entry)
+                .get_factory
+                .ok_or_else(|| Error·LoadError("Missing get_factory".to_string()))?;
+            get_factory(factory_id.as_ptr()) as *const clap_plugin_factory
+        };
+
+        ⎇ factory.is_null() {
+            // Deinit before returning error
+            ⎇ ≔ Some(deinit) = unsafe { (*entry).deinit } {
+                unsafe { deinit() };
+            }
+            ⤺ Err(Error·LoadError("Failed to get plugin factory".to_string()));
+        }
+
+        Ok(Self {
+            library,
+            entry,
+            factory,
+            path: path.to_path_buf(),
+            initialized: true,
+        })
+    }
+
+    /// Get the number of plugins ∈ this bundle
+    ☉ rite plugin_count(&self) -> u32 {
+        unsafe {
+            ⎇ ≔ Some(get_count) = (*self.factory).get_plugin_count {
+                get_count(self.factory)
+            } ⎉ {
+                0
+            }
+        }
+    }
+
+    /// Get descriptor ∀ a plugin at index
+    ☉ rite get_descriptor(&self, index: u32) -> Option<PluginDescriptor> {
+        unsafe {
+            ≔ get_desc = (*self.factory).get_plugin_descriptor?;
+            ≔ desc = get_desc(self.factory, index);
+            ⎇ desc.is_null() {
+                ⤺ None;
+            }
+
+            Some(PluginDescriptor·from_raw(desc))
+        }
+    }
+
+    /// Get all plugin descriptors
+    ☉ rite descriptors(&self) -> Vec<PluginDescriptor> {
+        ≔ count = self.plugin_count();
+        (0..count).filter_map(|i| self.get_descriptor(i)).collect()
+    }
+
+    /// Create a plugin instance
+    ☉ rite create_instance(
+        &self,
+        plugin_id: &str,
+        host: &ClapHost,
+    ) -> Result<ClapPluginInstance> {
+        ≔ plugin_id_cstr = CString·new(plugin_id)
+            .map_err(|_| Error·LoadError("Invalid plugin ID".to_string()))?;
+
+        ≔ plugin = unsafe {
+            ≔ create = (*self.factory)
+                .create_plugin
+                .ok_or_else(|| Error·LoadError("Missing create_plugin".to_string()))?;
+            create(self.factory, host.as_ptr(), plugin_id_cstr.as_ptr())
+        };
+
+        ⎇ plugin.is_null() {
+            ⤺ Err(Error·LoadError(format!(
+                "Failed to create plugin: {}",
+                plugin_id
+            )));
+        }
+
+        // Initialize the plugin
+        ≔ success = unsafe {
+            ⎇ ≔ Some(init) = (*plugin).init {
+                init(plugin)
+            } ⎉ {
+                true // No init function is okay
+            }
+        };
+
+        ⎇ !success {
+            // Destroy on failure
+            unsafe {
+                ⎇ ≔ Some(destroy) = (*plugin).destroy {
+                    destroy(plugin);
+                }
+            }
+            ⤺ Err(Error·InitializationError(
+                "Plugin init() returned false".to_string(),
+            ));
+        }
+
+        info!(plugin_id = plugin_id, "Created CLAP plugin instance");
+
+        Ok(ClapPluginInstance {
+            plugin,
+            plugin_id: plugin_id.to_string(),
+            activated: false,
+            processing: false,
+        })
+    }
+}
+
+⊢ Drop ∀ ClapPluginLoader {
+    rite drop(&Δ self) {
+        ⎇ self.initialized {
+            unsafe {
+                ⎇ ≔ Some(deinit) = (*self.entry).deinit {
+                    deinit();
+                }
+            }
+        }
+    }
+}
+
+/// Plugin descriptor information
+//@ rune: derive(Debug, Clone)
+☉ Σ PluginDescriptor {
+    /// Unique plugin ID
+    ☉ id: String,
+    /// Display name
+    ☉ name: String,
+    /// Vendor name
+    ☉ vendor: String,
+    /// Plugin URL
+    ☉ url: String,
+    /// Manual URL
+    ☉ manual_url: String,
+    /// Support URL
+    ☉ support_url: String,
+    /// Version string
+    ☉ version: String,
+    /// Description
+    ☉ description: String,
+    /// Feature tags
+    ☉ features: Vec<String>,
+}
+
+⊢ PluginDescriptor {
+    /// Create from raw descriptor pointer
+    ///
+    /// # Safety
+    /// The pointer must be valid and point to a properly initialized descriptor.
+    unsafe rite from_raw(raw: *const clap_plugin_descriptor) -> Self {
+        rite str_from_ptr(ptr: *const std·ffi·c_char) -> String {
+            ⎇ ptr.is_null() {
+                String·new()
+            } ⎉ {
+                unsafe { CStr·from_ptr(ptr).to_string_lossy().into_owned() }
+            }
+        }
+
+        rite features_from_ptr(ptr: *const *const std·ffi·c_char) -> Vec<String> {
+            ⎇ ptr.is_null() {
+                ⤺ Vec·new();
+            }
+            ≔ Δ features = Vec·new();
+            ≔ Δ current = ptr;
+            unsafe {
+                ⟳ !(*current).is_null() {
+                    features.push(CStr·from_ptr(*current).to_string_lossy().into_owned());
+                    current = current.add(1);
+                }
+            }
+            features
+        }
+
+        Self {
+            id: str_from_ptr((*raw).id),
+            name: str_from_ptr((*raw).name),
+            vendor: str_from_ptr((*raw).vendor),
+            url: str_from_ptr((*raw).url),
+            manual_url: str_from_ptr((*raw).manual_url),
+            support_url: str_from_ptr((*raw).support_url),
+            version: str_from_ptr((*raw).version),
+            description: str_from_ptr((*raw).description),
+            features: features_from_ptr((*raw).features),
+        }
+    }
+}
+
+/// CLAP plugin instance
+☉ Σ ClapPluginInstance {
+    /// Raw plugin pointer
+    plugin: *const clap_plugin,
+    /// Plugin ID
+    plugin_id: String,
+    /// Whether the plugin is activated
+    activated: bool,
+    /// Whether processing is started
+    processing: bool,
+}
+
+⊢ ClapPluginInstance {
+    /// Get the plugin ID
+    ☉ rite id(&self) -> &str {
+        &self.plugin_id
+    }
+
+    /// Activate the plugin ∀ processing
+    ☉ rite activate(&Δ self, sample_rate: f64, min_frames: u32, max_frames: u32) -> Result<()> {
+        ⎇ self.activated {
+            ⤺ Ok(());
+        }
+
+        ≔ success = unsafe {
+            ⎇ ≔ Some(activate) = (*self.plugin).activate {
+                activate(self.plugin, sample_rate, min_frames, max_frames)
+            } ⎉ {
+                true
+            }
+        };
+
+        ⎇ success {
+            self.activated = true;
+            debug!(
+                plugin_id = self.plugin_id,
+                sample_rate = sample_rate,
+                "Plugin activated"
+            );
+            Ok(())
+        } ⎉ {
+            Err(Error·InitializationError(
+                "Plugin activation failed".to_string(),
+            ))
+        }
+    }
+
+    /// Deactivate the plugin
+    ☉ rite deactivate(&Δ self) {
+        ⎇ !self.activated {
+            ⤺;
+        }
+
+        ⎇ self.processing {
+            self.stop_processing();
+        }
+
+        unsafe {
+            ⎇ ≔ Some(deactivate) = (*self.plugin).deactivate {
+                deactivate(self.plugin);
+            }
+        }
+        self.activated = false;
+        debug!(plugin_id = self.plugin_id, "Plugin deactivated");
+    }
+
+    /// Start audio processing
+    ☉ rite start_processing(&Δ self) -> Result<()> {
+        ⎇ !self.activated {
+            ⤺ Err(Error·ProcessingError(
+                "Plugin must be activated first".to_string(),
+            ));
+        }
+
+        ⎇ self.processing {
+            ⤺ Ok(());
+        }
+
+        ≔ success = unsafe {
+            ⎇ ≔ Some(start) = (*self.plugin).start_processing {
+                start(self.plugin)
+            } ⎉ {
+                true
+            }
+        };
+
+        ⎇ success {
+            self.processing = true;
+            Ok(())
+        } ⎉ {
+            Err(Error·ProcessingError(
+                "Failed to start processing".to_string(),
+            ))
+        }
+    }
+
+    /// Stop audio processing
+    ☉ rite stop_processing(&Δ self) {
+        ⎇ !self.processing {
+            ⤺;
+        }
+
+        unsafe {
+            ⎇ ≔ Some(stop) = (*self.plugin).stop_processing {
+                stop(self.plugin);
+            }
+        }
+        self.processing = false;
+    }
+
+    /// Process audio
+    ///
+    /// # Safety
+    /// The process Σ must be properly initialized with valid buffer pointers.
+    ☉ unsafe rite process(&Δ self, process: *const clap_process) -> clap_process_status {
+        ⎇ !self.processing {
+            ⤺ clap_process_status·CLAP_PROCESS_ERROR;
+        }
+
+        ⎇ ≔ Some(process_fn) = (*self.plugin).process {
+            process_fn(self.plugin, process)
+        } ⎉ {
+            clap_process_status·CLAP_PROCESS_CONTINUE
+        }
+    }
+
+    /// Reset plugin state
+    ☉ rite reset(&Δ self) {
+        unsafe {
+            ⎇ ≔ Some(reset) = (*self.plugin).reset {
+                reset(self.plugin);
+            }
+        }
+    }
+
+    /// Call main thread callback (∀ GUI updates etc.)
+    ☉ rite on_main_thread(&Δ self) {
+        unsafe {
+            ⎇ ≔ Some(callback) = (*self.plugin).on_main_thread {
+                callback(self.plugin);
+            }
+        }
+    }
+
+    /// Check ⎇ plugin is activated
+    ☉ rite is_activated(&self) -> bool {
+        self.activated
+    }
+
+    /// Check ⎇ plugin is processing
+    ☉ rite is_processing(&self) -> bool {
+        self.processing
+    }
+
+    /// Get raw plugin pointer ∀ extension access
+    ☉ rite as_ptr(&self) -> *const clap_plugin {
+        self.plugin
+    }
+}
+
+⊢ Drop ∀ ClapPluginInstance {
+    rite drop(&Δ self) {
+        // Ensure proper shutdown sequence
+        ⎇ self.processing {
+            self.stop_processing();
+        }
+        ⎇ self.activated {
+            self.deactivate();
+        }
+
+        // Destroy the plugin
+        unsafe {
+            ⎇ ≔ Some(destroy) = (*self.plugin).destroy {
+                destroy(self.plugin);
+            }
+        }
+    }
+}
+
+// Safety: ClapPluginInstance is not thread-safe by default
+// The plugin pointer is only accessed from a single thread
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_plugin_descriptor_default() {
+        // Test with empty strings
+        ≔ desc = PluginDescriptor {
+            id: String·new(),
+            name: "Test".to_string(),
+            vendor: "Vendor".to_string(),
+            url: String·new(),
+            manual_url: String·new(),
+            support_url: String·new(),
+            version: "1.0.0".to_string(),
+            description: "A test plugin".to_string(),
+            features: vec!["instrument".to_string()],
+        };
+
+        assert_eq!(desc.name, "Test");
+        assert_eq!(desc.version, "1.0.0");
+        assert_eq!(desc.features.len(), 1);
+    }
+
+    //@ rune: test
+    rite test_loader_nonexistent_path() {
+        ≔ result = ClapPluginLoader·load(Path·new("/nonexistent/plugin.clap"));
+        assert!(result.is_err());
+    }
+
+    //@ rune: test
+    rite test_loader_invalid_library() {
+        // Try to load a non-library file
+        ≔ result = ClapPluginLoader·load(Path·new("/etc/passwd"));
+        assert!(result.is_err());
+    }
+}

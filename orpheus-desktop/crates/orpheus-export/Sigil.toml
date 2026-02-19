@@ -1,0 +1,74 @@
+# Sigil manifest for orpheus-export
+#
+# Export functionality for Orpheus - WAV, FLAC, AIFF, and more.
+
+[package]
+name = "orpheus-export"
+version = "0.1.0"
+description = "Export functionality for Orpheus - WAV, MP3, FLAC, stems"
+
+[features]
+default = []
+# Enable MP3 export via LAME (requires libmp3lame)
+mp3 = ["mp3lame-encoder"]
+# Enable OGG Vorbis export (requires libvorbis)
+ogg = ["vorbis-encoder"]
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-audio = { workspace = true }
+orpheus-synth = { workspace = true }
+
+# Audio files
+hound = { workspace = true }
+flacenc = { workspace = true }
+
+# Lossy encoding (optional, requires C libraries)
+mp3lame-encoder = { version = "0.2", optional = true }
+vorbis-encoder = { version = "0.1", optional = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Compression (for .wav.zst, .flac.zst exports)
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { workspace = true }
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    "src-sg/lib.sg",
+    "src-sg/renderer.sg",
+    "src-sg/tab_renderer.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error"]
+
+[build]
+target = "rust"
+output-dir = "src"
+
+[metadata]
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 3053
+file-count = 3

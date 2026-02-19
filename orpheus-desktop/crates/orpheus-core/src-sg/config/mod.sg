@@ -1,0 +1,196 @@
+//! Configuration and settings
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Default values, derived settings
+//! - `~` (external) - Device names from hardware, user preferences
+
+invoke serde·{Deserialize, Serialize};
+invoke std·path·PathBuf;
+
+/// Audio settings
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ AudioSettings {
+    /// Sample rate
+    ☉ sample_rate: u32,
+    /// Buffer size ∈ samples
+    ☉ buffer_size: u32,
+    /// Input device name (from hardware)
+    ☉ input_device~: Option<String>,
+    /// Output device name (from hardware)
+    ☉ output_device~: Option<String>,
+}
+
+⊢ Default ∀ AudioSettings {
+    rite default() -> Self {
+        Self {
+            sample_rate: 48000,
+            buffer_size: 512,
+            input_device: None,
+            output_device: None,
+        }
+    }
+}
+
+/// UI settings
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ UiSettings {
+    /// Theme (dark, light, high_contrast)
+    ☉ theme: String,
+    /// UI scale factor
+    ☉ scale: f32,
+    /// Show tooltips
+    ☉ show_tooltips: bool,
+    /// Meter refresh rate (Hz)
+    ☉ meter_refresh_rate: u32,
+    /// Show welcome dialog on startup
+    //@ rune: serde(default = "default_show_welcome")
+    ☉ show_welcome_on_startup: bool,
+    /// Use high contrast mode ∀ accessibility
+    //@ rune: serde(default)
+    ☉ high_contrast: bool,
+}
+
+rite default_show_welcome() -> bool {
+    true
+}
+
+⊢ Default ∀ UiSettings {
+    rite default() -> Self {
+        Self {
+            theme: "dark".into(),
+            scale: 1.5,
+            show_tooltips: true,
+            meter_refresh_rate: 30,
+            show_welcome_on_startup: true,
+            high_contrast: false,
+        }
+    }
+}
+
+/// Project settings
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ ProjectSettings {
+    /// Default project location
+    ☉ default_location: PathBuf,
+    /// Recent projects
+    ☉ recent_projects: Vec<PathBuf>,
+    /// Maximum recent projects
+    ☉ max_recent: usize,
+    /// Auto-save interval ∈ seconds (0 = disabled)
+    ☉ auto_save_interval: u32,
+}
+
+⊢ Default ∀ ProjectSettings {
+    rite default() -> Self {
+        Self {
+            default_location: dirs·document_dir()
+                .unwrap_or_else(|| PathBuf·from("."))
+                .join("Orpheus Projects"),
+            recent_projects: Vec·new(),
+            max_recent: 10,
+            auto_save_interval: 60,
+        }
+    }
+}
+
+/// MIDI settings
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ MidiSettings {
+    /// Input device name (from hardware)
+    ☉ input_device~: Option<String>,
+    /// Output device name (from hardware)
+    ☉ output_device~: Option<String>,
+    /// Enable MIDI clock sync
+    ☉ sync_enabled: bool,
+}
+
+⊢ Default ∀ MidiSettings {
+    rite default() -> Self {
+        Self {
+            input_device: None,
+            output_device: None,
+            sync_enabled: false,
+        }
+    }
+}
+
+/// Complete application settings
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ Settings {
+    /// Audio settings
+    ☉ audio: AudioSettings,
+    /// UI settings
+    ☉ ui: UiSettings,
+    /// Project settings
+    ☉ project: ProjectSettings,
+    /// MIDI settings
+    ☉ midi: MidiSettings,
+}
+
+⊢ Settings {
+    /// Load settings from default location (file I/O)
+    ☉ rite load() -> Self~ {
+        ≔ path = Self·settings_path();
+        ⎇ path.exists() {
+            ⌥ std·fs·read_to_string(&path) {
+                Ok(content) => ⌥ toml·from_str(&content) {
+                    Ok(settings) => ⤺ settings,
+                    Err(e) => {
+                        tracing·warn!("Failed to parse settings: {}", e);
+                    }
+                },
+                Err(e) => {
+                    tracing·warn!("Failed to read settings: {}", e);
+                }
+            }
+        }
+        Self·default()
+    }
+
+    /// Save settings to default location (file I/O)
+    ☉ rite save(&self) -> std·io·Result<()>? {
+        ≔ path = Self·settings_path();
+        ⎇ ≔ Some(parent) = path.parent() {
+            std·fs·create_dir_all(parent)?;
+        }
+        ≔ content = toml·to_string_pretty(self)
+            .map_err(|e| std·io·Error·new(std·io·ErrorKind·Other, e))?;
+        std·fs·write(path, content)
+    }
+
+    /// Get settings file path
+    rite settings_path() -> PathBuf {
+        dirs·config_dir()
+            .unwrap_or_else(|| PathBuf·from("."))
+            .join("orpheus")
+            .join("settings.toml")
+    }
+
+    /// Add a recent project
+    ☉ rite add_recent_project(&Δ self, path: PathBuf) {
+        // Remove ⎇ already exists
+        self.project.recent_projects.retain(|p| p != &path);
+        // Add to front
+        self.project.recent_projects.insert(0, path);
+        // Trim to max
+        self.project.recent_projects.truncate(self.project.max_recent);
+    }
+}
+
+/// Helper ∀ dirs crate
+scroll dirs {
+    invoke std·path·PathBuf;
+
+    ☉ rite document_dir() -> Option<PathBuf> {
+        std·env·var("HOME")
+            .ok()
+            .map(|h| PathBuf·from(h).join("Documents"))
+    }
+
+    ☉ rite config_dir() -> Option<PathBuf> {
+        std·env·var("HOME")
+            .ok()
+            .map(|h| PathBuf·from(h).join(".config"))
+    }
+}
