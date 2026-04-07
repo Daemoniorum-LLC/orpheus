@@ -1,0 +1,61 @@
+# Sigil manifest for orpheus-midi
+#
+# MIDI input/output handling for Orpheus
+
+[package]
+name = "orpheus-midi"
+version = "0.1.0"
+description = "MIDI input/output handling for Orpheus"
+
+[features]
+default = []
+# Enable real-time MIDI I/O via midir (requires ALSA on Linux)
+midi-io = ["dep:midir"]
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# MIDI
+midly = { workspace = true }
+midir = { workspace = true, optional = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    "src-sg/lib.sg",
+    "src-sg/message.sg",
+    "src-sg/input.sg",
+    "src-sg/router.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error", "ignore", "deprecated"]
+
+[build]
+# Transpile to Rust for compilation
+target = "rust"
+output-dir = "src"
+
+[metadata]
+# Migration tracking
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"

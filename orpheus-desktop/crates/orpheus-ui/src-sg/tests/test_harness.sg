@@ -1,0 +1,845 @@
+//! Test harness for orpheus-ui E2E and integration tests
+//!
+//! Provides a simulated application environment for testing user workflows
+//! without requiring the full runtime stack.
+//!
+//! ## Philosophy
+//!
+//! Tests are crystallized understanding. This harness enables:
+//! - **E2E tests** that verify complete user workflows
+//! - **Friction metrics** that catch UX pain points
+//! - **Integration tests** that verify component interaction
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Metrics calculations, state derivations
+//! - `~` (external) - Simulated user input, audio data
+//! - `Δ` (mutable) - Application state mutations
+
+invoke std·collections·HashMap;
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// Application modes
+☉ ᛈ OrpheusMode {
+    Compose,
+    Record,
+    Mix,
+    Master,
+    Practice,
+    Release,
+    Distribute,
+    Settings,
+}
+
+/// Transport playback state
+☉ ᛈ TransportState {
+    Stopped,
+    Playing,
+    Paused,
+    Recording,
+}
+
+/// Track types for routing
+☉ ᛈ TrackType {
+    Audio,
+    Midi,
+    Tab,
+    Bus,
+    Master,
+}
+
+/// Task complexity for friction thresholds
+☉ ᛈ TaskComplexity {
+    /// Simple task: ≤5 steps, ≤1 mode switch
+    Simple,
+    /// Medium task: ≤10 steps, ≤2 mode switches
+    Medium,
+    /// Complex task: ≤20 steps, ≤3 mode switches
+    Complex,
+}
+
+/// User actions that can be simulated
+☉ ᛈ Action {
+    /// Click on a UI element by ID
+    Click { target: String },
+    /// Double-click on a UI element
+    DoubleClick { target: String },
+    /// Drag from one point to another
+    Drag { target: String, delta_x: f32, delta_y: f32 },
+    /// Key press with optional modifiers
+    KeyPress { key: Key, modifiers: Modifiers },
+    /// Type text
+    TypeText { text: String },
+    /// Scroll
+    Scroll { target: String, delta: f32 },
+    /// Right-click context menu
+    ContextMenu { target: String },
+}
+
+/// Keyboard keys
+☉ ᛈ Key {
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    Space, Enter, Escape, Tab, Backspace, Delete,
+    Up, Down, Left, Right,
+    Home, End, PageUp, PageDown,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+}
+
+/// Keyboard modifiers
+☉ Σ Modifiers {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+}
+
+⊢ Modifiers {
+    /// No modifiers
+    ☉ rite none() -> Self! {
+        Self { ctrl: false, shift: false, alt: false, meta: false }
+    }
+
+    /// Ctrl/Cmd modifier
+    ☉ rite ctrl() -> Self! {
+        Self { ctrl: true, shift: false, alt: false, meta: false }
+    }
+
+    /// Shift modifier
+    ☉ rite shift() -> Self! {
+        Self { ctrl: false, shift: true, alt: false, meta: false }
+    }
+
+    /// Ctrl+Shift modifiers
+    ☉ rite ctrl_shift() -> Self! {
+        Self { ctrl: true, shift: true, alt: false, meta: false }
+    }
+}
+
+// =============================================================================
+// Point (for drag operations)
+// =============================================================================
+
+/// 2D point for mouse operations
+☉ Σ Point {
+    x: f32,
+    y: f32,
+}
+
+⊢ Point {
+    ☉ rite new(x: f32, y: f32) -> Self! {
+        Self { x, y }
+    }
+}
+
+// =============================================================================
+// Friction Thresholds
+// =============================================================================
+
+/// Maximum steps for a simple task (e.g., adjust volume)
+☉ const MAX_STEPS_SIMPLE: u32 = 5;
+
+/// Maximum steps for a medium task (e.g., record a take)
+☉ const MAX_STEPS_MEDIUM: u32 = 10;
+
+/// Maximum steps for a complex task (e.g., full mix)
+☉ const MAX_STEPS_COMPLEX: u32 = 20;
+
+/// Maximum mode switches for any task
+☉ const MAX_MODE_SWITCHES_SIMPLE: u32 = 1;
+☉ const MAX_MODE_SWITCHES_MEDIUM: u32 = 2;
+☉ const MAX_MODE_SWITCHES_COMPLEX: u32 = 3;
+
+/// Undo operations threshold (more than this = confusing UX)
+☉ const MAX_UNDO_OPERATIONS: u32 = 3;
+
+// =============================================================================
+// WorkflowMetrics
+// =============================================================================
+
+/// Friction metrics collector for E2E tests
+///
+/// Tracks how much effort a workflow requires, enabling detection of:
+/// - Over-complex workflows (too many steps)
+/// - Context switching (too many mode changes)
+/// - Confusion/mistakes (undo usage, error recovery)
+☉ Σ WorkflowMetrics {
+    /// Total user actions to complete workflow
+    steps: u32,
+    /// Internal state mutations triggered
+    state_changes: u32,
+    /// Mode/context changes required
+    mode_switches: u32,
+    /// Undo operations used
+    undo_operations: u32,
+    /// Error recoveries (hit error, then retry)
+    error_recoveries: u32,
+    /// Simulated elapsed time in milliseconds
+    elapsed_ms: u64,
+}
+
+⊢ WorkflowMetrics {
+    /// Create a new metrics collector
+    ☉ rite new() -> Self! {
+        Self {
+            steps: 0,
+            state_changes: 0,
+            mode_switches: 0,
+            undo_operations: 0,
+            error_recoveries: 0,
+            elapsed_ms: 0,
+        }
+    }
+
+    /// Record a user action step
+    ☉ rite record_step(&Δ self) {
+        self.steps += 1;
+    }
+
+    /// Record multiple steps at once
+    ☉ rite record_steps(&Δ self, count: u32) {
+        self.steps += count;
+    }
+
+    /// Record an internal state change
+    ☉ rite record_state_change(&Δ self) {
+        self.state_changes += 1;
+    }
+
+    /// Record a mode switch
+    ☉ rite record_mode_switch(&Δ self) {
+        self.mode_switches += 1;
+    }
+
+    /// Record an undo operation
+    ☉ rite record_undo(&Δ self) {
+        self.undo_operations += 1;
+    }
+
+    /// Record an error recovery
+    ☉ rite record_error_recovery(&Δ self) {
+        self.error_recoveries += 1;
+    }
+
+    /// Add elapsed time
+    ☉ rite add_time(&Δ self, ms: u64) {
+        self.elapsed_ms += ms;
+    }
+
+    /// Merge another metrics instance into this one
+    ☉ rite merge(&Δ self, other: &Self) {
+        self.steps += other.steps;
+        self.state_changes += other.state_changes;
+        self.mode_switches += other.mode_switches;
+        self.undo_operations += other.undo_operations;
+        self.error_recoveries += other.error_recoveries;
+        self.elapsed_ms += other.elapsed_ms;
+    }
+
+    /// Check if friction is acceptable for given task complexity
+    ☉ rite is_acceptable(&self, complexity: TaskComplexity) -> bool! {
+        ⌥ complexity {
+            TaskComplexity·Simple => {
+                self.steps <= MAX_STEPS_SIMPLE
+                    && self.mode_switches <= MAX_MODE_SWITCHES_SIMPLE
+                    && self.undo_operations <= MAX_UNDO_OPERATIONS
+                    && self.error_recoveries == 0
+            }
+            TaskComplexity·Medium => {
+                self.steps <= MAX_STEPS_MEDIUM
+                    && self.mode_switches <= MAX_MODE_SWITCHES_MEDIUM
+                    && self.undo_operations <= MAX_UNDO_OPERATIONS
+            }
+            TaskComplexity·Complex => {
+                self.steps <= MAX_STEPS_COMPLEX
+                    && self.mode_switches <= MAX_MODE_SWITCHES_COMPLEX
+            }
+        }
+    }
+
+    /// Generate a friction report
+    ☉ rite report(&self) -> FrictionReport! {
+        FrictionReport {
+            total_steps: self.steps,
+            mode_switches: self.mode_switches,
+            undo_operations: self.undo_operations,
+            error_recoveries: self.error_recoveries,
+            elapsed_ms: self.elapsed_ms,
+            verdict: self.compute_verdict(),
+        }
+    }
+
+    /// Compute overall verdict
+    rite compute_verdict(&self) -> FrictionVerdict! {
+        ⎇ self.error_recoveries > 2 {
+            FrictionVerdict·PainPoint("High error rate - workflow is confusing")
+        } ⎉ ⎇ self.undo_operations > MAX_UNDO_OPERATIONS {
+            FrictionVerdict·PainPoint("High undo usage - unclear feedback")
+        } ⎉ ⎇ self.mode_switches > MAX_MODE_SWITCHES_COMPLEX {
+            FrictionVerdict·PainPoint("Too many mode switches")
+        } ⎉ ⎇ self.steps > MAX_STEPS_COMPLEX {
+            FrictionVerdict·Warning("Workflow has many steps")
+        } ⎉ {
+            FrictionVerdict·Acceptable
+        }
+    }
+}
+
+/// Friction verdict categories
+☉ ᛈ FrictionVerdict {
+    /// Workflow is acceptable
+    Acceptable,
+    /// Workflow has minor concerns
+    Warning(&'static str),
+    /// Workflow has significant UX pain
+    PainPoint(&'static str),
+}
+
+/// Friction report for post-test analysis
+☉ Σ FrictionReport {
+    total_steps: u32,
+    mode_switches: u32,
+    undo_operations: u32,
+    error_recoveries: u32,
+    elapsed_ms: u64,
+    verdict: FrictionVerdict,
+}
+
+// =============================================================================
+// AppState (simulated application state)
+// =============================================================================
+
+/// Simulated application state for testing
+☉ Σ AppState {
+    /// Current mode
+    mode: OrpheusMode,
+    /// Transport state
+    transport: TransportState,
+    /// Current playhead position in beats
+    playhead_beats: f64,
+    /// Tempo in BPM
+    tempo: f64,
+    /// Selected channel index
+    selected_channel: Option<usize>,
+    /// Selected clip IDs
+    selected_clips: Vec<u64>,
+    /// Channel states (indexed by channel number)
+    channels: Vec<ChannelState>,
+    /// Tracks
+    tracks: Vec<TrackState>,
+    /// Errors encountered
+    errors: Vec<String>,
+    /// Is recording armed
+    recording_armed: bool,
+    /// LUFS meter readings
+    integrated_lufs: f32,
+    true_peak: f32,
+    /// UI visibility states
+    lufs_meter_visible: bool,
+    clip_indicator_lit: bool,
+    meter_animating: bool,
+    peak_indicator_visible: bool,
+}
+
+/// Channel state for mixer testing
+☉ Σ ChannelState {
+    name: String,
+    track_type: TrackType,
+    volume_db: f32,
+    pan: f32,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    input_monitoring: bool,
+    meter_level_db: f32,
+    meter_peak_db: f32,
+}
+
+⊢ ChannelState {
+    ☉ rite new(name: &str, track_type: TrackType) -> Self! {
+        Self {
+            name: name.to_string(),
+            track_type,
+            volume_db: 0.0,
+            pan: 0.0,
+            muted: false,
+            soloed: false,
+            armed: false,
+            input_monitoring: false,
+            meter_level_db: -60.0,
+            meter_peak_db: -60.0,
+        }
+    }
+}
+
+/// Track state for arrangement testing
+☉ Σ TrackState {
+    name: String,
+    track_type: TrackType,
+    clips: Vec<ClipState>,
+}
+
+/// Clip state for arrangement testing
+☉ Σ ClipState {
+    id: u64,
+    name: String,
+    start_beats: f64,
+    end_beats: f64,
+}
+
+⊢ ◊ AppState {
+    rite default() -> Self {
+        Self {
+            mode: OrpheusMode·Compose,
+            transport: TransportState·Stopped,
+            playhead_beats: 0.0,
+            tempo: 120.0,
+            selected_channel: None,
+            selected_clips: vec![],
+            channels: vec![],
+            tracks: vec![],
+            errors: vec![],
+            recording_armed: false,
+            integrated_lufs: -23.0,
+            true_peak: -6.0,
+            lufs_meter_visible: false,
+            clip_indicator_lit: false,
+            meter_animating: false,
+            peak_indicator_visible: false,
+        }
+    }
+}
+
+// =============================================================================
+// TestApp
+// =============================================================================
+
+/// Simulated application for E2E testing
+///
+/// Provides a full application simulation that can:
+/// - Process user actions (clicks, drags, keypresses)
+/// - Track state changes
+/// - Simulate audio engine updates
+/// - Verify workflows without full runtime
+☉ Σ TestApp {
+    /// Current application state
+    state: AppState,
+    /// Action history for undo simulation
+    history: Vec<Action>,
+    /// Element positions for click simulation
+    elements: HashMap<String, (f32, f32, f32, f32)>,  // id -> (x, y, width, height)
+    /// Registered callbacks
+    callbacks: HashMap<String, Box<dyn Fn(&Δ AppState)>>,
+}
+
+⊢ TestApp {
+    /// Create a new test app with default state
+    ☉ rite new() -> Self! {
+        ≔ Δ app = Self {
+            state: AppState·default(),
+            history: vec![],
+            elements: HashMap·new(),
+            callbacks: HashMap·new(),
+        };
+        app.setup_default_elements();
+        app
+    }
+
+    /// Create a new test app with a pre-configured project
+    ☉ rite new_with_project(project: TestProject) -> Self! {
+        ≔ Δ app = Self·new();
+        app.load_project(project);
+        app
+    }
+
+    /// Setup default UI element positions
+    rite setup_default_elements(&Δ self) {
+        // Transport controls
+        self.elements.insert("transport_play".into(), (100.0, 10.0, 40.0, 40.0));
+        self.elements.insert("transport_stop".into(), (50.0, 10.0, 40.0, 40.0));
+        self.elements.insert("transport_record".into(), (150.0, 10.0, 40.0, 40.0));
+
+        // Mode selector
+        self.elements.insert("mode_compose".into(), (10.0, 100.0, 60.0, 60.0));
+        self.elements.insert("mode_record".into(), (10.0, 170.0, 60.0, 60.0));
+        self.elements.insert("mode_mix".into(), (10.0, 240.0, 60.0, 60.0));
+        self.elements.insert("mode_master".into(), (10.0, 310.0, 60.0, 60.0));
+
+        // Export
+        self.elements.insert("export_button".into(), (500.0, 10.0, 80.0, 30.0));
+        self.elements.insert("export_confirm".into(), (400.0, 300.0, 100.0, 40.0));
+
+        // New project
+        self.elements.insert("new_project".into(), (10.0, 10.0, 80.0, 30.0));
+    }
+
+    /// Load a test project
+    rite load_project(&Δ self, project: TestProject) {
+        self.state.channels = project.channels;
+        self.state.tracks = project.tracks;
+        self.state.tempo = project.tempo;
+    }
+
+    /// Simulate a click on a UI element
+    ☉ rite click(&Δ self, target: &str) {
+        self.history.push(Action·Click { target: target.to_string() });
+        self.handle_click(target);
+    }
+
+    /// Handle click action
+    rite handle_click(&Δ self, target: &str) {
+        // Mode switches
+        ⎇ target == "mode_compose" {
+            self.state.mode = OrpheusMode·Compose;
+        } ⎉ ⎇ target == "mode_record" {
+            self.state.mode = OrpheusMode·Record;
+        } ⎉ ⎇ target == "mode_mix" {
+            self.state.mode = OrpheusMode·Mix;
+            self.state.lufs_meter_visible = false;
+        } ⎉ ⎇ target == "mode_master" {
+            self.state.mode = OrpheusMode·Master;
+            self.state.lufs_meter_visible = true;
+        }
+
+        // Transport
+        ⎉ ⎇ target == "transport_play" {
+            self.state.transport = TransportState·Playing;
+            self.state.meter_animating = true;
+            self.state.peak_indicator_visible = true;
+        } ⎉ ⎇ target == "transport_stop" {
+            self.state.transport = TransportState·Stopped;
+            self.state.playhead_beats = 0.0;
+        } ⎉ ⎇ target == "transport_record" {
+            ⎇ self.state.recording_armed {
+                self.state.transport = TransportState·Recording;
+            }
+        }
+
+        // Channel controls (pattern: channel_{name}_{control})
+        ⎉ ⎇ target.starts_with("channel_") && target.ends_with("_solo") {
+            ≔ name = target.strip_prefix("channel_").unwrap()
+                .strip_suffix("_solo").unwrap();
+            self.toggle_solo(name);
+        } ⎉ ⎇ target.starts_with("channel_") && target.ends_with("_mute") {
+            ≔ name = target.strip_prefix("channel_").unwrap()
+                .strip_suffix("_mute").unwrap();
+            self.toggle_mute(name);
+        } ⎉ ⎇ target.starts_with("channel_") && target.ends_with("_arm") {
+            ≔ name = target.strip_prefix("channel_").unwrap()
+                .strip_suffix("_arm").unwrap();
+            self.toggle_arm(name);
+        }
+
+        // New project
+        ⎉ ⎇ target == "new_project" {
+            self.state = AppState·default();
+            self.setup_default_elements();
+        }
+    }
+
+    /// Toggle solo for a channel
+    rite toggle_solo(&Δ self, name: &str) {
+        ∀ channel ∈ &Δ self.state.channels {
+            ⎇ channel.name.to_lowercase().contains(&name.to_lowercase()) {
+                channel.soloed = !channel.soloed;
+            }
+        }
+    }
+
+    /// Toggle mute for a channel
+    rite toggle_mute(&Δ self, name: &str) {
+        ∀ channel ∈ &Δ self.state.channels {
+            ⎇ channel.name.to_lowercase().contains(&name.to_lowercase()) {
+                channel.muted = !channel.muted;
+            }
+        }
+    }
+
+    /// Toggle arm for a channel
+    rite toggle_arm(&Δ self, name: &str) {
+        ∀ channel ∈ &Δ self.state.channels {
+            ⎇ channel.name.to_lowercase().contains(&name.to_lowercase()) {
+                channel.armed = !channel.armed;
+                ⎇ channel.armed {
+                    channel.input_monitoring = true;
+                }
+            }
+        }
+    }
+
+    /// Simulate a drag operation
+    ☉ rite drag(&Δ self, target: &str, from: Point, to: Point) {
+        self.history.push(Action·Drag {
+            target: target.to_string(),
+            delta_x: to.x - from.x,
+            delta_y: to.y - from.y,
+        });
+
+        // Handle fader drags
+        ⎇ target.ends_with("_fader") {
+            ≔ delta_db = (from.y - to.y) * 0.5;  // Upward drag = increase
+            ≔ name = target.strip_suffix("_fader").unwrap()
+                .strip_prefix("channel_").unwrap_or(target);
+            self.adjust_fader(name, delta_db);
+        }
+    }
+
+    /// Adjust fader by delta dB
+    rite adjust_fader(&Δ self, name: &str, delta_db: f32) {
+        ∀ channel ∈ &Δ self.state.channels {
+            ⎇ channel.name.to_lowercase().contains(&name.to_lowercase()) {
+                channel.volume_db = (channel.volume_db + delta_db).clamp(-60.0, 6.0);
+            }
+        }
+    }
+
+    /// Simulate a key press
+    ☉ rite key_press(&Δ self, key: Key, modifiers: Modifiers) {
+        self.history.push(Action·KeyPress { key, modifiers });
+
+        ⌥ key {
+            Key·Space => {
+                // Toggle play/pause
+                ⎇ self.state.transport == TransportState·Playing {
+                    self.state.transport = TransportState·Paused;
+                } ⎉ {
+                    self.state.transport = TransportState·Playing;
+                }
+            }
+            Key·Z ⎇ modifiers.ctrl => {
+                // Undo
+                self.history.pop();
+            }
+            _ => {}
+        }
+    }
+
+    /// Type text (for dialogs, inputs)
+    ☉ rite type_text(&Δ self, text: &str) {
+        self.history.push(Action·TypeText { text: text.to_string() });
+    }
+
+    /// Advance simulated time
+    ☉ rite advance_time(&Δ self, seconds: f64) {
+        ⎇ self.state.transport == TransportState·Playing
+            || self.state.transport == TransportState·Recording
+        {
+            self.state.playhead_beats += (seconds * self.state.tempo) / 60.0;
+        }
+    }
+
+    /// Advance to a specific beat
+    ☉ rite advance_to_beat(&Δ self, beat: f64) {
+        self.state.playhead_beats = beat;
+    }
+
+    /// Simulate audio frames for meter testing
+    ☉ rite simulate_audio_frame(&Δ self, levels: Vec<f32>) {
+        ⎇ !levels.is_empty() {
+            ≔ max_level = levels.iter().cloned().fold(f32·NEG_INFINITY, f32·max);
+            self.state.clip_indicator_lit = max_level > 0.0;
+            self.state.meter_animating = true;
+        }
+    }
+
+    /// Set mode directly (for test setup)
+    ☉ rite set_mode(&Δ self, mode: OrpheusMode) {
+        self.state.mode = mode;
+        ⎇ ⌥ mode { OrpheusMode·Master => true, _ => false } {
+            self.state.lufs_meter_visible = true;
+        }
+    }
+
+    /// Select a channel
+    ☉ rite select_channel(&Δ self, index: usize) {
+        self.state.selected_channel = Some(index);
+    }
+
+    /// Seek to a time position
+    ☉ rite seek_to(&Δ self, seconds: f64) {
+        self.state.playhead_beats = (seconds * self.state.tempo) / 60.0;
+    }
+
+    /// Get playhead position in seconds
+    ☉ rite playhead_seconds(&self) -> f64! {
+        (self.state.playhead_beats * 60.0) / self.state.tempo
+    }
+
+    /// Check if meters are active
+    ☉ rite meters_active(&self) -> bool! {
+        self.state.meter_animating
+    }
+
+    /// Solo a specific channel
+    ☉ rite solo_channel(&Δ self, index: usize) {
+        ⎇ index < self.state.channels.len() {
+            self.state.channels[index].soloed = true;
+        }
+    }
+
+    /// Unsolo a specific channel
+    ☉ rite unsolo_channel(&Δ self, index: usize) {
+        ⎇ index < self.state.channels.len() {
+            self.state.channels[index].soloed = false;
+        }
+    }
+
+    /// Check if a channel is visible (for search tests)
+    ☉ rite channel_visible(&self, name: &str) -> bool! {
+        self.state.channels.iter().any(|c| c.name.contains(name))
+    }
+}
+
+// =============================================================================
+// TestProject (fixture builder)
+// =============================================================================
+
+/// Test project configuration
+☉ Σ TestProject {
+    name: String,
+    tempo: f64,
+    channels: Vec<ChannelState>,
+    tracks: Vec<TrackState>,
+}
+
+⊢ TestProject {
+    /// Create an empty project
+    ☉ rite empty() -> Self! {
+        Self {
+            name: "Untitled".into(),
+            tempo: 120.0,
+            channels: vec![],
+            tracks: vec![],
+        }
+    }
+
+    /// Add a channel
+    ☉ rite with_channel(Δ self, name: &str, track_type: TrackType) -> Self {
+        self.channels.push(ChannelState·new(name, track_type));
+        self
+    }
+
+    /// Add a track
+    ☉ rite with_track(Δ self, name: &str, track_type: TrackType) -> Self {
+        self.tracks.push(TrackState {
+            name: name.to_string(),
+            track_type,
+            clips: vec![],
+        });
+        self
+    }
+
+    /// Set tempo
+    ☉ rite with_tempo(Δ self, tempo: f64) -> Self {
+        self.tempo = tempo;
+        self
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_workflow_metrics_simple_acceptable() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        metrics.record_step();
+        metrics.record_step();
+        metrics.record_step();
+
+        assert!(metrics.is_acceptable(TaskComplexity·Simple));
+        assert_eq!(metrics.steps, 3);
+    }
+
+    //@ rune: test
+    rite test_workflow_metrics_too_many_steps() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        ∀ _ ∈ 0..10 {
+            metrics.record_step();
+        }
+
+        assert!(!metrics.is_acceptable(TaskComplexity·Simple));
+        assert!(metrics.is_acceptable(TaskComplexity·Medium));
+    }
+
+    //@ rune: test
+    rite test_workflow_metrics_mode_switches() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        metrics.record_step();
+        metrics.record_mode_switch();
+        metrics.record_mode_switch();
+        metrics.record_mode_switch();
+
+        assert!(!metrics.is_acceptable(TaskComplexity·Simple));
+        assert!(!metrics.is_acceptable(TaskComplexity·Medium));
+        assert!(metrics.is_acceptable(TaskComplexity·Complex));
+    }
+
+    //@ rune: test
+    rite test_testapp_mode_switching() {
+        ≔ Δ app = TestApp·new();
+
+        assert!(⌥ app.state.mode { OrpheusMode·Compose => true, _ => false });
+
+        app.click("mode_mix");
+        assert!(⌥ app.state.mode { OrpheusMode·Mix => true, _ => false });
+
+        app.click("mode_master");
+        assert!(⌥ app.state.mode { OrpheusMode·Master => true, _ => false });
+        assert!(app.state.lufs_meter_visible);
+    }
+
+    //@ rune: test
+    rite test_testapp_transport() {
+        ≔ Δ app = TestApp·new();
+
+        assert!(⌥ app.state.transport { TransportState·Stopped => true, _ => false });
+
+        app.click("transport_play");
+        assert!(⌥ app.state.transport { TransportState·Playing => true, _ => false });
+
+        app.click("transport_stop");
+        assert!(⌥ app.state.transport { TransportState·Stopped => true, _ => false });
+    }
+
+    //@ rune: test
+    rite test_testapp_channel_solo() {
+        ≔ project = TestProject·empty()
+            .with_channel("Drums", TrackType·Audio)
+            .with_channel("Bass", TrackType·Audio);
+
+        ≔ Δ app = TestApp·new_with_project(project);
+
+        app.click("channel_drums_solo");
+        assert!(app.state.channels[0].soloed);
+        assert!(!app.state.channels[1].soloed);
+    }
+
+    //@ rune: test
+    rite test_friction_report_verdict() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Acceptable workflow
+        metrics.record_step();
+        metrics.record_step();
+        ≔ report = metrics.report();
+        assert!(⌥ report.verdict { FrictionVerdict·Acceptable => true, _ => false });
+
+        // High error rate
+        ≔ Δ error_metrics = WorkflowMetrics·new();
+        error_metrics.record_error_recovery();
+        error_metrics.record_error_recovery();
+        error_metrics.record_error_recovery();
+        ≔ error_report = error_metrics.report();
+        assert!(⌥ error_report.verdict { FrictionVerdict·PainPoint(_) => true, _ => false });
+    }
+}

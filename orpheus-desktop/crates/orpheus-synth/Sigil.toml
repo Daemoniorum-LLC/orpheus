@@ -1,0 +1,120 @@
+# Sigil manifest for orpheus-synth
+#
+# Audio synthesis engine with guitar, orchestral, and AI-generated audio.
+
+[package]
+name = "orpheus-synth"
+version = "0.1.0"
+description = "Audio synthesis engine with guitar, orchestral, and AI-generated audio"
+
+[features]
+default = []
+audio-output = ["cpal"]
+# Simulation mode: runs full audio engine pipeline but discards output (for CI testing)
+simulation = []
+dantalion = ["serde", "serde_json"]
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+orpheus-file = { workspace = true }
+
+# Random number generation
+rand = { workspace = true }
+
+# Audio output (optional - requires platform audio libraries)
+cpal = { workspace = true, optional = true }
+
+# Threading
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization (optional - for Dantalion integration)
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+libc = "0.2"
+criterion = "0.5"
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    # Root
+    "src-sg/lib.sg",
+
+    # Core synthesis
+    "src-sg/karplus_strong.sg",
+    "src-sg/guitar.sg",
+    "src-sg/amp.sg",
+    "src-sg/cabinet.sg",
+    "src-sg/piano.sg",
+    "src-sg/bass.sg",
+
+    # Orchestral
+    "src-sg/strings.sg",
+    "src-sg/brass.sg",
+    "src-sg/woodwinds.sg",
+    "src-sg/orchestral_percussion.sg",
+    "src-sg/choir.sg",
+    "src-sg/orchestra.sg",
+    "src-sg/orchestra_renderer.sg",
+
+    # Routing and playback
+    "src-sg/instrument_router.sg",
+    "src-sg/playback.sg",
+    "src-sg/sequencer.sg",
+
+    # Drums and effects
+    "src-sg/drums.sg",
+    "src-sg/effects.sg",
+    "src-sg/metronome.sg",
+
+    # Output
+    "src-sg/output.sg",
+    "src-sg/engine.sg",
+    "src-sg/wav.sg",
+
+    # AI integration
+    "src-sg/dantalion.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error", "ignore", "bench"]
+
+[build]
+# Transpile to Rust for compilation
+target = "rust"
+output-dir = "src"
+
+[metadata]
+# Migration tracking
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 18812
+file-count = 24
+
+# Synthesis modules
+[metadata.modules]
+guitar = "Karplus-Strong physical modeling"
+amp = "Tube amp simulation with tonestack EQ"
+piano = "Additive synthesis"
+bass = "Subtractive synthesis"
+strings = "Bowed string physical modeling"
+brass = "Brass with mutes and articulations"
+woodwinds = "Air jet, single/double reed oscillators"
+choir = "Formant synthesis with consonants"
+orchestra = "Spatial positioning and concert hall"
+drums = "Synthesis-based drum machine"
+dantalion = "AI-generated audio integration"

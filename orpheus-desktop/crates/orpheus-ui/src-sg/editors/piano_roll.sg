@@ -1,0 +1,745 @@
+//! Piano roll MIDI editor
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Note positions, grid snapping
+//! - `~` (external) - MIDI data, playback position
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Pixels per beat at zoom level 1.0
+Λ BASE_PPB: f32 = 40.0;
+
+/// Base note height at zoom level 1.0
+Λ BASE_NOTE_HEIGHT: f32 = 16.0;
+
+/// Piano keyboard width
+Λ KEYBOARD_WIDTH: f32 = 80.0;
+
+/// Velocity lane height
+Λ VELOCITY_LANE_HEIGHT: f32 = 60.0;
+
+/// MIDI note names
+Λ NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+/// Piano roll editor properties
+☉ Σ PianoRollEditorProps {
+    /// MIDI notes
+    notes~: Vec<PianoNote>,
+    /// Current playhead position (beats)
+    playhead~: f64,
+    /// Horizontal zoom level
+    zoom_x: f32,
+    /// Vertical zoom level
+    zoom_y: f32,
+    /// Scroll offset X (beats)
+    scroll_x: f64,
+    /// Scroll offset Y (MIDI note number from top)
+    scroll_y: f32,
+    /// Selected note IDs
+    selected_notes: Vec<u32>,
+    /// Snap enabled
+    snap_enabled: bool,
+    /// Snap resolution (beats)
+    snap_resolution: f64,
+    /// Time signature numerator
+    time_sig_num: u8,
+    /// Time signature denominator
+    time_sig_denom: u8,
+    /// Clip length (beats)
+    clip_length: f64,
+    /// Show velocity lane
+    show_velocity: bool,
+    /// Edit tool
+    edit_tool: PianoRollTool,
+    /// Default velocity for new notes
+    default_velocity: u8,
+    /// Callbacks
+    on_note_select: Box<dyn Fn(u32, bool)>,
+    on_note_add: Box<dyn Fn(u8, f64, f64, u8)>,
+    on_note_move: Box<dyn Fn(u32, u8, f64)>,
+    on_note_resize: Box<dyn Fn(u32, f64)>,
+    on_note_velocity: Box<dyn Fn(u32, u8)>,
+    on_note_delete: Box<dyn Fn(u32)>,
+    on_playhead_set: Box<dyn Fn(f64)>,
+    on_scroll: Box<dyn Fn(f64, f32)>,
+    on_zoom: Box<dyn Fn(f32, f32)>,
+}
+
+/// Edit tools
+☉ ᛈ PianoRollTool {
+    Select,
+    Draw,
+    Erase,
+    Split,
+}
+
+/// Piano note
+☉ Σ PianoNote {
+    id: u32,
+    pitch: u8,
+    velocity: u8,
+    start: f64,
+    duration: f64,
+}
+
+/// Drag state
+☉ ᛈ DragState {
+    /// Moving note(s)
+    NoteMove { note_id: u32, start_pitch: u8, start_beat: f64, offset_x: f32, offset_y: f32 },
+    /// Resizing note
+    NoteResize { note_id: u32, original_duration: f64 },
+    /// Drawing new note
+    NoteDraw { pitch: u8, start_beat: f64 },
+    /// Adjusting velocity
+    VelocityAdjust { note_id: u32, original_velocity: u8 },
+    /// Marquee selection
+    Selection { start_x: f32, start_y: f32, current_x: f32, current_y: f32 },
+    /// Scrolling
+    Scroll { start_scroll_x: f64, start_scroll_y: f32, start_mouse_x: f32, start_mouse_y: f32 },
+}
+
+/// Piano roll editor component
+☉ Σ PianoRollEditor {
+    props: PianoRollEditorProps,
+    drag_state: Option<DragState>,
+    hover_note: Option<u32>,
+    hover_resize: bool,
+    preview_note: Option<(u8, f64)>,
+}
+
+⊢ PianoRollEditor {
+    ☉ rite new(props: PianoRollEditorProps) -> Self! {
+        Self {
+            props,
+            drag_state: None,
+            hover_note: None,
+            hover_resize: false,
+            preview_note: None,
+        }
+    }
+
+    /// Convert beats to pixels
+    rite beats_to_px(&self, beats: f64) -> f32! {
+        ((beats - self.props.scroll_x) * BASE_PPB as f64 * self.props.zoom_x as f64) as f32
+    }
+
+    /// Convert pixels to beats
+    rite px_to_beats(&self, px: f32) -> f64! {
+        (px as f64 / (BASE_PPB as f64 * self.props.zoom_x as f64)) + self.props.scroll_x
+    }
+
+    /// Convert MIDI note to Y position
+    rite note_to_y(&self, note: u8) -> f32! {
+        (127.0 - note as f32 - self.props.scroll_y) * BASE_NOTE_HEIGHT * self.props.zoom_y
+    }
+
+    /// Convert Y position to MIDI note
+    rite y_to_note(&self, y: f32) -> u8! {
+        ≔ note = 127.0 - (y / (BASE_NOTE_HEIGHT * self.props.zoom_y)) - self.props.scroll_y;
+        note.clamp(0.0, 127.0) as u8
+    }
+
+    /// Get note height
+    rite note_height(&self) -> f32! {
+        BASE_NOTE_HEIGHT * self.props.zoom_y
+    }
+
+    /// Snap position to grid if enabled
+    rite snap(&self, beats: f64) -> f64! {
+        ⎇ self.props.snap_enabled {
+            (beats / self.props.snap_resolution).round() * self.props.snap_resolution
+        } ⎉ {
+            beats
+        }
+    }
+
+    /// Check if a note is a black key
+    rite is_black_key(&self, note: u8) -> bool! {
+        ≔ n = note % 12;
+        n == 1 || n == 3 || n == 6 || n == 8 || n == 10
+    }
+
+    /// Get note name with octave
+    rite note_name(&self, note: u8) -> String! {
+        ≔ name = NOTE_NAMES[(note % 12) as usize];
+        ≔ octave = (note / 12) as i8 - 1;
+        format!("{}{}", name, octave)
+    }
+
+    /// Render piano keyboard
+    rite render_keyboard(&self, height: f32) -> Element! {
+        ≔ note_h = self.note_height();
+        ≔ visible_start = self.props.scroll_y as u8;
+        ≔ visible_count = (height / note_h).ceil() as u8 + 1;
+
+        element! {
+            <div class="piano-keyboard" style={style! {
+                width: px(KEYBOARD_WIDTH),
+                height: px(height),
+                background: ABYSS.to_css(),
+                border_right: format!("1px solid {}", GRID_LINE.to_css()),
+                position: "relative",
+                overflow: "hidden",
+            }}>
+                ∀ i ∈ 0..visible_count {
+                    ≔ note = 127 - visible_start - i;
+                    ⎇ note <= 127 {
+                        ≔ is_black = self.is_black_key(note);
+                        ≔ is_c = note % 12 == 0;
+                        ≔ y = self.note_to_y(note);
+
+                        <div
+                            class="piano-key"
+                            style={style! {
+                                position: "absolute",
+                                left: 0,
+                                top: px(y),
+                                width: ⎇ is_black { "60%" } ⎉ { "100%" },
+                                height: px(note_h - 1.0),
+                                background: ⎇ is_black { VOID.to_css() } ⎉ { SILVER.with_alpha(0.9).to_css() },
+                                border_bottom: format!("1px solid {}", ⎇ is_c { PHTHALO.with_alpha(0.5) } ⎉ { SILVER.with_alpha(0.2) }.to_css()),
+                                display: "flex",
+                                align_items: "center",
+                                justify_content: "flex-end",
+                                padding_right: "4px",
+                                cursor: "pointer",
+                                z_index: ⎇ is_black { 2 } ⎉ { 1 },
+                            }}
+                            on_mouse_down={|_| {
+                                // Play note preview
+                            }}
+                        >
+                            ⎇ is_c {
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    font_family: FONT_MONO,
+                                    color: ⎇ is_black { SILVER } ⎉ { VOID }.to_css(),
+                                }}>
+                                    {self.note_name(note)}
+                                </span>
+                            }
+                        </div>
+                    }
+                }
+            </div>
+        }
+    }
+
+    /// Render note grid
+    rite render_grid(&self, width: f32, height: f32) -> Element! {
+        ≔ beats_per_bar = self.props.time_sig_num as f64;
+        ≔ start_beat = self.props.scroll_x.floor() as i64;
+        ≔ end_beat = self.px_to_beats(width).ceil() as i64 + 1;
+        ≔ note_h = self.note_height();
+        ≔ visible_start = self.props.scroll_y as u8;
+        ≔ visible_count = (height / note_h).ceil() as u8 + 1;
+
+        element! {
+            <svg class="note-grid-svg" width={width} height={height} style={style! {
+                position: "absolute",
+                left: 0,
+                top: 0,
+                pointer_events: "none",
+            }}>
+                // Horizontal lines (note rows)
+                ∀ i ∈ 0..visible_count {
+                    ≔ note = 127 - visible_start - i;
+                    ⎇ note <= 127 {
+                        ≔ y = self.note_to_y(note);
+                        ≔ is_c = note % 12 == 0;
+                        ≔ is_black = self.is_black_key(note);
+
+                        // Row background
+                        <rect
+                            x={0}
+                            y={y}
+                            width={width}
+                            height={note_h}
+                            fill={⎇ is_black {
+                                VOID.with_alpha(0.5)
+                            } ⎉ {
+                                VOID.with_alpha(0.2)
+                            }.to_css()}
+                        />
+
+                        // Row line
+                        <line
+                            x1={0}
+                            y1={y + note_h}
+                            x2={width}
+                            y2={y + note_h}
+                            stroke={⎇ is_c { PHTHALO.with_alpha(0.3) } ⎉ { GRID_LINE }.to_css()}
+                            stroke_width={⎇ is_c { "1" } ⎉ { "0.5" }}
+                        />
+                    }
+                }
+
+                // Vertical lines (beats)
+                ∀ beat ∈ start_beat..=end_beat {
+                    ≔ x = self.beats_to_px(beat as f64);
+                    ≔ is_bar = beat % beats_per_bar as i64 == 0;
+
+                    ⎇ x >= 0.0 {
+                        <line
+                            x1={x}
+                            y1={0}
+                            x2={x}
+                            y2={height}
+                            stroke={⎇ is_bar { GRID_BAR } ⎉ { GRID_BEAT }.to_css()}
+                            stroke_width={⎇ is_bar { "1" } ⎉ { "0.5" }}
+                        />
+                    }
+                }
+
+                // Subdivision lines (if zoomed in enough)
+                ⎇ self.props.zoom_x > 0.5 {
+                    ≔ subdivisions = ⎇ self.props.snap_resolution <= 0.25 { 4 } ⎉ { 2 };
+                    ∀ beat ∈ start_beat..=end_beat {
+                        ∀ sub ∈ 1..subdivisions {
+                            ≔ x = self.beats_to_px(beat as f64 + sub as f64 / subdivisions as f64);
+                            ⎇ x >= 0.0 {
+                                <line
+                                    x1={x}
+                                    y1={0}
+                                    x2={x}
+                                    y2={height}
+                                    stroke={GRID_LINE.to_css()}
+                                    stroke_width="0.25"
+                                    stroke_dasharray="2,2"
+                                />
+                            }
+                        }
+                    }
+                }
+            </svg>
+        }
+    }
+
+    /// Render a single note
+    rite render_note(&self, note: &PianoNote) -> Element! {
+        ≔ x = self.beats_to_px(note.start);
+        ≔ width = self.beats_to_px(note.start + note.duration) - x;
+        ≔ y = self.note_to_y(note.pitch);
+        ≔ height = self.note_height() - 2.0;
+        ≔ is_selected = self.props.selected_notes.contains(&note.id);
+        ≔ is_hovered = self.hover_note == Some(note.id);
+        ≔ velocity_alpha = 0.5 + (note.velocity as f32 / 127.0) * 0.5;
+
+        element! {
+            <div
+                class="piano-note"
+                style={style! {
+                    position: "absolute",
+                    left: px(x),
+                    top: px(y + 1.0),
+                    width: px(width.max(4.0)),
+                    height: px(height),
+                    background: ⎇ is_selected {
+                        PHTHALO.with_alpha(velocity_alpha)
+                    } ⎉ {
+                        MIDI_TRACK.with_alpha(velocity_alpha)
+                    }.to_css(),
+                    border_radius: "2px",
+                    border: format!("1px solid {}", ⎇ is_selected { PHTHALO.lighten(0.3) } ⎉ ⎇ is_hovered { SILVER } ⎉ { MIDI_TRACK.lighten(0.2) }.to_css()),
+                    cursor: ⎇ self.hover_resize { "ew-resize" } ⎉ { "move" },
+                    box_shadow: ⎇ is_selected { format!("0 0 6px {}", PHTHALO.with_alpha(0.5).to_css()) } ⎉ { "none".into() },
+                }}
+                on_mouse_enter={|_| self.hover_note = Some(note.id)}
+                on_mouse_leave={|_| { self.hover_note = None; self.hover_resize = false; }}
+                on_mouse_move={|e| {
+                    ≔ resize_zone = 6.0;
+                    self.hover_resize = e.offset_x > width - resize_zone;
+                }}
+                on_mouse_down={|e| {
+                    ⎇ self.props.edit_tool == PianoRollTool·Erase {
+                        (self.props.on_note_delete)(note.id);
+                    } ⎉ {
+                        // Select note (add to selection if shift held)
+                        (self.props.on_note_select)(note.id, e.shift_key);
+
+                        ⎇ self.hover_resize {
+                            self.drag_state = Some(DragState·NoteResize {
+                                note_id: note.id,
+                                original_duration: note.duration,
+                            });
+                        } ⎉ {
+                            self.drag_state = Some(DragState·NoteMove {
+                                note_id: note.id,
+                                start_pitch: note.pitch,
+                                start_beat: note.start,
+                                offset_x: e.offset_x as f32,
+                                offset_y: e.offset_y as f32,
+                            });
+                        }
+                    }
+                    e.stop_propagation();
+                }}
+            >
+                // Note label (if wide enough)
+                ⎇ width > 24.0 {
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.to_css(),
+                        padding_left: "2px",
+                        white_space: "nowrap",
+                        overflow: "hidden",
+                    }}>
+                        {self.note_name(note.pitch)}
+                    </span>
+                }
+
+                // Resize handle
+                <div style={style! {
+                    position: "absolute",
+                    right: 0,
+                    top: 0,
+                    width: "4px",
+                    height: "100%",
+                    background: ⎇ self.hover_resize { SILVER.with_alpha(0.5) } ⎉ { Color·TRANSPARENT }.to_css(),
+                    border_radius: "0 2px 2px 0",
+                }} />
+            </div>
+        }
+    }
+
+    /// Render velocity lane
+    rite render_velocity_lane(&self, width: f32) -> Element! {
+        element! {
+            <div class="velocity-lane" style={style! {
+                height: px(VELOCITY_LANE_HEIGHT),
+                background: ABYSS.to_css(),
+                border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                position: "relative",
+                margin_left: px(KEYBOARD_WIDTH),
+            }}>
+                // Velocity bars for each note
+                ∀ note ∈ &self.props.notes {
+                    ≔ x = self.beats_to_px(note.start);
+                    ≔ bar_width = self.beats_to_px(note.start + note.duration) - x;
+                    ≔ bar_height = (note.velocity as f32 / 127.0) * (VELOCITY_LANE_HEIGHT - 4.0);
+                    ≔ is_selected = self.props.selected_notes.contains(&note.id);
+
+                    <div
+                        class="velocity-bar"
+                        style={style! {
+                            position: "absolute",
+                            left: px(x),
+                            bottom: "2px",
+                            width: px(bar_width.max(4.0)),
+                            height: px(bar_height),
+                            background: ⎇ is_selected { PHTHALO } ⎉ { MIDI_TRACK }.to_css(),
+                            border_radius: "2px 2px 0 0",
+                            cursor: "ns-resize",
+                        }}
+                        on_mouse_down={|e| {
+                            self.drag_state = Some(DragState·VelocityAdjust {
+                                note_id: note.id,
+                                original_velocity: note.velocity,
+                            });
+                            e.stop_propagation();
+                        }}
+                    />
+                }
+
+                // Velocity scale
+                <div style={style! {
+                    position: "absolute",
+                    left: "-40px",
+                    top: 0,
+                    width: "40px",
+                    height: "100%",
+                    display: "flex",
+                    flex_direction: "column",
+                    justify_content: "space-between",
+                    padding: "2px 4px",
+                    font_size: px(TEXT_XS),
+                    font_family: FONT_MONO,
+                    color: SILVER.with_alpha(0.5).to_css(),
+                }}>
+                    <span>{"127"}</span>
+                    <span>{"64"}</span>
+                    <span>{"0"}</span>
+                </div>
+            </div>
+        }
+    }
+
+    /// Render toolbar
+    rite render_toolbar(&self) -> Element! {
+        element! {
+            <div class="piano-roll-toolbar" style={style! {
+                display: "flex",
+                align_items: "center",
+                gap: "8px",
+                padding: "6px 12px",
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+            }}>
+                // Tool buttons
+                <div class="tool-buttons" style={style! {
+                    display: "flex",
+                    gap: "2px",
+                }}>
+                    ∀ (tool, label, icon) ∈ [
+                        (PianoRollTool·Select, "Select", "↖"),
+                        (PianoRollTool·Draw, "Draw", "✎"),
+                        (PianoRollTool·Erase, "Erase", "✕"),
+                        (PianoRollTool·Split, "Split", "✂"),
+                    ] {
+                        ≔ is_active = self.props.edit_tool == tool;
+                        <button style={style! {
+                            padding: "4px 8px",
+                            background: ⎇ is_active { PHTHALO.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                            border: format!("1px solid {}", ⎇ is_active { PHTHALO } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                            border_radius: "4px",
+                            color: ⎇ is_active { PHTHALO } ⎉ { SILVER }.to_css(),
+                            font_size: px(TEXT_SM),
+                            cursor: "pointer",
+                        }}>
+                            {icon} {" "} {label}
+                        </button>
+                    }
+                </div>
+
+                // Separator
+                <div style={style! { width: "1px", height: "20px", background: SILVER.with_alpha(0.2).to_css() }} />
+
+                // Snap controls
+                <div class="snap-controls" style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "4px",
+                }}>
+                    <span style={style! { font_size: px(TEXT_XS), color: SILVER.with_alpha(0.7).to_css() }}>
+                        {"Snap:"}
+                    </span>
+                    <select style={style! {
+                        background: VOID.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "4px",
+                        color: SILVER.to_css(),
+                        padding: "2px 6px",
+                        font_size: px(TEXT_XS),
+                    }}>
+                        <option value="0.25">{"1/16"}</option>
+                        <option value="0.5">{"1/8"}</option>
+                        <option value="1.0">{"1/4"}</option>
+                        <option value="2.0">{"1/2"}</option>
+                        <option value="4.0">{"1 Bar"}</option>
+                    </select>
+                </div>
+
+                // Spacer
+                <div style={style! { flex: 1 }} />
+
+                // Velocity display
+                <div style={style! {
+                    font_size: px(TEXT_XS),
+                    font_family: FONT_MONO,
+                    color: SILVER.with_alpha(0.7).to_css(),
+                }}>
+                    {"Vel: "} {self.props.default_velocity.to_string()}
+                </div>
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ PianoRollEditor {
+    type Props = PianoRollEditorProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bounds = ctx.bounds();
+        ≔ grid_width = bounds.width - KEYBOARD_WIDTH;
+        ≔ grid_height = bounds.height - VELOCITY_LANE_HEIGHT - 40.0; // toolbar height
+
+        element! {
+            <div
+                class="piano-roll"
+                style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    height: "100%",
+                    background: VOID.to_css(),
+                    user_select: "none",
+                }}
+                on_mouse_up={|_| {
+                    // Finish any drag operation
+                    ⌥ &self.drag_state {
+                        Some(DragState·NoteDraw { pitch, start_beat }) => {
+                            ≔ duration = self.props.snap_resolution.max(0.25);
+                            (self.props.on_note_add)(*pitch, *start_beat, duration, self.props.default_velocity);
+                        }
+                        _ => {}
+                    }
+                    self.drag_state = None;
+                }}
+                on_mouse_move={|e| {
+                    ⌥ &self.drag_state {
+                        Some(DragState·NoteMove { note_id, start_pitch, start_beat, offset_x, offset_y }) => {
+                            ≔ new_beat = self.snap(self.px_to_beats(e.offset_x as f32 - KEYBOARD_WIDTH - offset_x));
+                            ≔ new_pitch = self.y_to_note(e.offset_y as f32 - offset_y);
+                            (self.props.on_note_move)(*note_id, new_pitch, new_beat);
+                        }
+                        Some(DragState·NoteResize { note_id, .. }) => {
+                            ≔ new_end = self.snap(self.px_to_beats(e.offset_x as f32 - KEYBOARD_WIDTH));
+                            // Find the note and calculate new duration
+                            ∀ note ∈ &self.props.notes {
+                                ⎇ note.id == *note_id {
+                                    ≔ new_duration = (new_end - note.start).max(self.props.snap_resolution);
+                                    (self.props.on_note_resize)(*note_id, new_duration);
+                                    ⎊;
+                                }
+                            }
+                        }
+                        Some(DragState·VelocityAdjust { note_id, original_velocity }) => {
+                            ≔ delta = (e.movement_y as f32 * -1.0) as i16;
+                            ≔ new_vel = (*original_velocity as i16 + delta).clamp(1, 127) as u8;
+                            (self.props.on_note_velocity)(*note_id, new_vel);
+                        }
+                        Some(DragState·Scroll { start_scroll_x, start_scroll_y, start_mouse_x, start_mouse_y }) => {
+                            ≔ dx = (e.client_x as f32 - start_mouse_x) / (BASE_PPB * self.props.zoom_x);
+                            ≔ dy = (e.client_y as f32 - start_mouse_y) / (BASE_NOTE_HEIGHT * self.props.zoom_y);
+                            (self.props.on_scroll)(*start_scroll_x - dx as f64, *start_scroll_y - dy);
+                        }
+                        _ => {
+                            // Update preview note position
+                            ⎇ self.props.edit_tool == PianoRollTool·Draw {
+                                ≔ pitch = self.y_to_note(e.offset_y as f32);
+                                ≔ beat = self.snap(self.px_to_beats(e.offset_x as f32 - KEYBOARD_WIDTH));
+                                self.preview_note = Some((pitch, beat));
+                            }
+                        }
+                    }
+                }}
+                on_wheel={|e| {
+                    ⎇ e.ctrl_key {
+                        // Zoom
+                        ≔ zoom_delta = ⎇ e.delta_y < 0.0 { 1.1 } ⎉ { 0.9 };
+                        ⎇ e.shift_key {
+                            // Vertical zoom
+                            (self.props.on_zoom)(self.props.zoom_x, (self.props.zoom_y * zoom_delta).clamp(0.5, 4.0));
+                        } ⎉ {
+                            // Horizontal zoom
+                            (self.props.on_zoom)((self.props.zoom_x * zoom_delta).clamp(0.1, 10.0), self.props.zoom_y);
+                        }
+                    } ⎉ ⎇ e.shift_key {
+                        // Horizontal scroll
+                        ≔ scroll_delta = e.delta_y / (BASE_PPB * self.props.zoom_x) as f64;
+                        (self.props.on_scroll)(self.props.scroll_x + scroll_delta, self.props.scroll_y);
+                    } ⎉ {
+                        // Vertical scroll
+                        ≔ scroll_delta = e.delta_y / (BASE_NOTE_HEIGHT * self.props.zoom_y);
+                        (self.props.on_scroll)(self.props.scroll_x, self.props.scroll_y + scroll_delta);
+                    }
+                }}
+            >
+                // Toolbar
+                {self.render_toolbar()}
+
+                // Main editor area
+                <div class="piano-roll-main" style={style! {
+                    display: "flex",
+                    flex: 1,
+                    overflow: "hidden",
+                }}>
+                    // Piano keyboard
+                    {self.render_keyboard(grid_height)}
+
+                    // Note grid area
+                    <div
+                        class="note-area"
+                        style={style! {
+                            flex: 1,
+                            position: "relative",
+                            overflow: "hidden",
+                        }}
+                        on_mouse_down={|e| {
+                            ⎇ e.button == 1 {
+                                // Middle mouse - pan
+                                self.drag_state = Some(DragState·Scroll {
+                                    start_scroll_x: self.props.scroll_x,
+                                    start_scroll_y: self.props.scroll_y,
+                                    start_mouse_x: e.client_x as f32,
+                                    start_mouse_y: e.client_y as f32,
+                                });
+                            } ⎉ ⎇ e.button == 0 {
+                                ⎇ self.props.edit_tool == PianoRollTool·Draw {
+                                    ≔ pitch = self.y_to_note(e.offset_y as f32);
+                                    ≔ beat = self.snap(self.px_to_beats(e.offset_x as f32));
+                                    self.drag_state = Some(DragState·NoteDraw { pitch, start_beat: beat });
+                                }
+                            }
+                        }}
+                        on_double_click={|e| {
+                            // Double click to add note
+                            ≔ pitch = self.y_to_note(e.offset_y as f32);
+                            ≔ beat = self.snap(self.px_to_beats(e.offset_x as f32));
+                            (self.props.on_note_add)(pitch, beat, self.props.snap_resolution, self.props.default_velocity);
+                        }}
+                    >
+                        // Grid background
+                        {self.render_grid(grid_width, grid_height)}
+
+                        // Notes
+                        ∀ note ∈ &self.props.notes {
+                            {self.render_note(note)}
+                        }
+
+                        // Preview note (when drawing)
+                        ⎇ self.props.edit_tool == PianoRollTool·Draw {
+                            ⎇ ≔ Some((pitch, beat)) = self.preview_note {
+                                ≔ x = self.beats_to_px(beat);
+                                ≔ y = self.note_to_y(pitch);
+                                ≔ width = self.beats_to_px(beat + self.props.snap_resolution) - x;
+
+                                <div style={style! {
+                                    position: "absolute",
+                                    left: px(x),
+                                    top: px(y + 1.0),
+                                    width: px(width.max(4.0)),
+                                    height: px(self.note_height() - 2.0),
+                                    background: MIDI_TRACK.with_alpha(0.3).to_css(),
+                                    border: format!("1px dashed {}", MIDI_TRACK.to_css()),
+                                    border_radius: "2px",
+                                    pointer_events: "none",
+                                }} />
+                            }
+                        }
+
+                        // Playhead
+                        <div class="playhead" style={style! {
+                            position: "absolute",
+                            left: px(self.beats_to_px(self.props.playhead)),
+                            top: 0,
+                            height: "100%",
+                            width: "1px",
+                            background: PLAYHEAD.to_css(),
+                            pointer_events: "none",
+                            z_index: 100,
+                            box_shadow: format!("0 0 4px {}", PLAYHEAD.with_alpha(0.5).to_css()),
+                        }} />
+
+                        // Clip end marker
+                        <div style={style! {
+                            position: "absolute",
+                            left: px(self.beats_to_px(self.props.clip_length)),
+                            top: 0,
+                            height: "100%",
+                            width: "2px",
+                            background: METER_RED.with_alpha(0.5).to_css(),
+                            pointer_events: "none",
+                        }} />
+                    </div>
+                </div>
+
+                // Velocity lane
+                ⎇ self.props.show_velocity {
+                    {self.render_velocity_lane(grid_width)}
+                }
+            </div>
+        }
+    }
+}

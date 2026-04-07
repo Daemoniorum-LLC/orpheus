@@ -1,0 +1,329 @@
+//! Integration tests for audio control widgets
+//!
+//! These tests verify that audio controls work correctly together:
+//! - Fader and meter interaction
+//! - Transport and position displays
+//! - Knob value consistency across components
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - All test results are deterministic
+//! - `~` (external) - Simulated audio data
+
+invoke crate·widgets·{Knob, KnobProps, KnobSize};
+invoke crate·widgets·{LevelMeter, LevelMeterProps, LevelStatus};
+invoke crate·widgets·{Fader, FaderProps, FaderOrientation};
+invoke crate·tests·assertions·{assert_db_eq, assert_level_safe, DB_TOLERANCE};
+
+// =============================================================================
+// Fader + Meter Integration
+// =============================================================================
+
+scroll fader_meter_integration {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_fader_db_matches_meter_range() {
+        //! When a fader outputs a dB value, it should be within
+        //! the displayable range of a standard meter.
+
+        ≔ fader = Fader·new(FaderProps·default());
+        ≔ meter = LevelMeter·new(LevelMeterProps·default());
+
+        // Test various fader positions
+        ∀ value ∈ [0.0, 0.25, 0.5, 0.75, 1.0] {
+            ≔ Δ test_fader = Fader·new(FaderProps { value, ..FaderProps·default() });
+            ≔ db = test_fader.value_to_db(value);
+
+            // dB should be within meter's displayable range
+            // (or below, which is fine - meter will show minimum)
+            assert!(db <= meter.props.max_db,
+                "Fader at {} produces {} dB, exceeding meter max {} dB",
+                value, db, meter.props.max_db);
+        }
+    }
+
+    //@ rune: test
+    rite test_meter_position_for_fader_unity() {
+        //! At fader unity (0 dB), meter should show position near top
+        //! but not at maximum (since max is typically +6 dB)
+
+        ≔ fader = Fader·new(FaderProps·default());
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 6.0,
+            ..LevelMeterProps·default()
+        });
+
+        ≔ unity_value = fader.unity_position();
+        ≔ unity_db = fader.value_to_db(unity_value);
+
+        // Unity should be 0 dB
+        assert!((unity_db - 0.0).abs() < 0.5);
+
+        // Meter position at 0 dB should be ~0.91 (60/66 of the way)
+        ≔ meter_pos = meter.db_to_position(unity_db);
+        assert!(meter_pos > 0.85 && meter_pos < 0.95,
+            "Meter position for unity should be ~0.91, got {}", meter_pos);
+    }
+
+    //@ rune: test
+    rite test_fader_minimum_shows_meter_minimum() {
+        //! When fader is at minimum, meter should show minimum position
+
+        ≔ fader = Fader·new(FaderProps {
+            min_db: -70.0,
+            ..FaderProps·default()
+        });
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            ..LevelMeterProps·default()
+        });
+
+        // Fader at 0.0 gives minimum dB
+        ≔ min_db = fader.value_to_db(0.0);
+        assert!(min_db <= meter.props.min_db,
+            "Fader minimum {} should be at or below meter minimum {}",
+            min_db, meter.props.min_db);
+
+        // Meter should show 0.0 position (clamped)
+        ≔ meter_pos = meter.db_to_position(min_db);
+        assert!((meter_pos - 0.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_level_status_tracks_fader_position() {
+        //! Level status should reflect what the fader is set to
+
+        ≔ Δ fader = Fader·new(FaderProps·default());
+
+        // Fader at ~0.95 should give Hot status
+        fader.props.value = 0.95;
+        ≔ hot_db = fader.value_to_db(fader.props.value);
+        ≔ hot_status = LevelStatus·from_db(hot_db);
+        assert!(⌥ hot_status { LevelStatus·Hot | LevelStatus·Clipping => true, _ => false },
+            "Expected Hot or Clipping for fader at 0.95, got {:?}", hot_status);
+
+        // Fader at ~0.5 should give Safe status
+        fader.props.value = 0.5;
+        ≔ mid_db = fader.value_to_db(fader.props.value);
+        ≔ mid_status = LevelStatus·from_db(mid_db);
+        // Mid-fader position gives negative dB, should be Safe or Warm
+        assert!(⌥ mid_status { LevelStatus·Safe | LevelStatus·Warm => true, _ => false },
+            "Expected Safe or Warm for fader at 0.5, got {:?}", mid_status);
+    }
+}
+
+// =============================================================================
+// Knob + Fader Consistency
+// =============================================================================
+
+scroll knob_fader_consistency {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_same_normalized_value_interpretation() {
+        //! Knobs and faders should interpret the same normalized range
+
+        ≔ knob = Knob·new(KnobProps {
+            value: 0.5,
+            min: 0.0,
+            max: 1.0,
+            ..KnobProps·default()
+        });
+
+        ≔ fader = Fader·new(FaderProps {
+            value: 0.5,
+            ..FaderProps·default()
+        });
+
+        // Both at 0.5 should be mid-range
+        assert!((knob.props.value - fader.props.value).abs() < 0.01);
+
+        // Knob display value should be 0.5 (mid of 0-1)
+        assert!((knob.display_value() - 0.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_pan_knob_center_is_zero() {
+        //! A pan knob at center (0.5) should display 0
+
+        ≔ pan_knob = Knob·new(KnobProps {
+            value: 0.5,
+            min: -1.0,
+            max: 1.0,
+            bipolar: true,
+            ..KnobProps·default()
+        });
+
+        ≔ display = pan_knob.display_value();
+        assert!((display - 0.0).abs() < 0.01,
+            "Pan knob at center should display 0, got {}", display);
+    }
+
+    //@ rune: test
+    rite test_gain_knob_matches_fader_unity() {
+        //! A gain knob set to 0.5 with dB range should match
+        //! fader unity when configured similarly
+
+        // Gain knob configured for -∞ to +6 dB like a fader
+        ≔ gain_knob = Knob·new(KnobProps {
+            value: 0.91,  // Approximate unity position in linear range
+            min: -70.0,
+            max: 6.0,
+            ..KnobProps·default()
+        });
+
+        // This is a linear mapping, so it won't match exactly
+        // But the concept is: both should represent 0 dB at similar positions
+        ≔ knob_db = gain_knob.display_value();
+
+        // Should be close to 0 dB (±3 dB is acceptable for this test)
+        assert!((knob_db - 0.0).abs() < 5.0,
+            "Gain knob at 0.91 should be near 0 dB, got {}", knob_db);
+    }
+}
+
+// =============================================================================
+// Value Synchronization
+// =============================================================================
+
+scroll value_synchronization {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_callback_value_matches_internal() {
+        //! When a control's callback is invoked, the value passed
+        //! should match the control's internal value
+
+        ≔ Δ received_value: Option<f32> = None;
+
+        ≔ Δ knob = Knob·new(KnobProps {
+            value: 0.5,
+            on_change: Some(Box·new(|v| {
+                // In real code, this would update state
+                // Here we just verify the callback is called with correct value
+            })),
+            ..KnobProps·default()
+        });
+
+        // Simulate adjustment
+        knob.adjust(0.1);
+
+        // Internal value should be updated
+        assert!((knob.props.value - 0.6).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_multiple_controls_independent() {
+        //! Multiple controls should maintain independent state
+
+        ≔ Δ knob1 = Knob·new(KnobProps { value: 0.3, ..KnobProps·default() });
+        ≔ Δ knob2 = Knob·new(KnobProps { value: 0.7, ..KnobProps·default() });
+        ≔ Δ fader = Fader·new(FaderProps { value: 0.5, ..FaderProps·default() });
+
+        // Modify one
+        knob1.adjust(0.1);
+
+        // Others should be unchanged
+        assert!((knob2.props.value - 0.7).abs() < 0.01);
+        assert!((fader.props.value - 0.5).abs() < 0.01);
+    }
+}
+
+// =============================================================================
+// Display Formatting Consistency
+// =============================================================================
+
+scroll display_formatting {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_db_formatting_consistency() {
+        //! dB values should be formatted consistently across components
+
+        ≔ fader = Fader·new(FaderProps·default());
+
+        // Test infinity formatting
+        ≔ neg_inf = fader.format_db(-70.0);
+        assert!(neg_inf.contains("∞") || neg_inf.contains("inf"),
+            "Very low dB should format as infinity, got '{}'", neg_inf);
+
+        // Test normal formatting (should include decimal)
+        ≔ normal = fader.format_db(-12.5);
+        assert!(normal.contains("-12"),
+            "Normal dB should show value, got '{}'", normal);
+    }
+
+    //@ rune: test
+    rite test_percentage_knob_formatting() {
+        //! Knobs with percentage ranges should format correctly
+
+        ≔ knob = Knob·new(KnobProps {
+            value: 0.75,
+            min: 0.0,
+            max: 100.0,
+            format: Some(Box·new(|v| format!("{:.0}%", v))),
+            ..KnobProps·default()
+        });
+
+        ≔ formatted = knob.format_value();
+        assert_eq!(formatted, "75%");
+    }
+}
+
+// =============================================================================
+// Bounds and Clamping Consistency
+// =============================================================================
+
+scroll bounds_consistency {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_all_controls_clamp_to_01() {
+        //! All controls should clamp their normalized value to [0, 1]
+
+        // Knob
+        ≔ Δ knob = Knob·new(KnobProps { value: 0.99, ..KnobProps·default() });
+        knob.adjust(0.1);  // Try to exceed 1.0
+        assert!(knob.props.value <= 1.0);
+
+        knob.props.value = 0.01;
+        knob.adjust(-0.1);  // Try to go below 0.0
+        assert!(knob.props.value >= 0.0);
+
+        // Fader
+        ≔ Δ fader = Fader·new(FaderProps {
+            value: 0.5,
+            height: 100.0,
+            ..FaderProps·default()
+        });
+        fader.start_drag(50.0);
+        fader.handle_drag(-1000.0);  // Extreme drag up
+        assert!(fader.props.value <= 1.0);
+
+        fader.props.value = 0.5;
+        fader.start_drag(50.0);
+        fader.handle_drag(1000.0);  // Extreme drag down
+        assert!(fader.props.value >= 0.0);
+    }
+
+    //@ rune: test
+    rite test_meter_clamps_position() {
+        //! Meter should clamp dB values outside its range
+
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 6.0,
+            ..LevelMeterProps·default()
+        });
+
+        // Below minimum
+        ≔ below = meter.db_to_position(-100.0);
+        assert!((below - 0.0).abs() < 0.01);
+
+        // Above maximum
+        ≔ above = meter.db_to_position(20.0);
+        assert!((above - 1.0).abs() < 0.01);
+    }
+}

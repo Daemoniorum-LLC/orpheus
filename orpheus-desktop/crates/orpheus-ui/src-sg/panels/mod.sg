@@ -1,0 +1,24 @@
+//! Dockable panels
+//!
+//! This module provides reusable panel components:
+//!
+//! - `ChannelStrip` - Mixer channel with fader, meter, routing
+//! - `MixerView` - Full mixing console view
+//! - `BrowserPanel` - File/sample/preset browser
+//! - `InspectorPanel` - Selected item properties
+//! - `PluginRack` - Effect/instrument slots
+
+☉ scroll channel_strip;
+☉ scroll mixer_view;
+☉ scroll browser;
+☉ scroll inspector;
+☉ scroll fretboard;
+☉ scroll lufs_meter;
+
+// Re-exports
+☉ invoke crate·panels·channel_strip·{ChannelStrip, ChannelStripProps};
+☉ invoke crate·panels·mixer_view·{MixerView, MixerViewProps};
+☉ invoke crate·panels·browser·{BrowserPanel, BrowserPanelProps};
+☉ invoke crate·panels·inspector·{InspectorPanel, InspectorPanelProps};
+☉ invoke crate·panels·fretboard·{Fretboard, FretboardProps};
+☉ invoke crate·panels·lufs_meter·{LufsMeter, LufsMeterProps};

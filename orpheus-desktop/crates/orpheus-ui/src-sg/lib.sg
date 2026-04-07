@@ -1,0 +1,37 @@
+//! Orpheus UI - Qliphoth-based music production interface
+//!
+//! This crate provides the complete UI layer for the Orpheus DAW,
+//! built on the Qliphoth framework for cross-platform rendering
+//! (WASM for web, GTK4 for desktop).
+//!
+//! ## Architecture
+//!
+//! ```text
+//! orpheus-ui/
+//! ├── tokens      Design tokens (colors, spacing, typography)
+//! ├── widgets     Reusable DAW widgets (knobs, meters, faders)
+//! ├── editors     Content editors (tab, piano roll, arrangement)
+//! ├── panels      Dockable panels (browser, inspector, mixer)
+//! ├── modes       Mode views (Compose, Record, Mix, Master, etc.)
+//! └── layout      Layout utilities and dock system
+//! ```
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - UI state calculations, layout math
+//! - `~` (external) - Audio engine data, user input, file system
+
+// Core modules
+☉ scroll tokens;
+☉ scroll widgets;
+☉ scroll editors;
+☉ scroll panels;
+☉ scroll modes;
+☉ scroll layout;
+
+// Re-exports for convenience
+☉ invoke crate·tokens·*;
+☉ invoke crate·widgets·{Knob, LevelMeter, Fader, Waveform};
+☉ invoke crate·editors·{TabEditor, PianoRollEditor, ArrangementEditor};
+☉ invoke crate·panels·{ChannelStrip, MixerView, BrowserPanel, InspectorPanel};
+☉ invoke crate·modes·{OrpheusMode, ModeSelector};

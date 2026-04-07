@@ -1,0 +1,113 @@
+//! Inspector panel for selected item properties
+//!
+//! Displays editable properties for the current selection:
+//! - Track properties
+//! - Clip/region properties
+//! - Note properties
+//! - Plugin parameters
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Property display formatting
+//! - `~` (external) - Selection state, property values
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Inspector panel properties
+☉ Σ InspectorPanelProps {
+    /// Current selection
+    selection: Option<Selection>,
+}
+
+/// Selection types
+☉ ᛈ Selection {
+    Track(TrackSelection),
+    Clip(ClipSelection),
+    Note(NoteSelection),
+    None,
+}
+
+/// Track selection data
+☉ Σ TrackSelection {
+    id: u32,
+    name: String,
+    track_type: TrackType,
+}
+
+/// Clip selection data
+☉ Σ ClipSelection {
+    id: u32,
+    name: String,
+    start: f64,
+    end: f64,
+}
+
+/// Note selection data
+☉ Σ NoteSelection {
+    pitch: u8,
+    velocity: u8,
+    start: f64,
+    duration: f64,
+}
+
+/// Inspector panel component
+☉ Σ InspectorPanel {
+    props: InspectorPanelProps,
+}
+
+⊢ InspectorPanel {
+    ☉ rite new(props: InspectorPanelProps) -> Self! {
+        Self { props }
+    }
+}
+
+⊢ Component ∀ InspectorPanel {
+    type Props = InspectorPanelProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="inspector-panel" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: ABYSS.to_css(),
+                padding: "12px",
+            }}>
+                <span style={style! {
+                    font_size: px(TEXT_SM),
+                    font_weight: "bold",
+                    color: SILVER.to_css(),
+                    margin_bottom: "12px",
+                }}>
+                    {"Inspector"}
+                </span>
+
+                ⌥ &self.props.selection {
+                    Some(Selection·Track(track)) => {
+                        <div class="track-properties">
+                            <span style={style! { color: SILVER.to_css() }}>
+                                {"Track: "} {&track.name}
+                            </span>
+                        </div>
+                    }
+                    Some(Selection·Clip(clip)) => {
+                        <div class="clip-properties">
+                            <span style={style! { color: SILVER.to_css() }}>
+                                {"Clip: "} {&clip.name}
+                            </span>
+                        </div>
+                    }
+                    _ => {
+                        <span style={style! {
+                            color: SILVER.with_alpha(0.5).to_css(),
+                            font_style: "italic",
+                        }}>
+                            {"No selection"}
+                        </span>
+                    }
+                }
+            </div>
+        }
+    }
+}

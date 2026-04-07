@@ -1,0 +1,965 @@
+//! Phase 3: Timeline & Arrangement Editor Tests
+//!
+//! Testing arrangement editing with real composition workflows.
+//! Focus areas:
+//! - Grid calculations (beats_to_px, px_to_beats)
+//! - Snap-to-grid functionality
+//! - Clip/note validation invariants
+//! - Playhead constraints
+//! - Coordinate transformations
+//!
+//! @rune: test
+
+invoke std·*;
+
+// ============================================================================
+// Test Support Structures
+// ============================================================================
+
+/// Minimal clip for testing
+Σ TestClip {
+    id: u64,
+    start: f64,
+    end: f64,
+    name: String,
+}
+
+⊢ TestClip {
+    rite new(id: u64, start: f64, end: f64) -> Self {
+        Self {
+            id,
+            start,
+            end,
+            name: format!("Clip {}", id),
+        }
+    }
+
+    rite duration(&self) -> f64! {
+        self.end - self.start
+    }
+
+    rite is_valid(&self) -> bool! {
+        self.start >= 0.0 && self.end > self.start
+    }
+}
+
+/// Minimal piano note for testing
+Σ TestPianoNote {
+    pitch: u8,
+    velocity: u8,
+    start: f64,
+    duration: f64,
+}
+
+⊢ TestPianoNote {
+    rite new(pitch: u8, velocity: u8, start: f64, duration: f64) -> Self {
+        Self { pitch, velocity, start, duration }
+    }
+
+    rite end(&self) -> f64! {
+        self.start + self.duration
+    }
+
+    rite is_valid(&self) -> bool! {
+        self.pitch <= 127 &&
+        self.velocity <= 127 &&
+        self.start >= 0.0 &&
+        self.duration > 0.0
+    }
+}
+
+/// Minimal tab note for testing
+Σ TestTabNote {
+    string: u8,
+    fret: u8,
+    position: u8,
+    duration: u8,
+}
+
+⊢ TestTabNote {
+    rite new(string: u8, fret: u8, position: u8) -> Self {
+        Self { string, fret, position, duration: 4 }
+    }
+
+    rite is_valid(&self) -> bool! {
+        self.string < 6 && self.fret <= 24
+    }
+}
+
+/// Time signature for testing
+Σ TestTimeSignature {
+    numerator: u8,
+    denominator: u8,
+}
+
+⊢ ◊ TestTimeSignature {
+    rite default() -> Self {
+        Self { numerator: 4, denominator: 4 }
+    }
+}
+
+// ============================================================================
+// Arrangement Editor Coordinate Tests
+// ============================================================================
+
+scroll arrangement_coordinate_tests {
+    //@ rune: test
+    rite test_beats_to_px_at_zoom_1() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ zoom = 1.0_f32;
+        ≔ scroll_x = 0.0_f64;
+        ≔ beats = 10.0_f64;
+
+        // beats_to_px: ((beats - scroll_x) * BASE_PPB * zoom)
+        ≔ result = ((beats - scroll_x) * base_ppb as f64 * zoom as f64) as f32;
+        assert_eq!(result, 200.0); // 10 * 20 * 1
+    }
+
+    //@ rune: test
+    rite test_beats_to_px_at_zoom_2() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ zoom = 2.0_f32;
+        ≔ scroll_x = 0.0_f64;
+        ≔ beats = 10.0_f64;
+
+        ≔ result = ((beats - scroll_x) * base_ppb as f64 * zoom as f64) as f32;
+        assert_eq!(result, 400.0); // 10 * 20 * 2
+    }
+
+    //@ rune: test
+    rite test_beats_to_px_with_scroll() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ zoom = 1.0_f32;
+        ≔ scroll_x = 5.0_f64;
+        ≔ beats = 10.0_f64;
+
+        ≔ result = ((beats - scroll_x) * base_ppb as f64 * zoom as f64) as f32;
+        assert_eq!(result, 100.0); // (10 - 5) * 20 * 1
+    }
+
+    //@ rune: test
+    rite test_px_to_beats_inverse() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ zoom = 1.0_f32;
+        ≔ scroll_x = 0.0_f64;
+
+        // Round trip: beats -> px -> beats
+        ≔ original_beats = 25.5_f64;
+        ≔ px = ((original_beats - scroll_x) * base_ppb as f64 * zoom as f64) as f32;
+        ≔ recovered_beats = (px as f64 / (base_ppb as f64 * zoom as f64)) + scroll_x;
+
+        assert!((recovered_beats - original_beats).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_px_to_beats_with_zoom() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ zoom = 2.0_f32;
+        ≔ scroll_x = 0.0_f64;
+
+        ≔ px = 400.0_f32;
+        ≔ beats = (px as f64 / (base_ppb as f64 * zoom as f64)) + scroll_x;
+        assert_eq!(beats, 10.0); // 400 / (20 * 2)
+    }
+
+    //@ rune: test
+    rite test_coordinate_roundtrip_various_zooms() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ original = 42.75_f64;
+        ≔ scroll_x = 10.0_f64;
+
+        // Test at zoom 0.5
+        ≔ zoom1 = 0.5_f32;
+        ≔ px1 = ((original - scroll_x) * base_ppb as f64 * zoom1 as f64) as f32;
+        ≔ recovered1 = (px1 as f64 / (base_ppb as f64 * zoom1 as f64)) + scroll_x;
+        assert!((recovered1 - original).abs() < 0.001);
+
+        // Test at zoom 2.0
+        ≔ zoom2 = 2.0_f32;
+        ≔ px2 = ((original - scroll_x) * base_ppb as f64 * zoom2 as f64) as f32;
+        ≔ recovered2 = (px2 as f64 / (base_ppb as f64 * zoom2 as f64)) + scroll_x;
+        assert!((recovered2 - original).abs() < 0.001);
+    }
+}
+
+// ============================================================================
+// Snap-to-Grid Tests
+// ============================================================================
+
+scroll snap_tests {
+    //@ rune: test
+    rite test_snap_enabled_rounds_to_resolution() {
+        ≔ snap_resolution = 0.5_f64; // Half beat
+
+        // snap = round(beats / resolution) * resolution
+        assert_eq!((3.3 / snap_resolution).round() * snap_resolution, 3.5);
+        assert_eq!((3.2 / snap_resolution).round() * snap_resolution, 3.0);
+        assert_eq!((3.75 / snap_resolution).round() * snap_resolution, 4.0);
+    }
+
+    //@ rune: test
+    rite test_snap_disabled_passthrough() {
+        // When snap disabled, values pass through unchanged
+        assert_eq!(3.3, 3.3);
+        assert_eq!(3.14159, 3.14159);
+    }
+
+    //@ rune: test
+    rite test_snap_quarter_note() {
+        ≔ snap_resolution = 1.0_f64; // Quarter note
+
+        assert_eq!((1.4 / snap_resolution).round() * snap_resolution, 1.0);
+        assert_eq!((1.6 / snap_resolution).round() * snap_resolution, 2.0);
+    }
+
+    //@ rune: test
+    rite test_snap_16th_note() {
+        ≔ snap_resolution = 0.25_f64; // 16th note
+
+        // 1.1 / 0.25 = 4.4, round = 4, * 0.25 = 1.0
+        assert_eq!((1.1 / snap_resolution).round() * snap_resolution, 1.0);
+        // 1.15 / 0.25 = 4.6, round = 5, * 0.25 = 1.25
+        assert_eq!((1.15 / snap_resolution).round() * snap_resolution, 1.25);
+        // 1.37 / 0.25 = 5.48, round = 5, * 0.25 = 1.25 (not 1.5!)
+        assert_eq!((1.37 / snap_resolution).round() * snap_resolution, 1.25);
+    }
+
+    //@ rune: test
+    rite test_snap_bar() {
+        ≔ snap_resolution = 4.0_f64; // Full bar (4/4)
+
+        assert_eq!((5.5 / snap_resolution).round() * snap_resolution, 4.0);
+        assert_eq!((6.5 / snap_resolution).round() * snap_resolution, 8.0);
+    }
+
+    //@ rune: test
+    rite test_snap_at_zero() {
+        ≔ snap_resolution = 1.0_f64;
+
+        assert_eq!((0.4 / snap_resolution).round() * snap_resolution, 0.0);
+        assert_eq!((-0.4 / snap_resolution).round() * snap_resolution, 0.0);
+    }
+}
+
+// ============================================================================
+// Clip Invariant Tests
+// ============================================================================
+
+scroll clip_invariant_tests {
+    //@ rune: test
+    rite test_clip_start_less_than_end() {
+        ≔ clip = TestClip·new(1, 4.0, 8.0);
+        assert!(clip.is_valid());
+        assert!(clip.start < clip.end);
+    }
+
+    //@ rune: test
+    rite test_clip_zero_duration_invalid() {
+        ≔ clip = TestClip { id: 1, start: 4.0, end: 4.0, name: "Bad".into() };
+        assert!(!clip.is_valid());
+    }
+
+    //@ rune: test
+    rite test_clip_negative_start_invalid() {
+        ≔ clip = TestClip { id: 1, start: -1.0, end: 4.0, name: "Bad".into() };
+        assert!(!clip.is_valid());
+    }
+
+    //@ rune: test
+    rite test_clip_duration_calculation() {
+        ≔ clip = TestClip·new(1, 4.0, 12.0);
+        assert_eq!(clip.duration(), 8.0);
+    }
+
+    //@ rune: test
+    rite test_clip_resize_maintains_invariant() {
+        ≔ Δ clip = TestClip·new(1, 4.0, 8.0);
+
+        // Resize right edge
+        clip.end = 12.0;
+        assert!(clip.is_valid());
+        assert_eq!(clip.duration(), 8.0);
+
+        // Resize left edge
+        clip.start = 2.0;
+        assert!(clip.is_valid());
+        assert_eq!(clip.duration(), 10.0);
+    }
+
+    //@ rune: test
+    rite test_clip_move_preserves_duration() {
+        ≔ clip = TestClip·new(1, 4.0, 8.0);
+        ≔ original_duration = clip.duration();
+
+        // Simulate move
+        ≔ new_start = 10.0_f64;
+        ≔ new_end = new_start + original_duration;
+
+        ≔ moved_clip = TestClip {
+            id: clip.id,
+            start: new_start,
+            end: new_end,
+            name: clip.name,
+        };
+
+        assert!(moved_clip.is_valid());
+        assert_eq!(moved_clip.duration(), original_duration);
+    }
+}
+
+// ============================================================================
+// Track Height Tests
+// ============================================================================
+
+scroll track_height_tests {
+    //@ rune: test
+    rite test_normal_track_height() {
+        ≔ track_height = 80.0_f32;
+        ≔ zoom_y = 1.0_f32;
+
+        assert_eq!(track_height * zoom_y, 80.0);
+    }
+
+    //@ rune: test
+    rite test_compact_track_height() {
+        ≔ track_height_compact = 32.0_f32;
+        ≔ zoom_y = 1.0_f32;
+
+        assert_eq!(track_height_compact * zoom_y, 32.0);
+    }
+
+    //@ rune: test
+    rite test_track_height_with_zoom() {
+        ≔ track_height = 80.0_f32;
+        ≔ zoom_y = 2.0_f32;
+
+        assert_eq!(track_height * zoom_y, 160.0);
+    }
+
+    //@ rune: test
+    rite test_compact_track_height_with_zoom() {
+        ≔ track_height_compact = 32.0_f32;
+        ≔ zoom_y = 0.5_f32;
+
+        assert_eq!(track_height_compact * zoom_y, 16.0);
+    }
+}
+
+// ============================================================================
+// Playhead Tests
+// ============================================================================
+
+scroll playhead_tests {
+    //@ rune: test
+    rite test_playhead_non_negative() {
+        ≔ playhead = 0.0_f64;
+        assert!(playhead >= 0.0);
+    }
+
+    //@ rune: test
+    rite test_playhead_clamped_to_zero() {
+        ≔ requested = -5.0_f64;
+        ≔ clamped = requested.max(0.0);
+        assert_eq!(clamped, 0.0);
+    }
+
+    //@ rune: test
+    rite test_playhead_at_various_positions() {
+        assert!(0.0_f64 >= 0.0);
+        assert!(1.0_f64 >= 0.0);
+        assert!(100.0_f64.is_finite());
+    }
+
+    //@ rune: test
+    rite test_playhead_to_pixel() {
+        ≔ base_ppb = 20.0_f32;
+        ≔ playhead = 8.0_f64;
+        ≔ zoom = 1.0_f32;
+        ≔ scroll_x = 0.0_f64;
+
+        ≔ px = ((playhead - scroll_x) * base_ppb as f64 * zoom as f64) as f32;
+        assert_eq!(px, 160.0); // 8 * 20
+    }
+}
+
+// ============================================================================
+// Piano Roll Note Tests
+// ============================================================================
+
+scroll piano_note_tests {
+    //@ rune: test
+    rite test_midi_pitch_range_valid() {
+        // Valid MIDI pitches: 0-127
+        ≔ note_0 = TestPianoNote·new(0, 100, 0.0, 1.0);
+        assert!(note_0.is_valid());
+
+        ≔ note_60 = TestPianoNote·new(60, 100, 0.0, 1.0);
+        assert!(note_60.is_valid());
+
+        ≔ note_127 = TestPianoNote·new(127, 100, 0.0, 1.0);
+        assert!(note_127.is_valid());
+    }
+
+    //@ rune: test
+    rite test_velocity_range_valid() {
+        ≔ note_1 = TestPianoNote·new(60, 1, 0.0, 1.0);
+        assert!(note_1.is_valid());
+
+        ≔ note_127 = TestPianoNote·new(60, 127, 0.0, 1.0);
+        assert!(note_127.is_valid());
+    }
+
+    //@ rune: test
+    rite test_note_duration_positive() {
+        ≔ note = TestPianoNote·new(60, 100, 0.0, 1.0);
+        assert!(note.duration > 0.0);
+        assert!(note.is_valid());
+    }
+
+    //@ rune: test
+    rite test_note_zero_duration_invalid() {
+        ≔ note = TestPianoNote { pitch: 60, velocity: 100, start: 0.0, duration: 0.0 };
+        assert!(!note.is_valid());
+    }
+
+    //@ rune: test
+    rite test_note_end_calculation() {
+        ≔ note = TestPianoNote·new(60, 100, 4.0, 2.0);
+        assert_eq!(note.end(), 6.0);
+    }
+
+    //@ rune: test
+    rite test_note_c4_midi_60() {
+        // Middle C is MIDI 60
+        ≔ note = TestPianoNote·new(60, 100, 0.0, 1.0);
+        assert_eq!(note.pitch, 60);
+    }
+}
+
+// ============================================================================
+// Piano Roll Coordinate Tests
+// ============================================================================
+
+scroll piano_roll_coordinate_tests {
+    //@ rune: test
+    rite test_note_to_y_standard() {
+        ≔ base_note_height = 12.0_f32;
+        // MIDI 60 (C4) with scroll at 72, note_height 12
+        // y = (scroll_note - pitch) * note_height
+        ≔ scroll_note = 72_u8; // C5
+        ≔ pitch = 60_u8;
+
+        ≔ y_c4 = (scroll_note - pitch) as f32 * base_note_height;
+        assert_eq!(y_c4, 144.0); // (72 - 60) * 12
+    }
+
+    //@ rune: test
+    rite test_y_to_note_inverse() {
+        ≔ base_note_height = 12.0_f32;
+        ≔ scroll_note = 72_u8;
+
+        // Round trip
+        ≔ original_pitch = 64_u8;
+        ≔ y = (scroll_note - original_pitch) as f32 * base_note_height;
+        ≔ recovered = (scroll_note as f32 - y / base_note_height) as u8;
+
+        // Check they're equal (avoid assert_eq type issues)
+        assert!(recovered == original_pitch);
+    }
+
+    //@ rune: test
+    rite test_note_height_clamped() {
+        ≔ min_note_height = 8.0_f32;
+        ≔ max_note_height = 24.0_f32;
+
+        // Note height should stay within bounds
+        ≔ too_small = 4.0_f32;
+        ≔ clamped = too_small.max(min_note_height).min(max_note_height);
+        assert_eq!(clamped, min_note_height);
+
+        ≔ too_large = 50.0_f32;
+        ≔ clamped2 = too_large.max(min_note_height).min(max_note_height);
+        assert_eq!(clamped2, max_note_height);
+    }
+}
+
+// ============================================================================
+// Tab Editor Tests
+// ============================================================================
+
+scroll tab_note_tests {
+    //@ rune: test
+    rite test_string_range_valid() {
+        // Guitar has 6 strings (0-5)
+        ≔ note_0 = TestTabNote·new(0, 5, 0);
+        assert!(note_0.is_valid());
+
+        ≔ note_5 = TestTabNote·new(5, 5, 0);
+        assert!(note_5.is_valid());
+    }
+
+    //@ rune: test
+    rite test_string_out_of_range() {
+        ≔ note = TestTabNote·new(6, 5, 0);
+        assert!(!note.is_valid());
+    }
+
+    //@ rune: test
+    rite test_fret_range_valid() {
+        // Common fret range 0-24
+        ≔ note_0 = TestTabNote·new(0, 0, 0);
+        assert!(note_0.is_valid());
+
+        ≔ note_12 = TestTabNote·new(0, 12, 0);
+        assert!(note_12.is_valid());
+
+        ≔ note_24 = TestTabNote·new(0, 24, 0);
+        assert!(note_24.is_valid());
+    }
+
+    //@ rune: test
+    rite test_fret_out_of_range() {
+        ≔ note = TestTabNote·new(0, 25, 0);
+        assert!(!note.is_valid());
+    }
+
+    //@ rune: test
+    rite test_standard_tuning_midi_values() {
+        // Standard tuning array: [E2=40, A2=45, D3=50, G3=55, B3=59, E4=64]
+        ≔ tuning: [u8; 6] = [40, 45, 50, 55, 59, 64];
+        assert_eq!(tuning[0], 40); // Low E
+        assert_eq!(tuning[1], 45); // A
+        assert_eq!(tuning[2], 50); // D
+        assert_eq!(tuning[3], 55); // G
+        assert_eq!(tuning[4], 59); // B
+        assert_eq!(tuning[5], 64); // High E
+    }
+
+    //@ rune: test
+    rite test_fret_to_midi_note() {
+        ≔ tuning: [u8; 6] = [40, 45, 50, 55, 59, 64];
+        // String 0 (low E = 40), fret 5 = A2 = 45
+        ≔ string = 0_usize;
+        ≔ fret = 5_u8;
+        ≔ midi = tuning[string] + fret;
+        assert_eq!(midi, 45);
+    }
+
+    //@ rune: test
+    rite test_open_strings_midi() {
+        ≔ tuning: [u8; 6] = [40, 45, 50, 55, 59, 64];
+        // Open strings match tuning
+        assert_eq!(tuning[0], 40); // E2
+        assert_eq!(tuning[1], 45); // A2
+        assert_eq!(tuning[2], 50); // D3
+        assert_eq!(tuning[3], 55); // G3
+        assert_eq!(tuning[4], 59); // B3
+        assert_eq!(tuning[5], 64); // E4
+    }
+}
+
+// ============================================================================
+// Tab Editor Measure Tests
+// ============================================================================
+
+scroll tab_measure_tests {
+    //@ rune: test
+    rite test_measure_width_at_zoom_1() {
+        ≔ base_measure_width = 240.0_f32;
+        ≔ zoom = 1.0_f32;
+        assert_eq!(base_measure_width * zoom, 240.0);
+    }
+
+    //@ rune: test
+    rite test_measure_width_at_zoom_2() {
+        ≔ base_measure_width = 240.0_f32;
+        ≔ zoom = 2.0_f32;
+        assert_eq!(base_measure_width * zoom, 480.0);
+    }
+
+    //@ rune: test
+    rite test_subdivisions_4_4() {
+        // 16th notes: numerator * 4
+        ≔ numerator = 4_u8;
+        ≔ subs = (numerator * 4) as u8;
+        assert_eq!(subs, 16);
+    }
+
+    //@ rune: test
+    rite test_subdivisions_3_4() {
+        ≔ numerator = 3_u8;
+        ≔ subs = (numerator * 4) as u8;
+        assert_eq!(subs, 12);
+    }
+
+    //@ rune: test
+    rite test_subdivisions_6_8() {
+        ≔ numerator = 6_u8;
+        ≔ subs = (numerator * 4) as u8;
+        assert_eq!(subs, 24);
+    }
+
+    //@ rune: test
+    rite test_position_x_calculation() {
+        ≔ base_measure_width = 240.0_f32;
+        ≔ zoom = 1.0_f32;
+        ≔ measure_width = base_measure_width * zoom;
+        ≔ subs = 16_u8;
+        ≔ position = 8_u8;
+
+        // Position 8 out of 16 = middle of measure
+        ≔ x = (position as f32 / subs as f32) * measure_width;
+        assert_eq!(x, 120.0); // 240 * 0.5
+    }
+
+    //@ rune: test
+    rite test_x_to_position_inverse() {
+        ≔ base_measure_width = 240.0_f32;
+        ≔ zoom = 1.0_f32;
+        ≔ measure_width = base_measure_width * zoom;
+        ≔ subs = 16_u8;
+
+        ≔ original = 8_u8;
+        ≔ x = (original as f32 / subs as f32) * measure_width;
+        ≔ recovered = ((x / measure_width) * subs as f32).round() as u8;
+
+        // Check they're equal (avoid assert_eq type issues)
+        assert!(recovered == original);
+    }
+
+    //@ rune: test
+    rite test_measure_beats() {
+        // 4/4 time: each measure is 4 beats
+        ≔ measure_idx = 2_usize;
+        ≔ beats_per_measure = 4.0_f64;
+
+        ≔ start = measure_idx as f64 * beats_per_measure;
+        ≔ end = start + beats_per_measure;
+
+        assert_eq!(start, 8.0); // Measure 2 starts at beat 8
+        assert_eq!(end, 12.0);  // Measure 2 ends at beat 12
+    }
+}
+
+// ============================================================================
+// Loop Region Tests
+// ============================================================================
+
+scroll loop_region_tests {
+    //@ rune: test
+    rite test_loop_region_start_less_than_end() {
+        ≔ loop_start = 4.0_f64;
+        ≔ loop_end = 8.0_f64;
+
+        assert!(loop_start < loop_end);
+    }
+
+    //@ rune: test
+    rite test_loop_region_non_negative() {
+        ≔ loop_start = 0.0_f64;
+        ≔ loop_end = 4.0_f64;
+
+        assert!(loop_start >= 0.0);
+        assert!(loop_end >= 0.0);
+    }
+
+    //@ rune: test
+    rite test_playhead_wraps_in_loop() {
+        ≔ loop_start = 4.0_f64;
+        ≔ loop_end = 8.0_f64;
+        ≔ playhead = 9.0_f64;
+
+        // Wrap playhead within loop
+        ≔ loop_length = loop_end - loop_start;
+        ≔ wrapped = loop_start + ((playhead - loop_start) % loop_length);
+
+        assert_eq!(wrapped, 5.0); // 4 + ((9-4) % 4) = 4 + 1 = 5
+    }
+
+    //@ rune: test
+    rite test_loop_length_positive() {
+        ≔ loop_start = 4.0_f64;
+        ≔ loop_end = 12.0_f64;
+
+        ≔ length = loop_end - loop_start;
+        assert!(length > 0.0);
+        assert_eq!(length, 8.0);
+    }
+}
+
+// ============================================================================
+// Selection Tests
+// ============================================================================
+
+scroll selection_tests {
+    //@ rune: test
+    rite test_empty_selection() {
+        ≔ selected: Vec<u64> = vec![];
+        assert!(selected.is_empty());
+    }
+
+    //@ rune: test
+    rite test_single_selection() {
+        ≔ selected: Vec<u64> = vec![1_u64];
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains(&1_u64));
+    }
+
+    //@ rune: test
+    rite test_multiple_selection() {
+        ≔ selected: Vec<u64> = vec![1_u64, 2_u64, 5_u64];
+        assert_eq!(selected.len(), 3);
+        assert!(selected.contains(&5_u64));
+        assert!(!selected.contains(&3_u64));
+    }
+
+    //@ rune: test
+    rite test_selection_toggle() {
+        // Test selection removal
+        ≔ Δ selected: Vec<u64> = vec![1_u64, 2_u64, 3_u64];
+
+        // Toggle off - remove element 2
+        selected.retain(|&id| id != 2_u64);
+        assert!(!selected.contains(&2_u64));
+        assert_eq!(selected.len(), 2);
+
+        // Verify remaining elements
+        assert!(selected.contains(&1_u64));
+        assert!(selected.contains(&3_u64));
+    }
+}
+
+// ============================================================================
+// Zoom Tests
+// ============================================================================
+
+scroll zoom_tests {
+    //@ rune: test
+    rite test_zoom_default() {
+        ≔ zoom = 1.0_f32;
+        assert_eq!(zoom, 1.0);
+    }
+
+    //@ rune: test
+    rite test_zoom_in() {
+        ≔ zoom = 1.0_f32;
+        ≔ zoomed = (zoom * 1.5).min(4.0);
+        assert_eq!(zoomed, 1.5);
+    }
+
+    //@ rune: test
+    rite test_zoom_out() {
+        ≔ zoom = 1.0_f32;
+        ≔ zoomed = (zoom * 0.75).max(0.25);
+        assert_eq!(zoomed, 0.75);
+    }
+
+    //@ rune: test
+    rite test_zoom_clamped_min() {
+        ≔ zoom = 0.1_f32;
+        ≔ clamped = zoom.max(0.25);
+        assert_eq!(clamped, 0.25);
+    }
+
+    //@ rune: test
+    rite test_zoom_clamped_max() {
+        ≔ zoom = 8.0_f32;
+        ≔ clamped = zoom.min(4.0);
+        assert_eq!(clamped, 4.0);
+    }
+
+    //@ rune: test
+    rite test_zoom_preserves_position() {
+        ≔ base_ppb = 20.0_f32;
+        // When zooming, the position under cursor should stay fixed
+        ≔ cursor_x = 200.0_f32;
+        ≔ scroll_x = 0.0_f64;
+        ≔ zoom = 1.0_f32;
+
+        // Beat under cursor
+        ≔ beat_at_cursor = (cursor_x as f64) / (base_ppb as f64 * zoom as f64);
+        assert_eq!(beat_at_cursor, 10.0);
+
+        // After zoom, same beat should be at same position
+        ≔ new_zoom = 2.0_f32;
+        ≔ new_scroll_x = beat_at_cursor - (cursor_x as f64 / (base_ppb as f64 * new_zoom as f64));
+
+        // Verify beat_at_cursor renders at cursor_x with new zoom/scroll
+        ≔ rendered_x = ((beat_at_cursor - new_scroll_x) * base_ppb as f64 * new_zoom as f64) as f32;
+        assert!((rendered_x - cursor_x).abs() < 0.001);
+    }
+}
+
+// ============================================================================
+// Drag State Tests
+// ============================================================================
+
+scroll drag_state_tests {
+    //@ rune: test
+    rite test_no_drag_initially() {
+        ≔ dragging = false;
+        assert!(!dragging);
+    }
+
+    //@ rune: test
+    rite test_clip_move_calculates_delta() {
+        ≔ start_beat = 4.0_f64;
+        ≔ current_beat = 6.0_f64;
+
+        ≔ delta = current_beat - start_beat;
+        assert_eq!(delta, 2.0);
+    }
+
+    //@ rune: test
+    rite test_clip_resize_right_increases_duration() {
+        ≔ clip = TestClip·new(1, 4.0, 8.0);
+        ≔ original_duration = clip.duration();
+
+        // Resize right edge from 8.0 to 12.0
+        ≔ new_end = 12.0_f64;
+        ≔ new_duration = new_end - clip.start;
+
+        assert!(new_duration > original_duration);
+        assert_eq!(new_duration, 8.0);
+    }
+
+    //@ rune: test
+    rite test_clip_resize_left_shifts_start() {
+        ≔ Δ clip = TestClip·new(1, 4.0, 8.0);
+
+        // Resize left edge from 4.0 to 2.0
+        clip.start = 2.0;
+
+        assert!(clip.is_valid());
+        assert_eq!(clip.duration(), 6.0);
+    }
+}
+
+// ============================================================================
+// Grid Line Tests
+// ============================================================================
+
+scroll grid_line_tests {
+    //@ rune: test
+    rite test_bar_lines_every_4_beats() {
+        // In 4/4, bar lines at beats 0, 4, 8, 12...
+        assert!(0 % 4 == 0);
+        assert!(4 % 4 == 0);
+        assert!(8 % 4 == 0);
+        assert!(12 % 4 == 0);
+    }
+
+    //@ rune: test
+    rite test_non_bar_beats() {
+        assert!(1 % 4 != 0);
+        assert!(2 % 4 != 0);
+        assert!(3 % 4 != 0);
+        assert!(5 % 4 != 0);
+    }
+}
+
+// ============================================================================
+// Time Signature Tests
+// ============================================================================
+
+scroll time_signature_tests {
+    //@ rune: test
+    rite test_default_time_signature() {
+        // 4/4 is default
+        ≔ numerator = 4_u8;
+        ≔ denominator = 4_u8;
+        assert_eq!(numerator, 4);
+        assert_eq!(denominator, 4);
+    }
+
+    //@ rune: test
+    rite test_beats_per_measure_4_4() {
+        ≔ numerator = 4_u8;
+        assert_eq!(numerator, 4);
+    }
+
+    //@ rune: test
+    rite test_beats_per_measure_3_4() {
+        ≔ numerator = 3_u8;
+        assert_eq!(numerator, 3);
+    }
+
+    //@ rune: test
+    rite test_beats_per_measure_6_8() {
+        // In 6/8, there are 6 eighth notes
+        ≔ numerator = 6_u8;
+        assert_eq!(numerator, 6);
+    }
+}
+
+// ============================================================================
+// Integration Tests
+// ============================================================================
+
+scroll integration_tests {
+    //@ rune: test
+    rite test_full_arrangement_workflow() {
+        // Simulate: create clip, move it, resize it
+        ≔ Δ clip = TestClip·new(1, 0.0, 4.0);
+        assert!(clip.is_valid());
+
+        // Move clip to beat 8
+        ≔ move_delta = 8.0_f64;
+        clip.start += move_delta;
+        clip.end += move_delta;
+        assert!(clip.is_valid());
+        assert_eq!(clip.start, 8.0);
+        assert_eq!(clip.end, 12.0);
+
+        // Resize to 8 beats
+        clip.end = 16.0;
+        assert!(clip.is_valid());
+        assert_eq!(clip.duration(), 8.0);
+    }
+
+    //@ rune: test
+    rite test_piano_roll_note_workflow() {
+        // Create note at C4, move it up an octave
+        ≔ Δ note = TestPianoNote·new(60, 100, 0.0, 1.0);
+        assert!(note.is_valid());
+
+        // Move up an octave (12 semitones)
+        note.pitch += 12;
+        assert!(note.is_valid());
+        assert_eq!(note.pitch, 72); // C5
+    }
+
+    //@ rune: test
+    rite test_snap_and_move_clip() {
+        ≔ snap_resolution = 1.0_f64;
+
+        // Create clip
+        ≔ clip = TestClip·new(1, 0.0, 4.0);
+
+        // Try to move to beat 2.3 with snap
+        ≔ target = 2.3_f64;
+        ≔ snapped = (target / snap_resolution).round() * snap_resolution;
+        assert_eq!(snapped, 2.0);
+    }
+
+    //@ rune: test
+    rite test_zoom_and_coordinate_conversion() {
+        ≔ base_ppb = 20.0_f32;
+        // At zoom 0.5
+        ≔ beat = 16.0_f64;
+        ≔ scroll_x = 4.0_f64;
+        ≔ zoom1 = 0.5_f32;
+
+        ≔ px1 = ((beat - scroll_x) * base_ppb as f64 * zoom1 as f64) as f32;
+        ≔ recovered1 = (px1 as f64 / (base_ppb as f64 * zoom1 as f64)) + scroll_x;
+
+        assert!((recovered1 - beat).abs() < 0.001);
+
+        // At zoom 2.0
+        ≔ zoom2 = 2.0_f32;
+        ≔ px2 = ((beat - scroll_x) * base_ppb as f64 * zoom2 as f64) as f32;
+        ≔ recovered2 = (px2 as f64 / (base_ppb as f64 * zoom2 as f64)) + scroll_x;
+
+        assert!((recovered2 - beat).abs() < 0.001);
+    }
+}

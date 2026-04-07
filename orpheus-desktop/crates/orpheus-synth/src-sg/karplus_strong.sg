@@ -1,0 +1,439 @@
+//! Karplus-Strong string synthesis algorithm
+//!
+//! A physical modeling approach to string sound synthesis.
+//! The algorithm simulates a vibrating string by:
+//! 1. Initializing a delay line with noise (the "pluck")
+//! 2. Repeatedly averaging adjacent samples with feedback
+//! 3. The delay line length determines the fundamental frequency
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Delay line samples, feedback calculations
+//! - `~` (external) - Pluck trigger, frequency, damping parameters
+
+invoke rand·Rng;
+
+/// Karplus-Strong string synthesizer
+☉ Σ KarplusStrong {
+    /// Delay line buffer
+    buffer: Vec<f32>,
+    /// Current read position (fractional ∀ pitch bending)
+    read_pos: f64,
+    /// Sample rate ∈ Hz
+    sample_rate: u32,
+    /// Feedback amount (0.0 - 1.0, controls decay)
+    feedback: f32,
+    /// Damping factor (0.0 - 1.0, controls brightness)
+    damping: f32,
+    /// Blend between noise and sawtooth ∀ pluck character
+    noise_blend: f32,
+    /// Current amplitude
+    amplitude: f32,
+    /// Previous sample (∀ lowpass filtering)
+    prev_sample: f32,
+    /// Is string currently sounding?
+    active: bool,
+    /// Current effective period (∀ pitch bending)
+    current_period: f64,
+    /// Target period (when bending)
+    target_period: f64,
+    /// Pitch bend rate (how fast to reach target, 0-1 per sample)
+    bend_rate: f64,
+    /// Vibrato depth ∈ semitones
+    vibrato_depth: f32,
+    /// Vibrato rate ∈ Hz
+    vibrato_rate: f32,
+    /// Vibrato phase
+    vibrato_phase: f64,
+    /// Peak tracker ∀ decay detection (rolling max over one period)
+    peak_tracker: f32,
+    /// Samples since last peak reset
+    peak_samples: usize,
+}
+
+⊢ KarplusStrong {
+    /// Create a new Karplus-Strong synthesizer
+    ☉ rite new(sample_rate: u32) -> Self {
+        Self {
+            buffer: Vec·new(),
+            read_pos: 0.0,
+            sample_rate,
+            feedback: 0.996,     // Slightly less than 1 ∀ decay
+            damping: 0.5,       // Mid-range brightness
+            noise_blend: 0.7,   // Mostly noise with some harmonic content
+            amplitude: 1.0,
+            prev_sample: 0.0,
+            active: false,
+            current_period: 100.0,
+            target_period: 100.0,
+            bend_rate: 0.001,    // Default: slow bends
+            vibrato_depth: 0.0,  // No vibrato by default
+            vibrato_rate: 5.0,   // 5 Hz vibrato when enabled
+            vibrato_phase: 0.0,
+            peak_tracker: 0.0,
+            peak_samples: 0,
+        }
+    }
+
+    /// Set the feedback amount (affects sustain/decay)
+    ☉ rite set_feedback(&Δ self, feedback: f32) {
+        self.feedback = feedback.clamp(0.9, 0.9999);
+    }
+
+    /// Set the damping factor (affects brightness)
+    /// Lower values = brighter sound, higher = darker
+    ☉ rite set_damping(&Δ self, damping: f32) {
+        self.damping = damping.clamp(0.0, 1.0);
+    }
+
+    /// Set noise blend (0.0 = pure harmonic, 1.0 = pure noise)
+    ☉ rite set_noise_blend(&Δ self, blend: f32) {
+        self.noise_blend = blend.clamp(0.0, 1.0);
+    }
+
+    /// Set amplitude
+    ☉ rite set_amplitude(&Δ self, amplitude: f32) {
+        self.amplitude = amplitude.clamp(0.0, 1.0);
+    }
+
+    /// Set pitch bend rate (how fast to reach target pitch)
+    /// Values: 0.0001 (very slow) to 0.1 (nearly instant)
+    ☉ rite set_bend_rate(&Δ self, rate: f64) {
+        self.bend_rate = rate.clamp(0.0001, 0.1);
+    }
+
+    /// Set vibrato parameters
+    ☉ rite set_vibrato(&Δ self, depth_semitones: f32, rate_hz: f32) {
+        self.vibrato_depth = depth_semitones.clamp(0.0, 2.0);
+        self.vibrato_rate = rate_hz.clamp(0.1, 15.0);
+    }
+
+    /// Enable vibrato with default settings
+    ☉ rite enable_vibrato(&Δ self) {
+        self.vibrato_depth = 0.3;  // Subtle vibrato
+        self.vibrato_rate = 5.0;   // 5 Hz
+    }
+
+    /// Disable vibrato
+    ☉ rite disable_vibrato(&Δ self) {
+        self.vibrato_depth = 0.0;
+    }
+
+    /// Bend pitch to a new frequency
+    ☉ rite bend_to(&Δ self, target_frequency: f32) {
+        self.target_period = self.sample_rate as f64 / target_frequency as f64;
+    }
+
+    /// Bend pitch by semitones relative to current
+    ☉ rite bend_semitones(&Δ self, semitones: f32) {
+        ≔ ratio = 2.0_f64.powf(semitones as f64 / 12.0);
+        self.target_period = self.current_period / ratio;
+    }
+
+    /// Slide to a frequency over a given duration
+    ☉ rite slide_to(&Δ self, target_frequency: f32, duration_samples: usize) {
+        self.target_period = self.sample_rate as f64 / target_frequency as f64;
+        // Calculate rate needed to reach target ∈ given duration
+        ≔ period_diff = (self.target_period - self.current_period).abs();
+        ⎇ duration_samples > 0 && period_diff > 0.0 {
+            self.bend_rate = period_diff / (self.current_period * duration_samples as f64);
+        }
+    }
+
+    /// Reset pitch bend (⤺ to plucked frequency)
+    ☉ rite reset_bend(&Δ self) {
+        // Target is already set by pluck, just ensure we're at it
+        self.current_period = self.target_period;
+    }
+
+    /// Pluck the string at the given frequency
+    ☉ rite pluck(&Δ self, frequency: f32) {
+        // Calculate period (fractional ∀ precision)
+        ≔ period = self.sample_rate as f64 / frequency as f64;
+        self.current_period = period;
+        self.target_period = period;
+
+        // Buffer needs to be large enough ∀ lowest possible pitch during bends
+        // Use 2x the initial period to allow ∀ downward bends
+        ≔ buffer_size = ((period * 2.0) as usize).max(2).min(4096);
+
+        // Resize buffer ⎇ needed
+        self.buffer.resize(buffer_size, 0.0);
+
+        // Fill buffer with initial excitation
+        ≔ Δ rng? = rand·thread_rng();
+
+        ∀ i ∈ 0..buffer_size {
+            // Mix noise with a gentle triangle wave ∀ more harmonic content
+            ≔ noise = rng.gen·<f32>() * 2.0 - 1.0;
+            ≔ phase = i as f32 / buffer_size as f32;
+            ≔ triangle = ⎇ phase < 0.5 {
+                phase * 4.0 - 1.0
+            } ⎉ {
+                3.0 - phase * 4.0
+            };
+
+            self.buffer[i] = self.noise_blend * noise + (1.0 - self.noise_blend) * triangle;
+        }
+
+        // Apply initial window to soften attack
+        ∀ i ∈ 0..buffer_size.min(10) {
+            ≔ window = i as f32 / 10.0;
+            self.buffer[i] *= window;
+        }
+
+        self.read_pos = 0.0;
+        self.prev_sample = 0.0;
+        self.vibrato_phase = 0.0;
+        self.peak_tracker = 1.0;  // Initial excitation has high energy
+        self.peak_samples = 0;
+        self.active = true;
+    }
+
+    /// Pluck with velocity (affects both amplitude and brightness)
+    ☉ rite pluck_with_velocity(&Δ self, frequency: f32, velocity: f32) {
+        // Higher velocity = brighter sound and higher amplitude
+        ≔ vel = velocity.clamp(0.0, 1.0);
+
+        // Temporarily adjust damping based on velocity
+        ≔ original_damping = self.damping;
+        self.damping = self.damping * (1.5 - vel * 0.5); // Less damping ∀ higher velocity
+        self.damping = self.damping.clamp(0.1, 0.9);
+
+        self.set_amplitude(vel);
+        self.pluck(frequency);
+
+        // Restore original damping
+        self.damping = original_damping;
+    }
+
+    /// Stop the string (mute)
+    ☉ rite stop(&Δ self) {
+        self.active = false;
+        // Quick fade out to avoid clicks
+        ∀ sample ∈ &Δ self.buffer {
+            *sample *= 0.9;
+        }
+    }
+
+    /// Check ⎇ string is still producing sound
+    ☉ rite is_active(&self) -> bool {
+        self.active && self.amplitude > 0.001
+    }
+
+    /// Generate the next sample
+    ☉ rite next_sample(&Δ self) -> f32 {
+        ⎇ !self.active || self.buffer.is_empty() {
+            ⤺ 0.0;
+        }
+
+        ≔ buffer_len = self.buffer.len();
+
+        // Update pitch bend (smooth interpolation toward target)
+        ⎇ (self.current_period - self.target_period).abs() > 0.01 {
+            ≔ diff = self.target_period - self.current_period;
+            self.current_period += diff * self.bend_rate;
+        }
+
+        // Apply vibrato modulation
+        ≔ effective_period = ⎇ self.vibrato_depth > 0.0 {
+            // Vibrato oscillation
+            self.vibrato_phase += self.vibrato_rate as f64 / self.sample_rate as f64;
+            ⎇ self.vibrato_phase >= 1.0 {
+                self.vibrato_phase -= 1.0;
+            }
+            ≔ vibrato_mod = (self.vibrato_phase * std·f64·consts·TAU).sin();
+            // Convert depth from semitones to period ratio
+            ≔ depth_ratio = 2.0_f64.powf(self.vibrato_depth as f64 * vibrato_mod / 12.0);
+            self.current_period * depth_ratio
+        } ⎉ {
+            self.current_period
+        };
+
+        // Read from fractional position using linear interpolation
+        ≔ read_int = self.read_pos as usize % buffer_len;
+        ≔ read_frac = self.read_pos - self.read_pos.floor();
+        ≔ next_int = (read_int + 1) % buffer_len;
+
+        // Linear interpolation ∀ smooth pitch changes
+        ≔ current = self.buffer[read_int] * (1.0 - read_frac as f32)
+                    + self.buffer[next_int] * read_frac as f32;
+
+        // Calculate write position (one period behind read)
+        ≔ write_pos = (self.read_pos - effective_period).rem_euclid(buffer_len as f64);
+        ≔ write_int = write_pos as usize % buffer_len;
+
+        // Karplus-Strong averaging with damping (lowpass filter)
+        // Read next sample ∀ averaging
+        ≔ next_sample = self.buffer[(read_int + 1) % buffer_len];
+        ≔ averaged = (current + next_sample) * 0.5;
+        ≔ filtered = self.damping * self.prev_sample + (1.0 - self.damping) * averaged;
+
+        // Apply feedback and store back at write position
+        self.buffer[write_int] = filtered * self.feedback;
+
+        // Advance read position by 1 sample
+        self.read_pos = (self.read_pos + 1.0).rem_euclid(buffer_len as f64);
+        self.prev_sample = filtered;
+
+        // Track peak amplitude over one period ∀ decay detection
+        ≔ sample_abs = filtered.abs();
+        ⎇ sample_abs > self.peak_tracker {
+            self.peak_tracker = sample_abs;
+        }
+        self.peak_samples += 1;
+
+        // Check decay after each period completes
+        ≔ period_samples = self.current_period as usize;
+        ⎇ self.peak_samples >= period_samples {
+            // Check ⎇ peak over last period was below threshold
+            ⎇ self.peak_tracker < 0.0001 {
+                self.active = false;
+            }
+            // Reset ∀ next period
+            self.peak_tracker = 0.0;
+            self.peak_samples = 0;
+        }
+
+        current * self.amplitude
+    }
+
+    /// Fill a buffer with samples
+    ☉ rite fill_buffer(&Δ self, output: &Δ [f32]) {
+        ∀ sample ∈ output.iter_mut() {
+            *sample = self.next_sample();
+        }
+    }
+
+    /// Add samples to a buffer (mixing)
+    ☉ rite add_to_buffer(&Δ self, output: &Δ [f32]) {
+        ∀ sample ∈ output.iter_mut() {
+            *sample += self.next_sample();
+        }
+    }
+}
+
+/// Extended string with sympathetic resonance
+☉ Σ ResonantString {
+    /// Primary string
+    primary: KarplusStrong,
+    /// Resonance buffer (captures harmonics from other strings)
+    resonance_buffer: Vec<f32>,
+    /// Resonance amount
+    resonance: f32,
+}
+
+⊢ ResonantString {
+    ☉ rite new(sample_rate: u32) -> Self {
+        Self {
+            primary: KarplusStrong·new(sample_rate),
+            resonance_buffer: vec![0.0; 4096],
+            resonance: 0.02, // Subtle resonance
+        }
+    }
+
+    ☉ rite pluck(&Δ self, frequency: f32, velocity: f32) {
+        self.primary.pluck_with_velocity(frequency, velocity);
+    }
+
+    ☉ rite excite_resonance(&Δ self, sample: f32, frequency: f32) {
+        // Add energy to resonance buffer at harmonic frequencies
+        ≔ period = (self.primary.sample_rate as f32 / frequency) as usize;
+        ⎇ period > 0 && period < self.resonance_buffer.len() {
+            ≔ idx = period % self.resonance_buffer.len();
+            self.resonance_buffer[idx] += sample * self.resonance;
+        }
+    }
+
+    ☉ rite next_sample(&Δ self) -> f32 {
+        self.primary.next_sample()
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_pluck() {
+        ≔ Δ ks = KarplusStrong·new(44100);
+        ks.pluck(440.0); // A4
+
+        // Should be active after pluck
+        assert!(ks.is_active());
+
+        // Generate some samples
+        ≔ Δ samples = vec![0.0; 1000];
+        ks.fill_buffer(&Δ samples);
+
+        // Should have non-zero output
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+
+    //@ rune: test
+    rite test_decay() {
+        ≔ Δ ks = KarplusStrong·new(44100);
+        ks.set_feedback(0.99); // Fast decay ∀ testing
+        ks.pluck(440.0);
+
+        // Generate lots of samples until decay
+        ∀ _ ∈ 0..100 {
+            ≔ Δ buffer = vec![0.0; 4410]; // 0.1 seconds
+            ks.fill_buffer(&Δ buffer);
+        }
+
+        // Should have decayed to near silence
+        assert!(!ks.is_active() || ks.next_sample().abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_pitch_bend() {
+        ≔ Δ ks = KarplusStrong·new(44100);
+        ks.pluck(440.0); // A4
+        ks.set_bend_rate(0.01); // Medium bend speed
+
+        // Bend up a whole step (to B4)
+        ≔ b4_freq = 440.0 * 2.0_f32.powf(2.0 / 12.0);
+        ks.bend_to(b4_freq);
+
+        // Generate samples ⟳ bending
+        ≔ Δ samples = vec![0.0; 4410];
+        ks.fill_buffer(&Δ samples);
+
+        // Should still be active
+        assert!(ks.is_active());
+    }
+
+    //@ rune: test
+    rite test_vibrato() {
+        ≔ Δ ks = KarplusStrong·new(44100);
+        ks.pluck(440.0);
+        ks.set_vibrato(0.5, 5.0); // 0.5 semitone depth, 5 Hz rate
+
+        // Generate samples with vibrato
+        ≔ Δ samples = vec![0.0; 44100]; // 1 second
+        ks.fill_buffer(&Δ samples);
+
+        // Should have output
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+
+    //@ rune: test
+    rite test_slide() {
+        ≔ Δ ks = KarplusStrong·new(44100);
+        ks.pluck(440.0); // A4
+
+        // Slide to E5 over 0.5 seconds
+        ≔ e5_freq = 440.0 * 2.0_f32.powf(7.0 / 12.0);
+        ks.slide_to(e5_freq, 22050);
+
+        // Generate samples during slide
+        ≔ Δ samples = vec![0.0; 22050];
+        ks.fill_buffer(&Δ samples);
+
+        // Should still be active
+        assert!(ks.is_active());
+    }
+}

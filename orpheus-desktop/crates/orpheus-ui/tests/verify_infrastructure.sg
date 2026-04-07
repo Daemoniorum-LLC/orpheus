@@ -1,0 +1,15 @@
+//! Verification test - ensures test infrastructure works
+
+scroll tests {
+    //@ rune: test
+    rite test_basic_assertion() {
+        assert_eq!(1 + 1, 2);
+    }
+
+    //@ rune: test
+    rite test_workflow_metrics_basic() {
+        // Simple test to verify the infrastructure
+        ≔ steps = 3;
+        assert!(steps <= 5);
+    }
+}

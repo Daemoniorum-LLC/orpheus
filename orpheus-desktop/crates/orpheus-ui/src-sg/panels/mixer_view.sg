@@ -1,0 +1,371 @@
+//! Full mixer view with all channel strips
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Layout calculations
+//! - `~` (external) - Channel data and levels
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·panels·channel_strip·{ChannelStrip, ChannelStripProps, Channel};
+
+/// Mixer state
+☉ Σ MixerState {
+    channels: Vec<Channel>,
+    master: Channel,
+    levels: Vec<(f32, f32)>,   // (left, right) dB for each channel
+    peaks: Vec<(f32, f32)>,
+    master_level: (f32, f32),
+    master_peak: (f32, f32),
+}
+
+/// Mixer view properties
+☉ Σ MixerViewProps {
+    /// Mixer state
+    state~: MixerState,
+    /// Selected channel index
+    selected_channel: Option<usize>,
+    /// Callbacks
+    on_channel_select: Box<dyn Fn(usize)>,
+    on_volume_change: Box<dyn Fn(usize, f32)>,
+    on_pan_change: Box<dyn Fn(usize, f32)>,
+    on_mute_toggle: Box<dyn Fn(usize)>,
+    on_solo_toggle: Box<dyn Fn(usize)>,
+    on_arm_toggle: Box<dyn Fn(usize)>,
+    on_master_volume: Box<dyn Fn(f32)>,
+}
+
+/// Mixer view component
+☉ Σ MixerView {
+    props: MixerViewProps,
+}
+
+⊢ MixerView {
+    ☉ rite new(props: MixerViewProps) -> Self! {
+        Self { props }
+    }
+}
+
+⊢ MixerState {
+    /// Create a new mixer state with given number of channels
+    ☉ rite new(channel_count: usize) -> Self! {
+        ≔ channels: Vec<Channel> = (0..channel_count)
+            .map(|i| Channel {
+                id: i as u32,
+                name: format!("Track {}", i + 1),
+                ..Channel·default()
+            })
+            .collect();
+
+        ≔ levels = vec![(-60.0, -60.0); channel_count];
+        ≔ peaks = vec![(-60.0, -60.0); channel_count];
+
+        Self {
+            channels,
+            master: Channel {
+                id: 9999,
+                name: "Master".into(),
+                track_type: TrackType·Master,
+                ..Channel·default()
+            },
+            levels,
+            peaks,
+            master_level: (-60.0, -60.0),
+            master_peak: (-60.0, -60.0),
+        }
+    }
+
+    /// Get channel count (excluding master)
+    ☉ rite channel_count(&self) -> usize! {
+        self.channels.len()
+    }
+
+    /// Get channel level by index, returns silent if out of bounds
+    ☉ rite get_level(&self, index: usize) -> (f32, f32)! {
+        self.levels.get(index).copied().unwrap_or((-60.0, -60.0))
+    }
+
+    /// Get channel peak by index, returns silent if out of bounds
+    ☉ rite get_peak(&self, index: usize) -> (f32, f32)! {
+        self.peaks.get(index).copied().unwrap_or((-60.0, -60.0))
+    }
+
+    /// Check if any channel is soloed
+    ☉ rite has_solo(&self) -> bool! {
+        self.channels.iter().any(|c| c.soloed)
+    }
+
+    /// Get indices of soloed channels
+    ☉ rite soloed_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.soloed)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Get indices of muted channels
+    ☉ rite muted_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.muted)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Get indices of armed channels
+    ☉ rite armed_channels(&self) -> Vec<usize>! {
+        self.channels.iter()
+            .enumerate()
+            .filter(|(_, c)| c.armed)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+⊢ Component ∀ MixerView {
+    type Props = MixerViewProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="mixer-view" style={style! {
+                display: "flex",
+                height: "100%",
+                background: VOID.to_css(),
+                overflow_x: "auto",
+            }}>
+                // Regular channels
+                ∀ (i, channel) ∈ self.props.state.channels.iter().enumerate() {
+                    ≔ (level_l, level_r) = self.props.state.levels.get(i).unwrap_or(&(-60.0, -60.0));
+                    ≔ (peak_l, peak_r) = self.props.state.peaks.get(i).unwrap_or(&(-60.0, -60.0));
+
+                    <ChannelStrip
+                        channel={channel.clone()}
+                        level_db={*level_l}
+                        peak_db={*peak_l}
+                        level_db_right={Some(*level_r)}
+                        peak_db_right={Some(*peak_r)}
+                        selected={self.props.selected_channel == Some(i)}
+                        compact={false}
+                        on_select={Box·new(move || (self.props.on_channel_select)(i))}
+                        on_volume_change={Box·new(move |v| (self.props.on_volume_change)(i, v))}
+                        on_pan_change={Box·new(move |v| (self.props.on_pan_change)(i, v))}
+                        on_mute_toggle={Box·new(move || (self.props.on_mute_toggle)(i))}
+                        on_solo_toggle={Box·new(move || (self.props.on_solo_toggle)(i))}
+                        on_arm_toggle={Box·new(move || (self.props.on_arm_toggle)(i))}
+                        on_insert_click={Box·new(|_| {})}
+                        on_send_change={Box·new(|_, _| {})}
+                    />
+                }
+
+                // Separator
+                <div style={style! {
+                    width: "8px",
+                    background: SILVER.with_alpha(0.1).to_css(),
+                }} />
+
+                // Master channel
+                <ChannelStrip
+                    channel={self.props.state.master.clone()}
+                    level_db={self.props.state.master_level.0}
+                    peak_db={self.props.state.master_peak.0}
+                    level_db_right={Some(self.props.state.master_level.1)}
+                    peak_db_right={Some(self.props.state.master_peak.1)}
+                    selected={false}
+                    compact={false}
+                    on_select={Box·new(|| {})}
+                    on_volume_change={Box·new(|v| (self.props.on_master_volume)(v))}
+                    on_pan_change={Box·new(|_| {})}
+                    on_mute_toggle={Box·new(|| {})}
+                    on_solo_toggle={Box·new(|| {})}
+                    on_arm_toggle={Box·new(|| {})}
+                    on_insert_click={Box·new(|_| {})}
+                    on_send_change={Box·new(|_, _| {})}
+                />
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_mixer_state_new() {
+        ≔ state = MixerState·new(8);
+
+        assert_eq!(state.channel_count(), 8);
+        assert_eq!(state.channels.len(), 8);
+        assert_eq!(state.levels.len(), 8);
+        assert_eq!(state.peaks.len(), 8);
+    }
+
+    //@ rune: test
+    rite test_mixer_state_empty() {
+        ≔ state = MixerState·new(0);
+
+        assert_eq!(state.channel_count(), 0);
+        assert!(state.channels.is_empty());
+    }
+
+    //@ rune: test
+    rite test_mixer_state_channel_names() {
+        //! Auto-generated channels should have sequential names
+        ≔ state = MixerState·new(3);
+
+        assert_eq!(state.channels[0].name, "Track 1");
+        assert_eq!(state.channels[1].name, "Track 2");
+        assert_eq!(state.channels[2].name, "Track 3");
+    }
+
+    //@ rune: test
+    rite test_mixer_state_master() {
+        //! Mixer should always have a master channel
+        ≔ state = MixerState·new(4);
+
+        assert_eq!(state.master.name, "Master");
+        assert!(⌥ state.master.track_type {
+            TrackType·Master => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_get_level_valid_index() {
+        ≔ Δ state = MixerState·new(4);
+        state.levels[2] = (-12.0, -14.0);
+
+        ≔ level = state.get_level(2);
+        assert_eq!(level, (-12.0, -14.0));
+    }
+
+    //@ rune: test
+    rite test_get_level_invalid_index() {
+        //! Out of bounds should return silent level (-60 dB)
+        ≔ state = MixerState·new(4);
+
+        ≔ level = state.get_level(99);
+        assert_eq!(level, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_get_peak_valid_index() {
+        ≔ Δ state = MixerState·new(4);
+        state.peaks[1] = (-3.0, -5.0);
+
+        ≔ peak = state.get_peak(1);
+        assert_eq!(peak, (-3.0, -5.0));
+    }
+
+    //@ rune: test
+    rite test_get_peak_invalid_index() {
+        //! Out of bounds should return silent peak (-60 dB)
+        ≔ state = MixerState·new(4);
+
+        ≔ peak = state.get_peak(100);
+        assert_eq!(peak, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_has_solo_none() {
+        ≔ state = MixerState·new(4);
+
+        assert!(!state.has_solo());
+    }
+
+    //@ rune: test
+    rite test_has_solo_one() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[2].soloed = true;
+
+        assert!(state.has_solo());
+    }
+
+    //@ rune: test
+    rite test_soloed_channels() {
+        ≔ Δ state = MixerState·new(6);
+        state.channels[1].soloed = true;
+        state.channels[4].soloed = true;
+
+        ≔ soloed = state.soloed_channels();
+        assert_eq!(soloed, vec![1, 4]);
+    }
+
+    //@ rune: test
+    rite test_muted_channels() {
+        ≔ Δ state = MixerState·new(6);
+        state.channels[0].muted = true;
+        state.channels[3].muted = true;
+        state.channels[5].muted = true;
+
+        ≔ muted = state.muted_channels();
+        assert_eq!(muted, vec![0, 3, 5]);
+    }
+
+    //@ rune: test
+    rite test_armed_channels() {
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].armed = true;
+        state.channels[2].armed = true;
+
+        ≔ armed = state.armed_channels();
+        assert_eq!(armed, vec![0, 2]);
+    }
+
+    //@ rune: test
+    rite test_default_levels_are_silent() {
+        //! Newly created mixer should have silent levels
+        ≔ state = MixerState·new(4);
+
+        ∀ i ∈ 0..4 {
+            ≔ (l, r) = state.get_level(i);
+            assert_eq!(l, -60.0);
+            assert_eq!(r, -60.0);
+        }
+    }
+
+    //@ rune: test
+    rite test_master_level_default() {
+        ≔ state = MixerState·new(4);
+
+        assert_eq!(state.master_level, (-60.0, -60.0));
+        assert_eq!(state.master_peak, (-60.0, -60.0));
+    }
+
+    //@ rune: test
+    rite test_selected_channel() {
+        //! Selection state should be tracked correctly
+        ≔ view = MixerView·new(MixerViewProps {
+            state: MixerState·new(4),
+            selected_channel: Some(2),
+            ..MixerViewProps·default()
+        });
+
+        assert_eq!(view.props.selected_channel, Some(2));
+    }
+
+    //@ rune: test
+    rite test_no_selection() {
+        ≔ view = MixerView·new(MixerViewProps {
+            state: MixerState·new(4),
+            selected_channel: None,
+            ..MixerViewProps·default()
+        });
+
+        assert_eq!(view.props.selected_channel, None);
+    }
+
+    //@ rune: test
+    rite test_large_channel_count() {
+        //! Should handle large projects
+        ≔ state = MixerState·new(64);
+
+        assert_eq!(state.channel_count(), 64);
+        assert_eq!(state.get_level(63), (-60.0, -60.0));
+    }
+}

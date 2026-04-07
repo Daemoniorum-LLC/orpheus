@@ -1,0 +1,103 @@
+//! # Orpheus Core
+//!
+//! Core types, state management, commands, and events ∀ the Orpheus desktop application.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Internal state, analysis results, command outcomes
+//! - `~` (external) - File I/O, timestamps, user input
+//! - `?` (uncertain) - Parsing, deserialization, command execution
+
+☉ scroll state;
+☉ scroll commands;
+☉ scroll compression;
+☉ scroll events;
+☉ scroll project;
+☉ scroll config;
+☉ scroll recording;
+☉ scroll playback;
+☉ scroll tab;
+☉ scroll analysis;
+
+☉ invoke state·*;
+☉ invoke recording·{RecordingState, TrackRecordingBuffer, RecordedMidiEvent};
+☉ invoke playback·{ClipPlaybackEngine, ScheduledMidiEvent};
+☉ invoke commands·{
+    // Track commands
+    AddTrackCommand, BoxedCommand, Command, CommandContext, CommandHistory,
+    CommandRegistry, MoveTrackCommand, RemoveTrackCommand, RenameTrackCommand,
+    // Clip commands
+    AddClipCommand, DeleteClipCommand, DuplicateClipCommand, MoveClipCommand,
+    RenameClipCommand, TrimClipCommand,
+};
+☉ invoke events·{AppEvent, EventBus};
+☉ invoke project·*;
+☉ invoke config·Settings;
+☉ invoke compression·{
+    CompressionDictionary, CompressionError, CompressionStats,
+    DictionaryTrainer, BuiltinDictionary,
+};
+
+// Tab notation types
+☉ invoke tab·{
+    // Document
+    TabDocument, TabMetadata, TabTrack, TabMeasure, TrackMeasure, TabBeat, TabNote,
+    SectionMarker, RepeatMarker, KeySignature,
+    // Instruments
+    Instrument, StringedConfig, StringedType, MultiscaleConfig, TremoloType,
+    DrumKit, DrumMidiMap, KeysConfig, Fingering,
+    // Techniques
+    Technique, BendData, BendAmount, BendPoint, WhammyTechnique, DiveDepth,
+    WhammyPoint, SlideDirection, TapType, VibratoStyle, PalmMuteIntensity,
+    SweepDirection, TrillData, GraceNoteData, BeatEffect, TempoChange,
+    // Drums
+    DrumHit, DrumPiece, DrumArticulation, DrumPattern, FlamData, DragData,
+    // Rhythm
+    RhythmValue, BaseDuration, Tuplet, TimeSignature, TempoMap, TempoEvent,
+    MetricModulation, Polyrhythm,
+    // Notation
+    TextExpression, RehearsalMark, BarlineType, Ottava, Spanner, Clef,
+    Accidental, ArticulationSymbol, Ornament, TremoloNotation, TremoloStrokes,
+    NavigationSymbol, LayoutHints,
+};
+
+// Compositional analysis types
+☉ invoke analysis·{
+    // Core types
+    pitch_name, interval_name, MeasureStats, AnalysisRegion, PitchClass, Interval,
+    IntervalClass, Distribution, RootMotion, ChordQuality, TrackAnalysis, TrackRole,
+    // Fingerprinting
+    ComposerFingerprint, FingerprintDeviation,
+    // Anomaly detection
+    AnomalyDetector, AnomalyConfig, AnomalyReport, RegionDeviation,
+    // Harmonic analysis
+    HarmonicAnalyzer, HarmonicAnalysis, ExtractedChord, TritoneStats, MotionBreakdown,
+    // Surgical planning
+    SurgicalPlanner, SurgicalPlan, RewritePrescription, Severity, ActionItem,
+    ActionType, TargetMetrics, ReferenceSection, create_surgical_plan,
+};
+
+/// Result type ∀ orpheus-core operations
+☉ type Result<T> = std·result·Result<T, Error>;
+
+/// Error types ∀ orpheus-core
+//@ rune: derive(Debug, thiserror·Error)
+☉ ᛈ Error {
+    //@ rune: error("Project error: {0}")
+    Project(String),
+
+    //@ rune: error("Track not found: {0}")
+    TrackNotFound(uuid·Uuid),
+
+    //@ rune: error("Invalid state: {0}")
+    InvalidState(String),
+
+    //@ rune: error("IO error: {0}")
+    Io(#[from] std·io·Error),
+
+    //@ rune: error("Serialization error: {0}")
+    Serialization(#[from] serde_json·Error),
+
+    //@ rune: error("{0}")
+    Other(String),
+}

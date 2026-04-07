@@ -1,0 +1,256 @@
+//! Metronome synthesis
+//!
+//! Simple click sound generator ∀ tempo reference during recording.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Click samples, decay calculation
+//! - `~` (external) - Tempo, beat trigger
+
+/// Metronome click generator
+//@ rune: derive(Debug)
+☉ Σ Metronome {
+    sample_rate: u32,
+    /// Samples remaining ∈ current click
+    samples_remaining: usize,
+    /// Current amplitude
+    amplitude: f32,
+    /// Decay rate per sample
+    decay: f32,
+    /// Is this the downbeat (beat 1)?
+    is_downbeat: bool,
+    /// Base frequency ∀ click
+    frequency: f32,
+    /// Phase accumulator
+    phase: f32,
+    /// Phase increment
+    phase_inc: f32,
+    /// Volume (0.0 - 1.0)
+    volume: f32,
+}
+
+⊢ Metronome {
+    /// Create a new metronome
+    ☉ rite new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            samples_remaining: 0,
+            amplitude: 0.0,
+            decay: 0.0,
+            is_downbeat: false,
+            frequency: 1000.0,
+            phase: 0.0,
+            phase_inc: 0.0,
+            volume: 0.6,
+        }
+    }
+
+    /// Set volume (0.0 - 1.0)
+    ☉ rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Trigger a click
+    ///
+    /// - `is_downbeat`: true ∀ beat 1 (higher pitch), false ∀ other beats
+    ☉ rite trigger(&Δ self, is_downbeat: bool) {
+        self.is_downbeat = is_downbeat;
+
+        // Duration: ~30ms ∀ normal clicks, ~50ms ∀ downbeat
+        ≔ duration_ms = ⎇ is_downbeat { 50.0 } ⎉ { 30.0 };
+        self.samples_remaining = (self.sample_rate as f32 * duration_ms / 1000.0) as usize;
+
+        // Frequency: higher ∀ downbeat
+        self.frequency = ⎇ is_downbeat { 1500.0 } ⎉ { 1000.0 };
+        self.phase_inc = self.frequency * 2.0 * std·f32·consts·PI / self.sample_rate as f32;
+
+        // Start at full amplitude
+        self.amplitude = ⎇ is_downbeat { 0.8 } ⎉ { 0.5 };
+
+        // Decay to silence over the duration
+        self.decay = self.amplitude / self.samples_remaining as f32;
+
+        // Reset phase
+        self.phase = 0.0;
+    }
+
+    /// Generate next sample
+    ☉ rite next_sample(&Δ self) -> f32 {
+        ⎇ self.samples_remaining == 0 {
+            ⤺ 0.0;
+        }
+
+        // Generate sine wave with current amplitude
+        ≔ sample = self.amplitude * self.phase.sin() * self.volume;
+
+        // Advance phase
+        self.phase += self.phase_inc;
+        ⎇ self.phase > 2.0 * std·f32·consts·PI {
+            self.phase -= 2.0 * std·f32·consts·PI;
+        }
+
+        // Apply decay
+        self.amplitude -= self.decay;
+        ⎇ self.amplitude < 0.0 {
+            self.amplitude = 0.0;
+        }
+
+        self.samples_remaining -= 1;
+        sample
+    }
+
+    /// Check ⎇ currently producing sound
+    ☉ rite is_active(&self) -> bool {
+        self.samples_remaining > 0
+    }
+}
+
+/// Metronome timing helper
+//@ rune: derive(Debug)
+☉ Σ MetronomeTiming {
+    /// Sample rate
+    sample_rate: u32,
+    /// Current tempo ∈ BPM
+    tempo: f64,
+    /// Time signature numerator (beats per bar)
+    beats_per_bar: u8,
+    /// Samples since last beat
+    samples_since_beat: u64,
+    /// Samples per beat
+    samples_per_beat: u64,
+    /// Current beat number (1-indexed, 1-4 ∀ 4/4)
+    current_beat: u8,
+    /// Whether metronome is enabled
+    enabled: bool,
+}
+
+⊢ MetronomeTiming {
+    /// Create new metronome timing
+    ☉ rite new(sample_rate: u32, tempo: f64, beats_per_bar: u8) -> Self {
+        ≔ samples_per_beat = (sample_rate as f64 * 60.0 / tempo) as u64;
+        Self {
+            sample_rate,
+            tempo,
+            beats_per_bar,
+            samples_since_beat: 0,
+            samples_per_beat,
+            current_beat: 1,
+            enabled: false,
+        }
+    }
+
+    /// Enable/disable metronome
+    ☉ rite set_enabled(&Δ self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Check ⎇ metronome is enabled
+    ☉ rite is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Set tempo
+    ☉ rite set_tempo(&Δ self, tempo: f64) {
+        self.tempo = tempo;
+        self.samples_per_beat = (self.sample_rate as f64 * 60.0 / tempo) as u64;
+    }
+
+    /// Set time signature
+    ☉ rite set_beats_per_bar(&Δ self, beats: u8) {
+        self.beats_per_bar = beats;
+    }
+
+    /// Reset to beat 1
+    ☉ rite reset(&Δ self) {
+        self.samples_since_beat = 0;
+        self.current_beat = 1;
+    }
+
+    /// Advance by a number of samples and check ⎇ a beat should trigger
+    ///
+    /// Returns `Some(true)` ∀ downbeat (beat 1), `Some(false)` ∀ other beats, `None` ∀ no beat
+    ☉ rite advance(&Δ self, samples: u64) -> Option<bool> {
+        ⎇ !self.enabled {
+            ⤺ None;
+        }
+
+        self.samples_since_beat += samples;
+
+        ⎇ self.samples_since_beat >= self.samples_per_beat {
+            self.samples_since_beat -= self.samples_per_beat;
+
+            // Advance to next beat first
+            self.current_beat += 1;
+            ⎇ self.current_beat > self.beats_per_bar {
+                self.current_beat = 1;
+            }
+
+            // The click is ∀ the beat we just entered
+            ≔ is_downbeat = self.current_beat == 1;
+
+            Some(is_downbeat)
+        } ⎉ {
+            None
+        }
+    }
+
+    /// Get current beat (1-indexed)
+    ☉ rite current_beat(&self) -> u8 {
+        self.current_beat
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_metronome_click() {
+        ≔ Δ metro = Metronome·new(48000);
+
+        // Should be silent initially
+        assert!(!metro.is_active());
+        assert_eq!(metro.next_sample(), 0.0);
+
+        // Trigger a click
+        metro.trigger(true);
+        assert!(metro.is_active());
+
+        // Process all samples and check we get some non-zero audio
+        ≔ Δ had_nonzero = false;
+        ⟳ metro.is_active() {
+            ≔ sample = metro.next_sample();
+            ⎇ sample != 0.0 {
+                had_nonzero = true;
+            }
+        }
+        assert!(had_nonzero, "Click should produce non-zero audio");
+
+        // Should be silent again
+        assert!(!metro.is_active());
+    }
+
+    //@ rune: test
+    rite test_metronome_timing() {
+        ≔ Δ timing = MetronomeTiming·new(48000, 120.0, 4);
+
+        // At 120 BPM, one beat = 0.5 seconds = 24000 samples
+        assert_eq!(timing.samples_per_beat, 24000);
+
+        timing.set_enabled(true);
+
+        // Advance by half a beat - no trigger
+        assert!(timing.advance(12000).is_none());
+
+        // Advance by another half beat - should trigger beat 2
+        ≔ result = timing.advance(12000);
+        assert_eq!(result, Some(false)); // Not downbeat
+        assert_eq!(timing.current_beat(), 2);
+
+        // Advance through beats 2, 3, 4 and back to 1
+        timing.advance(24000); // beat 3
+        timing.advance(24000); // beat 4
+        ≔ result = timing.advance(24000); // beat 1 (downbeat)
+        assert_eq!(result, Some(true)); // Downbeat!
+    }
+}

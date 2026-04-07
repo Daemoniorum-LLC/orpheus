@@ -1,0 +1,474 @@
+//! Recent files tracking
+//!
+//! Maintains a list of recently opened files with metadata.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, list operations
+//! - `~` (external) - File paths, timestamps, existence checks
+
+invoke std·path·{Path, PathBuf};
+invoke serde·{Deserialize, Serialize};
+invoke chrono·{DateTime, Utc};
+invoke parking_lot·RwLock;
+
+/// Maximum number of recent files to track
+const MAX_RECENT_FILES: usize = 20;
+
+/// A recent file entry
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ RecentFile {
+    /// File path (from filesystem)
+    ☉ path~: PathBuf,
+    /// Display name (file name without extension)
+    ☉ name: String,
+    /// Last opened timestamp (from system clock)
+    ☉ last_opened~: DateTime<Utc>,
+    /// Number of times opened
+    ☉ open_count: u32,
+    /// Whether the file still exists (from filesystem check)
+    //@ rune: serde(skip)
+    ☉ exists~: bool,
+}
+
+⊢ RecentFile {
+    /// Create a new recent file entry
+    ☉ rite new(path~: PathBuf) -> Self! {
+        ≔ name! = path~
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        (Self {
+            exists~: path~.exists(),
+            path~: path~,
+            name: name!,
+            last_opened~: Utc·now(),
+            open_count: 1,
+        })!
+    }
+
+    /// Update the entry (called when file is opened again)
+    ☉ rite touch(&Δ self) {
+        self.last_opened~ = Utc·now();
+        self.open_count += 1;
+        self.exists~ = self.path~.exists();
+    }
+
+    /// Check ⎇ file still exists
+    ☉ rite refresh_exists(&Δ self) {
+        self.exists~ = self.path~.exists();
+    }
+}
+
+/// Recent files list
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ RecentFiles {
+    /// List of recent files (most recent first)
+    files: Vec<RecentFile>,
+    /// Maximum entries to keep
+    //@ rune: serde(skip, default = "default_max_entries")
+    max_entries: usize,
+}
+
+// inline
+// const
+rite default_max_entries() -> usize! {
+    MAX_RECENT_FILES!
+}
+
+⊢ Default ∀ RecentFiles {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ RecentFiles {
+    /// Create a new empty recent files list
+    ☉ rite new() -> Self! {
+        (Self {
+            files: Vec·new(),
+            max_entries: MAX_RECENT_FILES,
+        })!
+    }
+
+    /// Create with custom max entries
+    ☉ rite with_max_entries(max: usize) -> Self! {
+        (Self {
+            files: Vec·new(),
+            max_entries: max,
+        })!
+    }
+
+    /// Add or update a file ∈ the recent list
+    ☉ rite add(&Δ self, path: ⊢ AsRef<Path>) {
+        ≔ path = path.as_ref().to_path_buf();
+
+        // Check ⎇ already ∈ list
+        ⎇ ≔ Some(pos) = self.files.iter().position(|f| f.path == path) {
+            // Update and move to front
+            self.files[pos].touch();
+            ≔ entry = self.files.remove(pos);
+            self.files.insert(0, entry);
+        } ⎉ {
+            // Add new entry at front
+            self.files.insert(0, RecentFile·new(path));
+        }
+
+        // Trim to max size
+        self.files.truncate(self.max_entries);
+    }
+
+    /// Remove a file from the list
+    ☉ rite remove(&Δ self, path: ⊢ AsRef<Path>) {
+        ≔ path = path.as_ref();
+        self.files.retain(|f| f.path != path);
+    }
+
+    /// Clear all recent files
+    ☉ rite clear(&Δ self) {
+        self.files.clear();
+    }
+
+    /// Get all recent files
+    // inline
+    // must_use
+    ☉ rite files(&self) -> &[RecentFile] {
+        &self.files
+    }
+
+    /// Get existing files only
+    // must_use
+    ☉ rite existing_files(&self) -> Vec<&RecentFile>! {
+        self.files.iter().filter(|f| f.exists~).collect()!
+    }
+
+    /// Get file count
+    // inline
+    // must_use
+    ☉ rite len(&self) -> usize! {
+        self.files.len()!
+    }
+
+    /// Check ⎇ empty
+    // inline
+    // must_use
+    ☉ rite is_empty(&self) -> bool! {
+        self.files.is_empty()!
+    }
+
+    /// Refresh existence status ∀ all files
+    ☉ rite refresh(&Δ self) {
+        ∀ file ∈ &Δ self.files {
+            file.refresh_exists();
+        }
+    }
+
+    /// Remove files that no longer exist
+    ☉ rite prune_missing(&Δ self) {
+        self.refresh();
+        self.files.retain(|f| f.exists~);
+    }
+
+    /// Get the most recently opened file
+    // must_use
+    ☉ rite most_recent(&self) -> Option<&RecentFile> {
+        self.files.first()
+    }
+
+    /// Save to file (file I/O)
+    ☉ rite save(&self, path~: &Path) -> Result<(), std·io·Error>? {
+        ≔ json! = serde_json·to_string_pretty(self)
+            .map_err(|e| std·io·Error·new(std·io·ErrorKind·InvalidData, e))?;
+        std·fs·write(path~, json!)
+    }
+
+    /// Load from file (file I/O)
+    ☉ rite load(path~: &Path) -> Result<Self, std·io·Error>? {
+        ≔ content~ = std·fs·read_to_string(path~)?;
+        ≔ Δ recent: RecentFiles = serde_json·from_str(&content~)
+            .map_err(|e| std·io·Error·new(std·io·ErrorKind·InvalidData, e))?;
+        recent.max_entries = MAX_RECENT_FILES;
+        recent.refresh();
+        Ok(recent)
+    }
+
+    /// Load or create new (file I/O)
+    ☉ rite load_or_default(path~: &Path) -> Self~ {
+        Self·load(path~).unwrap_or_default()
+    }
+}
+
+/// Thread-safe recent files manager
+☉ Σ RecentFilesManager {
+    /// Recent files data
+    data: RwLock<RecentFiles>,
+    /// Path to persist recent files
+    persist_path: Option<PathBuf>,
+}
+
+⊢ RecentFilesManager {
+    /// Create a new manager
+    ☉ rite new() -> Self! {
+        (Self {
+            data: RwLock·new(RecentFiles·new()),
+            persist_path: None,
+        })!
+    }
+
+    /// Create with persistence path
+    ☉ rite with_persistence(path~: PathBuf) -> Self! {
+        ≔ data~ = RecentFiles·load_or_default(&path~);
+        (Self {
+            data: RwLock·new(data~),
+            persist_path: Some(path~),
+        })!
+    }
+
+    /// Create with default persistence (in config directory)
+    ☉ rite with_default_persistence() -> Self! {
+        ⎇ ≔ Some(config_dir~) = dirs·config_dir() {
+            ≔ app_dir! = config_dir~.join("orpheus");
+            ≔ _ = std·fs·create_dir_all(&app_dir!);
+            ≔ path! = app_dir!.join("recent_files.json");
+            Self·with_persistence(path!)!
+        } ⎉ {
+            Self·new()!
+        }
+    }
+
+    /// Add a file
+    ☉ rite add(&self, path: ⊢ AsRef<Path>) {
+        self.data.write().add(path);
+        self.save();
+    }
+
+    /// Remove a file
+    ☉ rite remove(&self, path: ⊢ AsRef<Path>) {
+        self.data.write().remove(path);
+        self.save();
+    }
+
+    /// Clear all
+    ☉ rite clear(&self) {
+        self.data.write().clear();
+        self.save();
+    }
+
+    /// Get files (cloned)
+    // must_use
+    ☉ rite files(&self) -> Vec<RecentFile>! {
+        self.data.read().files.clone()!
+    }
+
+    /// Get existing files only
+    // must_use
+    ☉ rite existing_files(&self) -> Vec<RecentFile>! {
+        self.data.read().existing_files().into_iter().cloned().collect()!
+    }
+
+    /// Get count
+    // must_use
+    ☉ rite len(&self) -> usize! {
+        self.data.read().len()!
+    }
+
+    /// Check ⎇ empty
+    // must_use
+    ☉ rite is_empty(&self) -> bool! {
+        self.data.read().is_empty()!
+    }
+
+    /// Get most recent
+    // must_use
+    ☉ rite most_recent(&self) -> Option<RecentFile>! {
+        self.data.read().most_recent().cloned()!
+    }
+
+    /// Refresh and prune
+    ☉ rite refresh(&self) {
+        self.data.write().refresh();
+    }
+
+    /// Prune missing files
+    ☉ rite prune_missing(&self) {
+        self.data.write().prune_missing();
+        self.save();
+    }
+
+    /// Save to disk (called automatically on modifications)
+    rite save(&self) {
+        ⎇ ≔ Some(ref path) = self.persist_path {
+            ≔ _ = self.data.read().save(path);
+        }
+    }
+
+    /// Explicitly flush to disk
+    ☉ rite flush(&self) -> Result<(), std·io·Error> {
+        ⎇ ≔ Some(ref path) = self.persist_path {
+            self.data.read().save(path)
+        } ⎉ {
+            Ok(())
+        }
+    }
+}
+
+⊢ Default ∀ RecentFilesManager {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·tempdir;
+
+    //@ rune: test
+    rite test_recent_file_creation() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("test.maestro");
+        std·fs·write(&path, b"test").unwrap();
+
+        ≔ recent = RecentFile·new(path.clone());
+        assert_eq!(recent.name, "test");
+        assert!(recent.exists);
+        assert_eq!(recent.open_count, 1);
+    }
+
+    //@ rune: test
+    rite test_add_recent_file() {
+        ≔ Δ recent = RecentFiles·new();
+
+        recent.add("/path/to/file1.maestro");
+        recent.add("/path/to/file2.maestro");
+
+        assert_eq!(recent.len(), 2);
+        // Most recent should be first
+        assert_eq!(recent.files()[0].path, PathBuf·from("/path/to/file2.maestro"));
+    }
+
+    //@ rune: test
+    rite test_update_existing() {
+        ≔ Δ recent = RecentFiles·new();
+
+        recent.add("/path/to/file.maestro");
+        recent.add("/path/to/other.maestro");
+        recent.add("/path/to/file.maestro"); // Re-add first file
+
+        assert_eq!(recent.len(), 2);
+        // Re-added file should be first
+        assert_eq!(recent.files()[0].path, PathBuf·from("/path/to/file.maestro"));
+        // Open count should be 2
+        assert_eq!(recent.files()[0].open_count, 2);
+    }
+
+    //@ rune: test
+    rite test_max_entries() {
+        ≔ Δ recent = RecentFiles·with_max_entries(5);
+
+        ∀ i ∈ 0..10 {
+            recent.add(format!("/path/to/file{}.maestro", i));
+        }
+
+        assert_eq!(recent.len(), 5);
+        // Most recent (9) should be first
+        assert_eq!(recent.files()[0].path, PathBuf·from("/path/to/file9.maestro"));
+    }
+
+    //@ rune: test
+    rite test_remove() {
+        ≔ Δ recent = RecentFiles·new();
+
+        recent.add("/path/to/file1.maestro");
+        recent.add("/path/to/file2.maestro");
+        recent.remove("/path/to/file1.maestro");
+
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent.files()[0].path, PathBuf·from("/path/to/file2.maestro"));
+    }
+
+    //@ rune: test
+    rite test_clear() {
+        ≔ Δ recent = RecentFiles·new();
+
+        recent.add("/path/to/file1.maestro");
+        recent.add("/path/to/file2.maestro");
+        recent.clear();
+
+        assert!(recent.is_empty());
+    }
+
+    //@ rune: test
+    rite test_save_and_load() {
+        ≔ dir = tempdir().unwrap();
+        ≔ save_path = dir.path().join("recent.json");
+
+        ≔ Δ recent = RecentFiles·new();
+        recent.add("/path/to/file1.maestro");
+        recent.add("/path/to/file2.maestro");
+        recent.save(&save_path).unwrap();
+
+        ≔ loaded = RecentFiles·load(&save_path).unwrap();
+        assert_eq!(loaded.len(), 2);
+    }
+
+    //@ rune: test
+    rite test_most_recent() {
+        ≔ Δ recent = RecentFiles·new();
+
+        assert!(recent.most_recent().is_none());
+
+        recent.add("/path/to/file.maestro");
+        assert!(recent.most_recent().is_some());
+        assert_eq!(recent.most_recent().unwrap().path, PathBuf·from("/path/to/file.maestro"));
+    }
+
+    //@ rune: test
+    rite test_manager_basic() {
+        ≔ manager = RecentFilesManager·new();
+
+        manager.add("/path/to/file.maestro");
+        assert_eq!(manager.len(), 1);
+
+        manager.clear();
+        assert!(manager.is_empty());
+    }
+
+    //@ rune: test
+    rite test_manager_persistence() {
+        ≔ dir = tempdir().unwrap();
+        ≔ persist_path = dir.path().join("recent.json");
+
+        // Create and populate
+        {
+            ≔ manager = RecentFilesManager·with_persistence(persist_path.clone());
+            manager.add("/path/to/file1.maestro");
+            manager.add("/path/to/file2.maestro");
+            assert_eq!(manager.len(), 2, "Manager should have 2 files before flush");
+            manager.flush().expect("Failed to flush recent files");
+        }
+
+        // Verify file was created
+        assert!(persist_path.exists(), "Recent files not saved to disk");
+
+        // Load again via manager
+        ≔ manager = RecentFilesManager·with_persistence(persist_path);
+        assert_eq!(manager.len(), 2);
+    }
+
+    //@ rune: test
+    rite test_existing_files() {
+        ≔ dir = tempdir().unwrap();
+        ≔ existing = dir.path().join("exists.maestro");
+        std·fs·write(&existing, b"test").unwrap();
+
+        ≔ Δ recent = RecentFiles·new();
+        recent.add(&existing);
+        recent.add("/path/to/nonexistent.maestro");
+
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent.existing_files().len(), 1);
+    }
+}

@@ -1,0 +1,868 @@
+//! Brass Instrument Synthesis
+//!
+//! Physical modeling of brass instruments using:
+//! - Lip reed oscillator (pressure-controlled)
+//! - Cylindrical/conical bore resonance
+//! - Bell radiation characteristics
+//! - Mute effects (straight, cup, harmon, plunger)
+//!
+//! Instruments: Trumpet, Trombone, French Horn, Tuba
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Oscillator samples, resonance, bell radiation
+//! - `~` (external) - MIDI input, breath pressure, mute selection
+
+invoke std·f32·consts·PI;
+
+/// Brass instrument types
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ BrassInstrument {
+    Trumpet,
+    Cornet,
+    Flugelhorn,
+    FrenchHorn,
+    Trombone,
+    BassTrombone,
+    Euphonium,
+    Tuba,
+}
+
+⊢ BrassInstrument {
+    /// Get the frequency range (min, max ∈ Hz)
+    ☉ rite frequency_range(&self) -> (f32, f32) {
+        ⌥ self {
+            BrassInstrument·Trumpet => (165.0, 932.0),      // E3 - Bb5
+            BrassInstrument·Cornet => (165.0, 880.0),       // E3 - A5
+            BrassInstrument·Flugelhorn => (165.0, 784.0),   // E3 - G5
+            BrassInstrument·FrenchHorn => (62.0, 698.0),    // B1 - F5
+            BrassInstrument·Trombone => (82.0, 493.0),      // E2 - B4
+            BrassInstrument·BassTrombone => (55.0, 349.0),  // A1 - F4
+            BrassInstrument·Euphonium => (55.0, 466.0),     // A1 - Bb4
+            BrassInstrument·Tuba => (29.0, 262.0),          // Bb0 - C4
+        }
+    }
+
+    /// Get bore characteristics (conical vs cylindrical ratio, 0=cylindrical, 1=conical)
+    ☉ rite bore_conicity(&self) -> f32 {
+        ⌥ self {
+            BrassInstrument·Trumpet => 0.3,
+            BrassInstrument·Cornet => 0.5,
+            BrassInstrument·Flugelhorn => 0.7,
+            BrassInstrument·FrenchHorn => 0.6,
+            BrassInstrument·Trombone => 0.2,
+            BrassInstrument·BassTrombone => 0.25,
+            BrassInstrument·Euphonium => 0.6,
+            BrassInstrument·Tuba => 0.7,
+        }
+    }
+
+    /// Get bell flare factor (affects brightness)
+    ☉ rite bell_flare(&self) -> f32 {
+        ⌥ self {
+            BrassInstrument·Trumpet => 0.8,
+            BrassInstrument·Cornet => 0.6,
+            BrassInstrument·Flugelhorn => 0.5,
+            BrassInstrument·FrenchHorn => 0.4,
+            BrassInstrument·Trombone => 0.7,
+            BrassInstrument·BassTrombone => 0.65,
+            BrassInstrument·Euphonium => 0.55,
+            BrassInstrument·Tuba => 0.5,
+        }
+    }
+
+    /// Get default mouthpiece characteristics (lip mass factor)
+    ☉ rite mouthpiece_factor(&self) -> f32 {
+        ⌥ self {
+            BrassInstrument·Trumpet | BrassInstrument·Cornet => 1.0,
+            BrassInstrument·Flugelhorn => 1.1,
+            BrassInstrument·FrenchHorn => 0.8,
+            BrassInstrument·Trombone => 1.3,
+            BrassInstrument·BassTrombone => 1.5,
+            BrassInstrument·Euphonium => 1.4,
+            BrassInstrument·Tuba => 2.0,
+        }
+    }
+}
+
+/// Mute types ∀ brass instruments
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ BrassMute {
+    Open,
+    Straight,
+    Cup,
+    Harmon,      // Wah-wah mute
+    Plunger,
+    Bucket,
+    Practice,
+}
+
+⊢ BrassMute {
+    /// Get high frequency damping factor
+    ☉ rite damping(&self) -> f32 {
+        ⌥ self {
+            BrassMute·Open => 1.0,
+            BrassMute·Straight => 0.6,
+            BrassMute·Cup => 0.4,
+            BrassMute·Harmon => 0.3,
+            BrassMute·Plunger => 0.5,
+            BrassMute·Bucket => 0.35,
+            BrassMute·Practice => 0.2,
+        }
+    }
+
+    /// Get resonance frequency shift
+    ☉ rite frequency_shift(&self) -> f32 {
+        ⌥ self {
+            BrassMute·Open => 1.0,
+            BrassMute·Straight => 1.1,
+            BrassMute·Cup => 0.95,
+            BrassMute·Harmon => 1.2,
+            BrassMute·Plunger => 0.9,
+            BrassMute·Bucket => 0.85,
+            BrassMute·Practice => 0.8,
+        }
+    }
+
+    /// Get nasal quality (formant emphasis)
+    ☉ rite nasality(&self) -> f32 {
+        ⌥ self {
+            BrassMute·Open => 0.0,
+            BrassMute·Straight => 0.4,
+            BrassMute·Cup => 0.2,
+            BrassMute·Harmon => 0.8,
+            BrassMute·Plunger => 0.6,
+            BrassMute·Bucket => 0.3,
+            BrassMute·Practice => 0.1,
+        }
+    }
+}
+
+/// Brass articulations
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ BrassArticulation {
+    Normal,
+    Legato,
+    Staccato,
+    Accent,
+    Sforzando,
+    FallOff,
+    DoIt,
+    Shake,
+    Glissando,
+}
+
+/// Lip reed oscillator - models the player's embouchure
+Σ LipReed {
+    sample_rate: f32,
+    frequency: f32,
+    phase: f64,
+    // Lip parameters
+    lip_tension: f32,      // Affects pitch stability
+    lip_mass: f32,         // Affects response
+    pressure: f32,         // Breath pressure
+    // State
+    displacement: f32,
+    velocity: f32,
+}
+
+⊢ LipReed {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            frequency: 440.0,
+            phase: 0.0,
+            lip_tension: 0.5,
+            lip_mass: 1.0,
+            pressure: 0.5,
+            displacement: 0.0,
+            velocity: 0.0,
+        }
+    }
+
+    rite set_frequency(&Δ self, freq: f32) {
+        self.frequency = freq.clamp(20.0, 2000.0);
+    }
+
+    rite set_pressure(&Δ self, pressure: f32) {
+        self.pressure = pressure.clamp(0.0, 1.0);
+    }
+
+    rite set_tension(&Δ self, tension: f32) {
+        self.lip_tension = tension.clamp(0.1, 1.0);
+    }
+
+    rite set_lip_mass(&Δ self, mass: f32) {
+        self.lip_mass = mass.clamp(0.5, 3.0);
+    }
+
+    /// Generate lip reed oscillation
+    rite process(&Δ self, bore_feedback: f32) -> f32 {
+        // Simplified lip reed model
+        // The lips act as a pressure-controlled oscillator
+
+        ≔ omega = 2.0 * PI * self.frequency / self.sample_rate;
+
+        // Lip stiffness (spring constant)
+        ≔ k = self.lip_tension * 10000.0;
+        ≔ m = self.lip_mass;
+        ≔ damping = 0.1 + (1.0 - self.lip_tension) * 0.3;
+
+        // Driving force from breath pressure
+        ≔ drive = self.pressure * (1.0 + bore_feedback * 0.3);
+
+        // Simple mass-spring-damper with nonlinearity
+        ≔ force = drive - k * self.displacement - damping * self.velocity;
+        ≔ accel = force / m;
+
+        self.velocity += accel / self.sample_rate;
+        self.displacement += self.velocity / self.sample_rate;
+
+        // Limit displacement
+        self.displacement = self.displacement.clamp(-1.0, 1.0);
+
+        // Add some harmonic richness through phase modulation
+        self.phase += omega as f64 * (1.0 + self.displacement * 0.1) as f64;
+        ⎇ self.phase >= std·f64·consts·TAU {
+            self.phase -= std·f64·consts·TAU;
+        }
+
+        // Output: combination of displacement and wave
+        ≔ wave = (self.phase as f32).sin();
+        ≔ output = (self.displacement * 0.3 + wave * 0.7) * self.pressure;
+
+        // Add slight asymmetry ∀ brass character
+        ≔ asymmetry = output + output.powi(2) * 0.2;
+
+        asymmetry.clamp(-1.0, 1.0)
+    }
+}
+
+/// Bore resonator - models the tube acoustics
+Σ BoreResonator {
+    sample_rate: f32,
+    delay_line: Vec<f32>,
+    write_pos: usize,
+    length_samples: f32,
+    // Filtering
+    lowpass_state: f32,
+    highpass_state: f32,
+    // Characteristics
+    conicity: f32,
+    bell_flare: f32,
+}
+
+⊢ BoreResonator {
+    rite new(sample_rate: f32, max_length_ms: f32) -> Self {
+        ≔ max_samples = (max_length_ms * sample_rate / 1000.0) as usize;
+        Self {
+            sample_rate,
+            delay_line: vec![0.0; max_samples.max(4096)],
+            write_pos: 0,
+            length_samples: 100.0,
+            lowpass_state: 0.0,
+            highpass_state: 0.0,
+            conicity: 0.3,
+            bell_flare: 0.7,
+        }
+    }
+
+    rite set_frequency(&Δ self, freq: f32) {
+        // Delay length ∀ fundamental frequency
+        self.length_samples = self.sample_rate / freq.max(20.0);
+    }
+
+    rite set_characteristics(&Δ self, conicity: f32, bell_flare: f32) {
+        self.conicity = conicity.clamp(0.0, 1.0);
+        self.bell_flare = bell_flare.clamp(0.0, 1.0);
+    }
+
+    rite process(&Δ self, input: f32) -> (f32, f32) {
+        ≔ len = self.delay_line.len();
+
+        // Write input
+        self.delay_line[self.write_pos] = input;
+
+        // Read with interpolation
+        ≔ read_offset = self.length_samples;
+        ≔ read_pos_f = (self.write_pos as f32 - read_offset + len as f32) % len as f32;
+        ≔ read_pos = read_pos_f as usize % len;
+        ≔ frac = read_pos_f - read_pos as f32;
+
+        ≔ s0 = self.delay_line[read_pos];
+        ≔ s1 = self.delay_line[(read_pos + 1) % len];
+        ≔ delayed = s0 + (s1 - s0) * frac;
+
+        // Bore filtering
+        // Conical bores have more even harmonics
+        ≔ even_emphasis = self.conicity * 0.3;
+
+        // Bell radiation - high frequency boost then rolloff
+        ≔ bell_brightness = self.bell_flare * 0.5;
+
+        // Simple lowpass ∀ losses
+        ≔ cutoff = 0.3 + bell_brightness * 0.4;
+        self.lowpass_state += cutoff * (delayed - self.lowpass_state);
+
+        // Reflection with losses
+        ≔ reflection = -self.lowpass_state * (0.95 - even_emphasis * 0.1);
+
+        // Output combines direct and reflected
+        ≔ output = delayed * 0.6 + reflection * 0.4;
+
+        self.write_pos = (self.write_pos + 1) % len;
+
+        (output, reflection)
+    }
+
+    rite reset(&Δ self) {
+        self.delay_line.fill(0.0);
+        self.lowpass_state = 0.0;
+        self.highpass_state = 0.0;
+    }
+}
+
+/// Bell radiation filter
+Σ BellFilter {
+    // Biquad coefficients
+    b0: f32, b1: f32, b2: f32,
+    a1: f32, a2: f32,
+    // State
+    x1: f32, x2: f32,
+    y1: f32, y2: f32,
+    sample_rate: f32,
+}
+
+⊢ BellFilter {
+    rite new(sample_rate: f32) -> Self {
+        ≔ Δ filter = Self {
+            b0: 1.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
+            x1: 0.0, x2: 0.0,
+            y1: 0.0, y2: 0.0,
+            sample_rate,
+        };
+        filter.set_bell_response(0.7);
+        filter
+    }
+
+    rite set_bell_response(&Δ self, flare: f32) {
+        // High shelf boost ∀ bell radiation
+        ≔ freq = 2000.0 + flare * 3000.0;
+        ≔ gain_db = 3.0 + flare * 6.0;
+        ≔ gain = 10.0_f32.powf(gain_db / 20.0);
+
+        ≔ omega = 2.0 * PI * freq / self.sample_rate;
+        ≔ sin_omega = omega.sin();
+        ≔ cos_omega = omega.cos();
+        ≔ a = (gain).sqrt();
+        ≔ beta = sin_omega / 2.0 * ((a + 1.0/a) * 0.5 + 1.0).sqrt();
+
+        ≔ a0 = (a + 1.0) - (a - 1.0) * cos_omega + beta * 2.0;
+
+        self.b0 = (a * ((a + 1.0) + (a - 1.0) * cos_omega + beta * 2.0)) / a0;
+        self.b1 = (-2.0 * a * ((a - 1.0) + (a + 1.0) * cos_omega)) / a0;
+        self.b2 = (a * ((a + 1.0) + (a - 1.0) * cos_omega - beta * 2.0)) / a0;
+        self.a1 = (2.0 * ((a - 1.0) - (a + 1.0) * cos_omega)) / a0;
+        self.a2 = ((a + 1.0) - (a - 1.0) * cos_omega - beta * 2.0) / a0;
+    }
+
+    rite process(&Δ self, input: f32) -> f32 {
+        ≔ output = self.b0 * input + self.b1 * self.x1 + self.b2 * self.x2
+                   - self.a1 * self.y1 - self.a2 * self.y2;
+
+        self.x2 = self.x1;
+        self.x1 = input;
+        self.y2 = self.y1;
+        self.y1 = output;
+
+        output
+    }
+
+    rite reset(&Δ self) {
+        self.x1 = 0.0;
+        self.x2 = 0.0;
+        self.y1 = 0.0;
+        self.y2 = 0.0;
+    }
+}
+
+/// Mute filter
+Σ MuteFilter {
+    // Formant filters ∀ nasal quality
+    formant1: (f32, f32, f32, f32), // state, freq, q, gain
+    formant2: (f32, f32, f32, f32),
+    lowpass_state: f32,
+    mute: BrassMute,
+    sample_rate: f32,
+}
+
+⊢ MuteFilter {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            formant1: (0.0, 1500.0, 5.0, 0.5),
+            formant2: (0.0, 2500.0, 8.0, 0.3),
+            lowpass_state: 0.0,
+            mute: BrassMute·Open,
+            sample_rate,
+        }
+    }
+
+    rite set_mute(&Δ self, mute: BrassMute) {
+        self.mute = mute;
+
+        // Set formant frequencies based on mute type
+        ⌥ mute {
+            BrassMute·Open => {
+                self.formant1.1 = 1500.0;
+                self.formant1.3 = 0.0;
+            }
+            BrassMute·Straight => {
+                self.formant1.1 = 2000.0;
+                self.formant1.3 = 0.4;
+            }
+            BrassMute·Cup => {
+                self.formant1.1 = 1200.0;
+                self.formant1.3 = 0.3;
+            }
+            BrassMute·Harmon => {
+                self.formant1.1 = 1800.0;
+                self.formant2.1 = 3500.0;
+                self.formant1.3 = 0.7;
+                self.formant2.3 = 0.5;
+            }
+            BrassMute·Plunger => {
+                self.formant1.1 = 800.0;
+                self.formant1.3 = 0.5;
+            }
+            BrassMute·Bucket => {
+                self.formant1.1 = 1000.0;
+                self.formant1.3 = 0.3;
+            }
+            BrassMute·Practice => {
+                self.formant1.1 = 500.0;
+                self.formant1.3 = 0.2;
+            }
+        }
+    }
+
+    rite process(&Δ self, input: f32) -> f32 {
+        ⎇ self.mute == BrassMute·Open {
+            ⤺ input;
+        }
+
+        ≔ damping = self.mute.damping();
+        ≔ nasality = self.mute.nasality();
+
+        // Lowpass ∀ damping
+        ≔ lp_coeff = damping * 0.5;
+        self.lowpass_state += lp_coeff * (input - self.lowpass_state);
+
+        // Simple formant resonance (one-pole approximation)
+        ≔ f1_coeff = (2.0 * PI * self.formant1.1 / self.sample_rate).min(0.9);
+        self.formant1.0 += f1_coeff * (input - self.formant1.0);
+
+        ≔ f2_coeff = (2.0 * PI * self.formant2.1 / self.sample_rate).min(0.9);
+        self.formant2.0 += f2_coeff * (input - self.formant2.0);
+
+        // Mix
+        ≔ formant_out = self.formant1.0 * self.formant1.3 + self.formant2.0 * self.formant2.3;
+        ≔ output = self.lowpass_state * (1.0 - nasality) + formant_out * nasality;
+
+        output * damping
+    }
+
+    rite reset(&Δ self) {
+        self.formant1.0 = 0.0;
+        self.formant2.0 = 0.0;
+        self.lowpass_state = 0.0;
+    }
+}
+
+/// Envelope ∀ brass dynamics
+Σ BrassEnvelope {
+    sample_rate: f32,
+    state: EnvState,
+    level: f32,
+    attack_rate: f32,
+    decay_rate: f32,
+    sustain_level: f32,
+    release_rate: f32,
+}
+
+//@ rune: derive(Clone, Copy, PartialEq)
+ᛈ EnvState {
+    Idle,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+⊢ BrassEnvelope {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            state: EnvState·Idle,
+            level: 0.0,
+            attack_rate: 1.0 / (0.02 * sample_rate), // 20ms
+            decay_rate: 1.0 / (0.1 * sample_rate),
+            sustain_level: 0.8,
+            release_rate: 1.0 / (0.1 * sample_rate), // 100ms
+        }
+    }
+
+    rite set_articulation(&Δ self, articulation: BrassArticulation) {
+        ⌥ articulation {
+            BrassArticulation·Normal => {
+                self.attack_rate = 1.0 / (0.02 * self.sample_rate);
+                self.release_rate = 1.0 / (0.1 * self.sample_rate);
+            }
+            BrassArticulation·Legato => {
+                self.attack_rate = 1.0 / (0.05 * self.sample_rate);
+                self.release_rate = 1.0 / (0.15 * self.sample_rate);
+            }
+            BrassArticulation·Staccato => {
+                self.attack_rate = 1.0 / (0.01 * self.sample_rate);
+                self.release_rate = 1.0 / (0.03 * self.sample_rate);
+            }
+            BrassArticulation·Accent | BrassArticulation·Sforzando => {
+                self.attack_rate = 1.0 / (0.005 * self.sample_rate);
+                self.release_rate = 1.0 / (0.08 * self.sample_rate);
+            }
+            _ => {}
+        }
+    }
+
+    rite trigger(&Δ self) {
+        self.state = EnvState·Attack;
+    }
+
+    rite release(&Δ self) {
+        ⎇ self.state != EnvState·Idle {
+            self.state = EnvState·Release;
+        }
+    }
+
+    rite is_active(&self) -> bool {
+        self.state != EnvState·Idle || self.level > 0.001
+    }
+
+    rite process(&Δ self) -> f32 {
+        ⌥ self.state {
+            EnvState·Idle => {}
+            EnvState·Attack => {
+                self.level += self.attack_rate;
+                ⎇ self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.state = EnvState·Decay;
+                }
+            }
+            EnvState·Decay => {
+                self.level -= self.decay_rate;
+                ⎇ self.level <= self.sustain_level {
+                    self.level = self.sustain_level;
+                    self.state = EnvState·Sustain;
+                }
+            }
+            EnvState·Sustain => {}
+            EnvState·Release => {
+                self.level -= self.release_rate;
+                ⎇ self.level <= 0.0 {
+                    self.level = 0.0;
+                    self.state = EnvState·Idle;
+                }
+            }
+        }
+        self.level
+    }
+}
+
+/// Complete brass instrument synthesizer
+☉ Σ BrassSynth {
+    lip_reed: LipReed,
+    bore: BoreResonator,
+    bell: BellFilter,
+    mute_filter: MuteFilter,
+    envelope: BrassEnvelope,
+    instrument: BrassInstrument,
+    // Vibrato
+    vibrato_phase: f64,
+    vibrato_depth: f32,
+    vibrato_rate: f32,
+    // State
+    current_frequency: f32,
+    target_frequency: f32,
+    glide_rate: f32,
+    amplitude: f32,
+}
+
+⊢ BrassSynth {
+    ☉ rite new(sample_rate: f32, instrument: BrassInstrument) -> Self {
+        ≔ Δ synth = Self {
+            lip_reed: LipReed·new(sample_rate),
+            bore: BoreResonator·new(sample_rate, 100.0),
+            bell: BellFilter·new(sample_rate),
+            mute_filter: MuteFilter·new(sample_rate),
+            envelope: BrassEnvelope·new(sample_rate),
+            instrument,
+            vibrato_phase: 0.0,
+            vibrato_depth: 0.0,
+            vibrato_rate: 5.0,
+            current_frequency: 440.0,
+            target_frequency: 440.0,
+            glide_rate: 0.01,
+            amplitude: 0.8,
+        };
+
+        // Configure ∀ instrument
+        synth.lip_reed.set_lip_mass(instrument.mouthpiece_factor());
+        synth.bore.set_characteristics(instrument.bore_conicity(), instrument.bell_flare());
+        synth.bell.set_bell_response(instrument.bell_flare());
+
+        synth
+    }
+
+    /// Factory methods
+    ☉ rite trumpet(sample_rate: f32) -> Self {
+        Self·new(sample_rate, BrassInstrument·Trumpet)
+    }
+
+    ☉ rite trombone(sample_rate: f32) -> Self {
+        Self·new(sample_rate, BrassInstrument·Trombone)
+    }
+
+    ☉ rite french_horn(sample_rate: f32) -> Self {
+        Self·new(sample_rate, BrassInstrument·FrenchHorn)
+    }
+
+    ☉ rite tuba(sample_rate: f32) -> Self {
+        Self·new(sample_rate, BrassInstrument·Tuba)
+    }
+
+    /// Play a note
+    ☉ rite play(&Δ self, frequency: f32, velocity: f32) {
+        self.target_frequency = frequency;
+        self.current_frequency = frequency;
+        self.amplitude = velocity.clamp(0.0, 1.0);
+        self.lip_reed.set_frequency(frequency);
+        self.lip_reed.set_pressure(velocity * 0.8);
+        self.bore.set_frequency(frequency);
+        self.envelope.trigger();
+    }
+
+    /// Release the note
+    ☉ rite release(&Δ self) {
+        self.envelope.release();
+    }
+
+    /// Set mute type
+    ☉ rite set_mute(&Δ self, mute: BrassMute) {
+        self.mute_filter.set_mute(mute);
+    }
+
+    /// Set articulation
+    ☉ rite set_articulation(&Δ self, articulation: BrassArticulation) {
+        self.envelope.set_articulation(articulation);
+    }
+
+    /// Set vibrato
+    ☉ rite set_vibrato(&Δ self, depth_semitones: f32, rate_hz: f32) {
+        self.vibrato_depth = depth_semitones.clamp(0.0, 1.0);
+        self.vibrato_rate = rate_hz.clamp(0.1, 10.0);
+    }
+
+    /// Set lip tension (affects tone brightness)
+    ☉ rite set_tension(&Δ self, tension: f32) {
+        self.lip_reed.set_tension(tension);
+    }
+
+    /// Check ⎇ active
+    ☉ rite is_active(&self) -> bool {
+        self.envelope.is_active()
+    }
+
+    /// Generate next sample
+    ☉ rite next_sample(&Δ self) -> f32 {
+        ⎇ !self.envelope.is_active() {
+            ⤺ 0.0;
+        }
+
+        // Vibrato
+        ⎇ self.vibrato_depth > 0.0 {
+            self.vibrato_phase += self.vibrato_rate as f64 / self.lip_reed.sample_rate as f64;
+            ⎇ self.vibrato_phase >= 1.0 {
+                self.vibrato_phase -= 1.0;
+            }
+            ≔ vib = (self.vibrato_phase * std·f64·consts·TAU).sin() as f32;
+            ≔ freq_mod = 2.0_f32.powf(self.vibrato_depth * vib / 12.0);
+            self.lip_reed.set_frequency(self.current_frequency * freq_mod);
+        }
+
+        // Glide
+        ⎇ (self.current_frequency - self.target_frequency).abs() > 0.1 {
+            self.current_frequency += (self.target_frequency - self.current_frequency) * self.glide_rate;
+            self.lip_reed.set_frequency(self.current_frequency);
+            self.bore.set_frequency(self.current_frequency);
+        }
+
+        // Get envelope
+        ≔ env = self.envelope.process();
+
+        // Lip reed excitation
+        ≔ (_bore_out, feedback) = self.bore.process(0.0);
+        ≔ excitation = self.lip_reed.process(feedback);
+
+        // Through bore
+        ≔ (resonated, _) = self.bore.process(excitation);
+
+        // Bell radiation
+        ≔ radiated = self.bell.process(resonated);
+
+        // Mute
+        ≔ muted = self.mute_filter.process(radiated);
+
+        muted * env * self.amplitude
+    }
+
+    /// Fill buffer
+    ☉ rite fill_buffer(&Δ self, output: &Δ [f32]) {
+        ∀ sample ∈ output.iter_mut() {
+            *sample = self.next_sample();
+        }
+    }
+}
+
+/// Brass section (multiple instruments)
+☉ Σ BrassSection {
+    instruments: Vec<BrassSynth>,
+    detune: Vec<f32>,
+    pan: Vec<f32>,
+}
+
+⊢ BrassSection {
+    ☉ rite new(count: usize, sample_rate: f32, instrument: BrassInstrument) -> Self {
+        ≔ Δ instruments = Vec·with_capacity(count);
+        ≔ Δ detune = Vec·with_capacity(count);
+        ≔ Δ pan = Vec·with_capacity(count);
+
+        ∀ i ∈ 0..count {
+            instruments.push(BrassSynth·new(sample_rate, instrument));
+
+            ≔ spread = (i as f32 / count as f32) * 2.0 - 1.0;
+            detune.push(spread * 5.0); // ±5 cents
+            pan.push(spread * 0.5);
+        }
+
+        Self { instruments, detune, pan }
+    }
+
+    ☉ rite trumpets(count: usize, sample_rate: f32) -> Self {
+        Self·new(count, sample_rate, BrassInstrument·Trumpet)
+    }
+
+    ☉ rite trombones(count: usize, sample_rate: f32) -> Self {
+        Self·new(count, sample_rate, BrassInstrument·Trombone)
+    }
+
+    ☉ rite french_horns(count: usize, sample_rate: f32) -> Self {
+        Self·new(count, sample_rate, BrassInstrument·FrenchHorn)
+    }
+
+    ☉ rite play(&Δ self, frequency: f32, velocity: f32) {
+        ∀ (i, inst) ∈ self.instruments.iter_mut().enumerate() {
+            ≔ detune_ratio = 2.0_f32.powf(self.detune[i] / 1200.0);
+            inst.play(frequency * detune_ratio, velocity);
+        }
+    }
+
+    ☉ rite release(&Δ self) {
+        ∀ inst ∈ &Δ self.instruments {
+            inst.release();
+        }
+    }
+
+    ☉ rite set_mute(&Δ self, mute: BrassMute) {
+        ∀ inst ∈ &Δ self.instruments {
+            inst.set_mute(mute);
+        }
+    }
+
+    ☉ rite is_active(&self) -> bool {
+        self.instruments.iter().any(|i| i.is_active())
+    }
+
+    ☉ rite next_sample_stereo(&Δ self) -> (f32, f32) {
+        ≔ Δ left = 0.0;
+        ≔ Δ right = 0.0;
+        ≔ n = self.instruments.len() as f32;
+
+        ∀ (i, inst) ∈ self.instruments.iter_mut().enumerate() {
+            ≔ sample = inst.next_sample();
+            ≔ pan = self.pan[i];
+            ≔ angle = (pan + 1.0) * 0.25 * PI;
+            left += sample * angle.cos() / n.sqrt();
+            right += sample * angle.sin() / n.sqrt();
+        }
+
+        (left, right)
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_brass_instruments() {
+        ≔ trumpet = BrassSynth·trumpet(44100.0);
+        assert_eq!(trumpet.instrument, BrassInstrument·Trumpet);
+
+        ≔ trombone = BrassSynth·trombone(44100.0);
+        assert_eq!(trombone.instrument, BrassInstrument·Trombone);
+    }
+
+    //@ rune: test
+    rite test_brass_synth() {
+        ≔ Δ brass = BrassSynth·trumpet(44100.0);
+        brass.play(440.0, 0.8);
+
+        ≔ Δ samples = vec![0.0; 4410];
+        brass.fill_buffer(&Δ samples);
+
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+
+    //@ rune: test
+    rite test_mute() {
+        ≔ Δ brass = BrassSynth·trumpet(44100.0);
+        brass.set_mute(BrassMute·Harmon);
+        brass.play(440.0, 0.8);
+
+        ≔ Δ samples = vec![0.0; 4410];
+        brass.fill_buffer(&Δ samples);
+
+        // Should still produce output
+        ≔ max = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+
+    //@ rune: test
+    rite test_brass_section() {
+        ≔ Δ section = BrassSection·trumpets(3, 44100.0);
+        section.play(440.0, 0.7);
+
+        ≔ Δ left = vec![0.0; 4410];
+        ≔ Δ right = vec![0.0; 4410];
+
+        ∀ i ∈ 0..left.len() {
+            ≔ (l, r) = section.next_sample_stereo();
+            left[i] = l;
+            right[i] = r;
+        }
+
+        ≔ max = left.iter().chain(right.iter()).map(|s| s.abs()).fold(0.0_f32, f32·max);
+        assert!(max > 0.0);
+    }
+}

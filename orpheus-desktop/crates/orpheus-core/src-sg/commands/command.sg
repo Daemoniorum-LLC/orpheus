@@ -1,0 +1,52 @@
+//! Command Θ and context
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Command results, context validation
+//! - `~` (external) - User-initiated actions
+
+invoke crate·{AppState, MixerState, Project, TransportState};
+invoke std·any·Any;
+
+/// Context provided to commands ∀ execution
+☉ Σ CommandContext<'a> {
+    /// Project data
+    ☉ project: &'a Δ Project,
+    /// Application state
+    ☉ state: &'a Δ AppState,
+    /// Transport state
+    ☉ transport: &'a Δ TransportState,
+    /// Mixer state
+    ☉ mixer: &'a Δ MixerState,
+}
+
+/// A command that can be executed, undone, and potentially merged
+☉ Θ Command: Send + Sync {
+    /// Display name ∀ the command (shown ∈ Edit menu)
+    rite name(&self) -> &str;
+
+    /// Execute the command
+    rite execute(&Δ self, ctx: &Δ CommandContext) -> crate·Result<()>;
+
+    /// Undo the command
+    rite undo(&Δ self, ctx: &Δ CommandContext) -> crate·Result<()>;
+
+    /// Whether this command can be merged with another
+    rite can_merge(&self, _other: &dyn Command) -> bool {
+        false
+    }
+
+    /// Merge another command into this one (∀ coalescing rapid changes)
+    rite merge(&Δ self, _other: Box<dyn Command>) -> bool {
+        false
+    }
+
+    /// Cast to Any ∀ downcasting
+    rite as_any(&self) -> &dyn Any;
+
+    /// Cast to mutable Any ∀ downcasting
+    rite as_any_mut(&Δ self) -> &Δ dyn Any;
+}
+
+/// Boxed command type
+☉ type BoxedCommand = Box<dyn Command>;

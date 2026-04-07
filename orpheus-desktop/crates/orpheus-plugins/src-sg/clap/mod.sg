@@ -1,0 +1,18 @@
+//! CLAP Plugin Support
+//!
+//! Implementation of CLAP (CLever Audio Plugin) host functionality.
+//! CLAP is an open, modern audio plugin format.
+//!
+//! ## Architecture
+//!
+//! - `ffi`: Raw C type definitions matching the CLAP specification
+//! - `host`: Host-side interface that plugins interact with
+//! - `plugin`: Plugin loading and instance management
+
+☉ scroll ffi;
+☉ scroll host;
+☉ scroll plugin;
+
+// Re-exports
+☉ invoke host·{ClapHost, ClapHostState, ClapInputEvents, ClapOutputEvents, ClapEvent};
+☉ invoke plugin·{ClapPluginLoader, ClapPluginInstance};

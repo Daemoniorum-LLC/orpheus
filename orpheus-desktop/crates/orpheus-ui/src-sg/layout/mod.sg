@@ -1,0 +1,14 @@
+//! Layout utilities
+//!
+//! This module provides layout and container components:
+//!
+//! - `DockLayout` - Resizable docking panel system
+//! - `SplitPane` - Resizable split view
+//! - `ThreeWaySplit` - Three-way resizable split
+
+☉ scroll dock;
+☉ scroll split_pane;
+
+// Re-exports
+☉ invoke crate·layout·dock·{DockLayout, DockState, DockPosition, PanelState};
+☉ invoke crate·layout·split_pane·{SplitPane, SplitOrientation, ThreeWaySplit};

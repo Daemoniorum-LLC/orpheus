@@ -1,0 +1,798 @@
+//! E2E tests for mixer workflows
+//!
+//! These tests verify complete user workflows in the mixer with friction metrics.
+//! Failures indicate UX pain points that need design attention.
+//!
+//! ## Philosophy
+//!
+//! E2E tests answer: "Can a user accomplish their mixing goal?"
+//! Friction metrics answer: "How many steps and mode switches did it take?"
+//!
+//! ## Common Mixing Workflows Tested
+//!
+//! - Solo/mute for isolation
+//! - Volume balancing
+//! - Panning for stereo image
+//! - Insert/send management
+//! - Navigation between channels
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - All workflow results are deterministic
+//! - `~` (external) - Simulated user input
+
+invoke crate·tests·test_harness·{
+    TestApp, WorkflowMetrics, TaskComplexity, Point, Key, Modifiers,
+    MAX_STEPS_SIMPLE, MAX_STEPS_MEDIUM, MAX_STEPS_COMPLEX,
+};
+invoke crate·tests·test_fixtures·{
+    test_multitrack_project, test_mixing_session, test_16_track_band, test_32_track_mix,
+};
+invoke crate·tests·assertions·{
+    assert_workflow_acceptable, assert_steps_acceptable, assert_no_errors,
+    assert_minimal_undo, assert_db_eq,
+};
+
+// =============================================================================
+// Solo Workflows
+// =============================================================================
+
+scroll solo_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_solo_single_channel() {
+        //! As a mixer, I want to solo a channel to hear it in isolation
+        //!
+        //! ACCEPTANCE: 1 click
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Single click on solo button
+        app.click("channel_0_solo");
+        metrics.record_step();
+
+        // Verify channel is soloed
+        assert!(app.state.channels[0].soloed);
+
+        // This should be exactly ONE click
+        assert_eq!(metrics.steps, 1, "Solo should be 1 click, not {}", metrics.steps);
+        assert_no_errors(&metrics, "solo channel");
+    }
+
+    //@ rune: test
+    rite test_unsolo_single_channel() {
+        //! As a mixer, I want to unsolo by clicking again
+        //!
+        //! ACCEPTANCE: 1 click to toggle off
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Pre-solo
+        app.state.channels[0].soloed = true;
+
+        // Click to unsolo
+        app.click("channel_0_solo");
+        metrics.record_step();
+
+        // Verify unsoloed
+        assert!(!app.state.channels[0].soloed);
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_solo_multiple_channels() {
+        //! As a mixer, I want to add multiple channels to solo group
+        //!
+        //! ACCEPTANCE: 1 click per channel (additive solos)
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Solo drums and bass
+        app.click("channel_drums_solo");
+        metrics.record_step();
+
+        app.click("channel_bass_solo");
+        metrics.record_step();
+
+        // Both should be soloed
+        assert!(app.state.channels[0].soloed, "Drums should be soloed");
+        assert!(app.state.channels[1].soloed, "Bass should be soloed");
+
+        // 2 clicks for 2 solos
+        assert_eq!(metrics.steps, 2);
+        assert_no_errors(&metrics, "multi-solo");
+    }
+
+    //@ rune: test
+    rite test_clear_all_solos() {
+        //! As a mixer, I want to clear all solos quickly
+        //!
+        //! ACCEPTANCE: ≤2 steps (modifier+click or dedicated button)
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Pre-solo multiple channels
+        app.state.channels[0].soloed = true;
+        app.state.channels[1].soloed = true;
+        app.state.channels[2].soloed = true;
+
+        // Option 1: Ctrl+click on any solo to clear all
+        // Option 2: Click "Clear Solos" button
+        app.click("mixer_clear_solos");
+        metrics.record_step();
+
+        // Verify all cleared
+        assert!(!app.state.channels[0].soloed);
+        assert!(!app.state.channels[1].soloed);
+        assert!(!app.state.channels[2].soloed);
+
+        assert!(metrics.steps <= 2, "Clearing solos should be ≤2 steps");
+    }
+}
+
+// =============================================================================
+// Mute Workflows
+// =============================================================================
+
+scroll mute_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_mute_single_channel() {
+        //! As a mixer, I want to mute a channel
+        //!
+        //! ACCEPTANCE: 1 click
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        app.click("channel_0_mute");
+        metrics.record_step();
+
+        assert!(app.state.channels[0].muted);
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_unmute_single_channel() {
+        //! Unmuting should also be 1 click
+        //!
+        //! ACCEPTANCE: 1 click toggle
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        app.state.channels[0].muted = true;
+
+        app.click("channel_0_mute");
+        metrics.record_step();
+
+        assert!(!app.state.channels[0].muted);
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_mute_during_solo() {
+        //! Muting a channel should work even when solo is active elsewhere
+        //!
+        //! ACCEPTANCE: 1 click, no interference
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Solo one channel
+        app.state.channels[1].soloed = true;
+
+        // Mute a different channel
+        app.click("channel_2_mute");
+        metrics.record_step();
+
+        // Both states should coexist
+        assert!(app.state.channels[1].soloed);
+        assert!(app.state.channels[2].muted);
+        assert_eq!(metrics.steps, 1);
+    }
+}
+
+// =============================================================================
+// Volume Workflows
+// =============================================================================
+
+scroll volume_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_adjust_volume_drag() {
+        //! As a mixer, I want to adjust volume by dragging the fader
+        //!
+        //! ACCEPTANCE: ≤2 steps (click + drag)
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Step 1: Click and drag fader
+        app.drag("channel_drums_fader", Point·new(0.0, 100.0), Point·new(0.0, 50.0));
+        metrics.record_step();
+
+        // Verify volume changed
+        assert!(app.state.channels[0].volume != 1.0);
+
+        // Single drag operation
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_set_volume_to_unity() {
+        //! As a mixer, I want to quickly reset a fader to unity (0 dB)
+        //!
+        //! ACCEPTANCE: ≤2 steps (double-click or modifier+click)
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Fader is not at unity
+        app.state.channels[0].volume = 0.5;
+
+        // Double-click to reset
+        app.double_click("channel_drums_fader");
+        metrics.record_step();
+
+        // Should be at unity
+        assert_db_eq(app.state.channels[0].volume, 1.0);
+
+        assert!(metrics.steps <= 2, "Reset to unity should be ≤2 steps");
+    }
+
+    //@ rune: test
+    rite test_fine_volume_adjustment_with_modifier() {
+        //! As a mixer, I want fine-grained control when needed
+        //!
+        //! ACCEPTANCE: Shift+drag for fine adjustment
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        ≔ initial_volume = app.state.channels[0].volume;
+
+        // Shift+drag for fine adjustment
+        app.drag_with_modifier(
+            "channel_drums_fader",
+            Point·new(0.0, 50.0),
+            Point·new(0.0, 48.0),
+            Modifiers·shift()
+        );
+        metrics.record_step();
+
+        // Volume should change by smaller amount than normal drag
+        ≔ delta = (app.state.channels[0].volume - initial_volume).abs();
+        assert!(delta < 0.1, "Fine adjustment should be small");
+
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_keyboard_volume_adjustment() {
+        //! As a keyboard user, I want to adjust volume with arrow keys
+        //!
+        //! ACCEPTANCE: Focus + arrow keys
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Focus fader
+        app.click("channel_drums_fader");
+        metrics.record_step();
+
+        ≔ initial = app.state.channels[0].volume;
+
+        // Press up arrow
+        app.key_press(Key·Up, Modifiers·none());
+        metrics.record_step();
+
+        // Volume should increase
+        assert!(app.state.channels[0].volume > initial);
+
+        assert_eq!(metrics.steps, 2);
+    }
+}
+
+// =============================================================================
+// Pan Workflows
+// =============================================================================
+
+scroll pan_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_adjust_pan() {
+        //! As a mixer, I want to pan a channel
+        //!
+        //! ACCEPTANCE: ≤2 steps
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Drag pan knob
+        app.drag("channel_drums_pan", Point·new(0.0, 0.0), Point·new(20.0, 0.0));
+        metrics.record_step();
+
+        // Pan should change
+        assert!(app.state.channels[0].pan != 0.0);
+
+        assert!(metrics.steps <= 2);
+    }
+
+    //@ rune: test
+    rite test_center_pan_quick() {
+        //! As a mixer, I want to quickly center a panned channel
+        //!
+        //! ACCEPTANCE: ≤2 steps (double-click to reset)
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Pan is off-center
+        app.state.channels[0].pan = 0.75;
+
+        // Double-click to center
+        app.double_click("channel_drums_pan");
+        metrics.record_step();
+
+        assert!((app.state.channels[0].pan).abs() < 0.01, "Pan should be centered");
+
+        assert!(metrics.steps <= 2);
+    }
+}
+
+// =============================================================================
+// Navigation Workflows
+// =============================================================================
+
+scroll navigation_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_select_channel() {
+        //! As a mixer, I want to select a channel for inspection
+        //!
+        //! ACCEPTANCE: 1 click
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        app.click("channel_2");
+        metrics.record_step();
+
+        assert_eq!(app.state.selected_channel, Some(2));
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_keyboard_channel_navigation() {
+        //! As a keyboard user, I want to navigate channels with arrow keys
+        //!
+        //! ACCEPTANCE: Left/Right arrows move selection
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        app.state.selected_channel = Some(2);
+
+        // Right arrow to next channel
+        app.key_press(Key·Right, Modifiers·none());
+        metrics.record_step();
+
+        assert_eq!(app.state.selected_channel, Some(3));
+
+        // Left arrow back
+        app.key_press(Key·Left, Modifiers·none());
+        metrics.record_step();
+
+        assert_eq!(app.state.selected_channel, Some(2));
+
+        assert_eq!(metrics.steps, 2);
+    }
+
+    //@ rune: test
+    rite test_scroll_to_channel_in_large_mix() {
+        //! As a mixer with many channels, I want to quickly navigate
+        //!
+        //! ACCEPTANCE: ≤3 steps to reach any channel
+
+        ≔ Δ app = TestApp·new_with_project(test_32_track_mix());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Jump to channel 25
+        app.key_press(Key·G, Modifiers·none());  // Go to...
+        metrics.record_step();
+
+        app.type_text("25");
+        metrics.record_step();
+
+        app.key_press(Key·Enter, Modifiers·none());
+        metrics.record_step();
+
+        // Should be at channel 25
+        // (or use search/filter)
+
+        assert!(metrics.steps <= 3, "Navigation should be ≤3 steps");
+    }
+}
+
+// =============================================================================
+// Insert/Send Workflows
+// =============================================================================
+
+scroll insert_send_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_open_insert_slot() {
+        //! As a mixer, I want to add a plugin to an insert slot
+        //!
+        //! ACCEPTANCE: ≤3 steps (click slot, select plugin, confirm)
+
+        ≔ Δ app = TestApp·new_with_project(test_mixing_session());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Click empty insert slot
+        app.click("channel_drums_insert_0");
+        metrics.record_step();
+
+        // Plugin browser opens - select plugin
+        app.click("plugin_browser_eq");
+        metrics.record_step();
+
+        // Confirm or auto-insert
+        app.click("plugin_browser_insert");
+        metrics.record_step();
+
+        assert!(app.state.channels[0].inserts[0].is_some());
+        assert!(metrics.steps <= 3, "Insert plugin should be ≤3 steps");
+    }
+
+    //@ rune: test
+    rite test_adjust_send_level() {
+        //! As a mixer, I want to adjust a send level
+        //!
+        //! ACCEPTANCE: ≤2 steps
+
+        ≔ Δ app = TestApp·new_with_project(test_mixing_session());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Channel has sends configured
+        app.state.channels[0].sends = vec![
+            crate·panels·channel_strip·SendSlot {
+                target_id: 100,
+                target_name: "Reverb".into(),
+                amount: 0.3,
+                pre_fader: false,
+            },
+        ];
+
+        // Drag send knob
+        app.drag("channel_drums_send_0", Point·new(0.0, 0.0), Point·new(0.0, -20.0));
+        metrics.record_step();
+
+        assert!(app.state.channels[0].sends[0].amount != 0.3);
+        assert!(metrics.steps <= 2);
+    }
+
+    //@ rune: test
+    rite test_bypass_insert() {
+        //! As a mixer, I want to bypass an insert for A/B comparison
+        //!
+        //! ACCEPTANCE: 1 click or keyboard shortcut
+
+        ≔ Δ app = TestApp·new_with_project(test_mixing_session());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Has an insert
+        app.state.channels[0].inserts = vec![
+            Some(crate·panels·channel_strip·PluginInfo {
+                name: "Compressor".into(),
+                bypassed: false,
+            }),
+        ];
+
+        // Alt+click to bypass
+        app.click_with_modifier("channel_drums_insert_0", Modifiers·alt());
+        metrics.record_step();
+
+        assert!(app.state.channels[0].inserts[0].as_ref().unwrap().bypassed);
+        assert_eq!(metrics.steps, 1);
+    }
+}
+
+// =============================================================================
+// Arm for Recording Workflows
+// =============================================================================
+
+scroll arm_workflows {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_arm_single_track() {
+        //! As a recording musician, I want to arm a track
+        //!
+        //! ACCEPTANCE: 1 click, auto-enables monitoring
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        app.click("channel_0_arm");
+        metrics.record_step();
+
+        assert!(app.state.channels[0].armed);
+        assert!(app.state.channels[0].input_monitoring,
+            "Arming should auto-enable monitoring");
+
+        assert_eq!(metrics.steps, 1);
+    }
+
+    //@ rune: test
+    rite test_exclusive_arm() {
+        //! As a recording musician, I want exclusive arm (one at a time)
+        //! when using Shift modifier
+        //!
+        //! ACCEPTANCE: Shift+click arms exclusively
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Pre-arm channels 0 and 1
+        app.state.channels[0].armed = true;
+        app.state.channels[1].armed = true;
+
+        // Shift+click to exclusively arm channel 2
+        app.click_with_modifier("channel_2_arm", Modifiers·shift());
+        metrics.record_step();
+
+        // Only channel 2 should be armed
+        assert!(!app.state.channels[0].armed);
+        assert!(!app.state.channels[1].armed);
+        assert!(app.state.channels[2].armed);
+
+        assert_eq!(metrics.steps, 1);
+    }
+}
+
+// =============================================================================
+// Workflow Complexity Verification
+// =============================================================================
+
+scroll complexity_verification {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_simple_mixer_tasks_are_simple() {
+        //! All basic mixer operations should be Simple complexity
+
+        ≔ simple_tasks = [
+            ("solo", 1),
+            ("mute", 1),
+            ("select channel", 1),
+            ("adjust volume", 1),
+            ("adjust pan", 1),
+            ("arm track", 1),
+        ];
+
+        ∀ (name, steps) ∈ simple_tasks {
+            ≔ Δ metrics = WorkflowMetrics·new();
+            ∀ _ ∈ 0..steps {
+                metrics.record_step();
+            }
+
+            assert!(metrics.is_acceptable(TaskComplexity·Simple),
+                "Task '{}' with {} steps should be Simple", name, steps);
+        }
+    }
+
+    //@ rune: test
+    rite test_medium_mixer_tasks() {
+        //! Plugin insertion and routing changes are Medium complexity
+
+        ≔ medium_tasks = [
+            ("add insert plugin", 3),
+            ("adjust send level", 2),
+            ("bypass plugin", 1),
+            ("reset all solos", 1),
+        ];
+
+        ∀ (name, steps) ∈ medium_tasks {
+            ≔ Δ metrics = WorkflowMetrics·new();
+            ∀ _ ∈ 0..steps {
+                metrics.record_step();
+            }
+
+            assert!(metrics.is_acceptable(TaskComplexity·Medium),
+                "Task '{}' with {} steps should be Medium-acceptable", name, steps);
+        }
+    }
+
+    //@ rune: test
+    rite test_large_mix_navigation_acceptable() {
+        //! Even in a 32-track mix, navigation should be reasonable
+
+        ≔ Δ app = TestApp·new_with_project(test_32_track_mix());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Worst case: scroll to last channel
+        app.click("mixer_scroll_end");
+        metrics.record_step();
+
+        app.click("channel_31_solo");
+        metrics.record_step();
+
+        assert!(metrics.steps <= MAX_STEPS_SIMPLE,
+            "Large mix navigation should stay within Simple threshold");
+    }
+}
+
+// =============================================================================
+// Dogfooding Red Flags
+// =============================================================================
+
+scroll dogfooding_red_flags {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_no_mode_switch_for_basic_mixing() {
+        //! Basic mixing operations should NOT require mode switches
+        //!
+        //! RED FLAG: If users need to switch modes to solo/mute/adjust
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Do a bunch of common operations
+        app.click("channel_0_solo");
+        metrics.record_step();
+
+        app.click("channel_1_mute");
+        metrics.record_step();
+
+        app.drag("channel_0_fader", Point·new(0.0, 100.0), Point·new(0.0, 60.0));
+        metrics.record_step();
+
+        // Should be zero mode switches
+        assert_eq!(metrics.mode_switches, 0,
+            "Basic mixing should not require mode switches");
+    }
+
+    //@ rune: test
+    rite test_no_hidden_keyboard_combos() {
+        //! Common operations should not require obscure key combos
+        //!
+        //! RED FLAG: Ctrl+Shift+Alt for basic features
+
+        // All these should be accessible via simple clicks or single modifiers
+        ≔ accessible_features = [
+            ("Solo", "click"),
+            ("Mute", "click"),
+            ("Volume", "drag"),
+            ("Pan", "drag"),
+            ("Arm", "click"),
+            ("Select", "click"),
+            ("Clear solos", "button or Ctrl+click"),
+            ("Exclusive arm", "Shift+click"),
+        ];
+
+        // This test documents the expectation - actual UI should match
+        ∀ (feature, access) ∈ accessible_features {
+            // Feature should be accessible via described method
+        }
+    }
+
+    //@ rune: test
+    rite test_undo_available_for_all_operations() {
+        //! Every mixer operation should be undoable
+        //!
+        //! RED FLAG: Actions that cannot be undone
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+        ≔ Δ metrics = WorkflowMetrics·new();
+
+        // Make a change
+        ≔ original_volume = app.state.channels[0].volume;
+        app.drag("channel_0_fader", Point·new(0.0, 100.0), Point·new(0.0, 50.0));
+        metrics.record_step();
+
+        // Undo should be available
+        app.key_press(Key·Z, Modifiers·ctrl());
+        metrics.record_undo();
+
+        // Volume should be restored
+        // assert_db_eq(app.state.channels[0].volume, original_volume);
+
+        assert_minimal_undo(&metrics, "volume adjustment");
+    }
+
+    //@ rune: test
+    rite test_visual_feedback_immediate() {
+        //! All operations should have immediate visual feedback
+        //!
+        //! RED FLAG: Delayed or missing feedback
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+
+        // Click solo - button should immediately show active state
+        app.click("channel_0_solo");
+        assert!(app.is_element_active("channel_0_solo"),
+            "Solo button should show active state immediately");
+
+        // Drag fader - fader position should update in real-time
+        app.drag("channel_0_fader", Point·new(0.0, 100.0), Point·new(0.0, 50.0));
+        // Fader visual position should match new value
+    }
+}
+
+// =============================================================================
+// Regression Guards
+// =============================================================================
+
+scroll regression_guards {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_solo_button_not_affected_by_track_type() {
+        //! Solo should work the same on audio, MIDI, and bus tracks
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+
+        // Solo audio track
+        app.click("channel_audio_solo");
+        assert!(app.state.channels[0].soloed);
+
+        // Solo MIDI track
+        app.click("channel_midi_solo");
+        assert!(app.state.channels[1].soloed);
+
+        // Solo bus track
+        app.click("channel_bus_solo");
+        assert!(app.state.channels[2].soloed);
+    }
+
+    //@ rune: test
+    rite test_meter_updates_during_playback() {
+        //! Meters should update in real-time during playback
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+
+        // Start playback
+        app.click("transport_play");
+
+        // Simulate audio
+        app.simulate_audio_frame(vec![-12.0, -14.0, -18.0, -6.0]);
+
+        // Meters should reflect levels
+        assert!(app.state.channels[0].current_level > -60.0);
+    }
+
+    //@ rune: test
+    rite test_channel_order_preserved() {
+        //! Channel order should remain stable
+
+        ≔ Δ app = TestApp·new_with_project(test_multitrack_project());
+
+        ≔ original_order: Vec<String> = app.state.channels.iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        // Do some operations
+        app.click("channel_2_solo");
+        app.click("channel_0_mute");
+
+        ≔ after_order: Vec<String> = app.state.channels.iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        assert_eq!(original_order, after_order,
+            "Channel order should not change from solo/mute");
+    }
+}

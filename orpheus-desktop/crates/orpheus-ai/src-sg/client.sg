@@ -1,0 +1,1321 @@
+//! AI Client ∀ Orpheus
+//!
+//! Provides connection to Leviathan AI backend ∀ intelligent music assistance.
+
+invoke std·collections·HashMap;
+invoke std·sync·Arc;
+invoke std·time·Duration;
+
+invoke crossbeam_channel·{bounded, Receiver, Sender};
+invoke parking_lot·RwLock;
+invoke serde·{Deserialize, Serialize};
+invoke tokio·sync·oneshot;
+invoke tracing·{debug, error, info, warn};
+invoke uuid·Uuid;
+
+invoke crate·graphql·{
+    self, CreateAgentTaskInput, CreateConversationMessageInput, CreateConversationSessionInput,
+    GraphQLRequest, GraphQLResponse, HealthStatus,
+};
+invoke crate·infernum·{ChatMessage, InfernumClient, InfernumConfig};
+invoke crate·{AiProvider, Error, Persona, Result};
+
+/// AI client configuration
+//@ rune: derive(Debug, Clone)
+☉ Σ AiConfig {
+    /// AI provider to use
+    ☉ provider: AiProvider,
+    /// Leviathan server endpoint
+    ☉ endpoint: String,
+    /// Infernum configuration (∀ local LLM)
+    ☉ infernum: InfernumConfig,
+    /// Default persona to use
+    ☉ default_persona: Persona,
+    /// Request timeout ∈ seconds
+    ☉ timeout_secs: u64,
+    /// Enable streaming responses
+    ☉ streaming: bool,
+    /// Mock mode (∀ testing without a running server)
+    ☉ mock_mode: bool,
+}
+
+⊢ Default ∀ AiConfig {
+    rite default() -> Self {
+        Self {
+            provider: AiProvider·Leviathan,
+            endpoint: "http://localhost:8989".to_string(),
+            infernum: InfernumConfig·default(),
+            default_persona: Persona·MusicComposer,
+            timeout_secs: 30,
+            streaming: true,
+            mock_mode: false,
+        }
+    }
+}
+
+⊢ AiConfig {
+    /// Create with custom endpoint
+    ☉ rite with_endpoint(Δ self, endpoint: ⊢ Into<String>) -> Self {
+        self.endpoint = endpoint.into();
+        self
+    }
+
+    /// Set AI provider
+    ☉ rite with_provider(Δ self, provider: AiProvider) -> Self {
+        self.provider = provider;
+        ⎇ provider == AiProvider·Mock {
+            self.mock_mode = true;
+        }
+        self
+    }
+
+    /// Use Infernum local LLM
+    ☉ rite with_infernum(Δ self) -> Self {
+        self.provider = AiProvider·Infernum;
+        self
+    }
+
+    /// Configure Infernum settings
+    ☉ rite with_infernum_config(Δ self, config: InfernumConfig) -> Self {
+        self.infernum = config;
+        self
+    }
+
+    /// Set default persona
+    ☉ rite with_persona(Δ self, persona: Persona) -> Self {
+        self.default_persona = persona;
+        self
+    }
+
+    /// Set timeout
+    ☉ rite with_timeout(Δ self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
+    }
+
+    /// Enable mock mode (∀ testing without a running server)
+    ☉ rite with_mock_mode(Δ self) -> Self {
+        self.mock_mode = true;
+        self.provider = AiProvider·Mock;
+        self
+    }
+}
+
+/// Connection state
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ ConnectionState {
+    /// Not connected
+    Disconnected,
+    /// Attempting to connect
+    Connecting,
+    /// Connected and ready
+    Connected,
+    /// Connection error
+    Error,
+}
+
+/// A message ∈ the AI conversation
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ AiMessage {
+    /// Unique message ID
+    ☉ id: String,
+    /// Message role (user, assistant, system)
+    ☉ role: MessageRole,
+    /// Message content (AI responses are predicted)
+    ☉ content◊: String,
+    /// Timestamp (from system clock)
+    ☉ timestamp~: u64,
+}
+
+/// Message role
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+//@ rune: serde(rename_all = "lowercase")
+☉ ᛈ MessageRole {
+    /// User message
+    User,
+    /// AI assistant response
+    Assistant,
+    /// System message
+    System,
+}
+
+⊢ AiMessage {
+    /// Create a user message
+    ☉ rite user(content: ⊢ Into<String>) -> Self {
+        Self {
+            id: Uuid·new_v4().to_string(),
+            role: MessageRole·User,
+            content: content.into(),
+            timestamp: std·time·SystemTime·now()
+                .duration_since(std·time·UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Create an assistant message
+    ☉ rite assistant(content: ⊢ Into<String>) -> Self {
+        Self {
+            id: Uuid·new_v4().to_string(),
+            role: MessageRole·Assistant,
+            content: content.into(),
+            timestamp: std·time·SystemTime·now()
+                .duration_since(std·time·UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Create a system message
+    ☉ rite system(content: ⊢ Into<String>) -> Self {
+        Self {
+            id: Uuid·new_v4().to_string(),
+            role: MessageRole·System,
+            content: content.into(),
+            timestamp: std·time·SystemTime·now()
+                .duration_since(std·time·UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+}
+
+/// AI request ∀ the backend
+//@ rune: derive(Debug, Clone)
+☉ Σ AiRequest {
+    /// Unique request ID
+    ☉ id: String,
+    /// Messages ∈ the conversation
+    ☉ messages: Vec<AiMessage>,
+    /// Persona to use
+    ☉ persona: Persona,
+    /// Additional context (key-value pairs)
+    ☉ context: HashMap<String, String>,
+}
+
+⊢ AiRequest {
+    /// Create a new request
+    ☉ rite new(persona: Persona) -> Self {
+        Self {
+            id: Uuid·new_v4().to_string(),
+            messages: Vec·new(),
+            persona,
+            context: HashMap·new(),
+        }
+    }
+
+    /// Add a message
+    ☉ rite with_message(Δ self, message: AiMessage) -> Self {
+        self.messages.push(message);
+        self
+    }
+
+    /// Add context
+    ☉ rite with_context(Δ self, key: ⊢ Into<String>, value: ⊢ Into<String>) -> Self {
+        self.context.insert(key.into(), value.into());
+        self
+    }
+}
+
+/// AI response from the backend
+//@ rune: derive(Debug, Clone)
+☉ Σ AiResponse {
+    /// Request ID this responds to
+    ☉ request_id: String,
+    /// Response content (AI-generated/predicted)
+    ☉ content◊: String,
+    /// Whether this is a streaming chunk
+    ☉ is_chunk: bool,
+    /// Whether this completes the response
+    ☉ is_complete: bool,
+    /// Token usage (⎇ available)
+    ☉ usage: Option<TokenUsage>,
+}
+
+/// Token usage statistics
+//@ rune: derive(Debug, Clone, Default)
+☉ Σ TokenUsage {
+    /// Input tokens
+    ☉ input_tokens: u64,
+    /// Output tokens
+    ☉ output_tokens: u64,
+}
+
+⊢ TokenUsage {
+    /// Total tokens
+    ☉ rite total(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+}
+
+/// AI conversation history
+//@ rune: derive(Debug, Clone, Default)
+☉ Σ Conversation {
+    /// Conversation ID
+    ☉ id: String,
+    /// Messages ∈ order
+    ☉ messages: Vec<AiMessage>,
+    /// Current persona
+    ☉ persona: Persona,
+}
+
+⊢ Conversation {
+    /// Create a new conversation
+    ☉ rite new(persona: Persona) -> Self {
+        Self {
+            id: Uuid·new_v4().to_string(),
+            messages: Vec·new(),
+            persona,
+        }
+    }
+
+    /// Add a message
+    ☉ rite add_message(&Δ self, message: AiMessage) {
+        self.messages.push(message);
+    }
+
+    /// Get all messages
+    ☉ rite messages(&self) -> &[AiMessage] {
+        &self.messages
+    }
+
+    /// Get message count
+    ☉ rite len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Check ⎇ empty
+    ☉ rite is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    /// Clear history
+    ☉ rite clear(&Δ self) {
+        self.messages.clear();
+    }
+
+    /// Build a request from this conversation
+    ☉ rite to_request(&self) -> AiRequest {
+        AiRequest {
+            id: Uuid·new_v4().to_string(),
+            messages: self.messages.clone(),
+            persona: self.persona,
+            context: HashMap·new(),
+        }
+    }
+}
+
+/// Internal command type ∀ async operations
+/// Reserved ∀ future Leviathan gRPC integration
+// allow(dead_code)
+ᛈ ClientCommand {
+    SendMessage {
+        request: AiRequest,
+        response_tx: oneshot·Sender<Result<AiResponse>>,
+    },
+    SetPersona(Persona),
+    Disconnect,
+}
+
+/// AI Client ∀ communicating with AI backends (Leviathan or Infernum)
+☉ Σ AiClient {
+    /// Configuration
+    config: AiConfig,
+    /// Connection state
+    state: Arc<RwLock<ConnectionState>>,
+    /// Current persona
+    persona: Arc<RwLock<Persona>>,
+    /// Command sender (∀ async operations)
+    command_tx: Option<Sender<ClientCommand>>,
+    /// Response receiver ∀ streaming
+    stream_rx: Option<Receiver<AiResponse>>,
+    /// HTTP client ∀ Leviathan API
+    http_client: Option<reqwest·Client>,
+    /// Infernum client ∀ local LLM
+    infernum_client: Option<InfernumClient>,
+    /// Active conversation session ID
+    session_id: Arc<RwLock<Option<String>>>,
+}
+
+⊢ AiClient {
+    /// Create a new AI client
+    ☉ rite new(config: AiConfig) -> Self {
+        Self {
+            persona: Arc·new(RwLock·new(config.default_persona)),
+            config,
+            state: Arc·new(RwLock·new(ConnectionState·Disconnected)),
+            command_tx: None,
+            stream_rx: None,
+            http_client: None,
+            infernum_client: None,
+            session_id: Arc·new(RwLock·new(None)),
+        }
+    }
+
+    /// Get current provider
+    ☉ rite provider(&self) -> AiProvider {
+        self.config.provider
+    }
+
+    /// Get current configuration
+    ☉ rite config(&self) -> &AiConfig {
+        &self.config
+    }
+
+    /// Get current connection state
+    ☉ rite state(&self) -> ConnectionState {
+        *self.state.read()
+    }
+
+    /// Check ⎇ connected
+    ☉ rite is_connected(&self) -> bool {
+        self.state() == ConnectionState·Connected
+    }
+
+    /// Get current persona
+    ☉ rite persona(&self) -> Persona {
+        *self.persona.read()
+    }
+
+    /// Set current persona
+    ☉ rite set_persona(&self, persona: Persona) {
+        *self.persona.write() = persona;
+        ⎇ ≔ Some(ref tx) = self.command_tx {
+            ≔ _ = tx.send(ClientCommand·SetPersona(persona));
+        }
+    }
+
+    /// Connect to the AI backend (Leviathan or Infernum) - network I/O
+    ☉ async rite connect(&Δ self) -> Result<()>? {
+        *self.state.write() = ConnectionState·Connecting;
+
+        // Mock mode - just mark as connected without real connection
+        ⎇ self.config.mock_mode || self.config.provider == AiProvider·Mock {
+            info!("Connecting ∈ mock mode (no real server)");
+            ≔ (cmd_tx, _cmd_rx) = bounded·<ClientCommand>(32);
+            ≔ (stream_tx, stream_rx) = bounded·<AiResponse>(64);
+            self.command_tx = Some(cmd_tx);
+            self.stream_rx = Some(stream_rx);
+            ≔ _ = stream_tx;
+            *self.state.write() = ConnectionState·Connected;
+            ⤺ Ok(());
+        }
+
+        // Connect based on provider
+        ⌥ self.config.provider {
+            AiProvider·Infernum => self.connect_infernum().await,
+            AiProvider·Leviathan => self.connect_leviathan().await,
+            AiProvider·Mock => unreachable!(), // Handled above
+        }
+    }
+
+    /// Connect to Infernum local LLM
+    async rite connect_infernum(&Δ self) -> Result<()> {
+        info!("Connecting to Infernum at {}", self.config.infernum.endpoint);
+
+        ≔ Δ client = InfernumClient·new(self.config.infernum.clone());
+        client.connect().await?;
+
+        self.infernum_client = Some(client);
+
+        // Create command channel ∀ async operations
+        ≔ (cmd_tx, _cmd_rx) = bounded·<ClientCommand>(32);
+        ≔ (stream_tx, stream_rx) = bounded·<AiResponse>(64);
+        self.command_tx = Some(cmd_tx);
+        self.stream_rx = Some(stream_rx);
+        ≔ _ = stream_tx;
+
+        *self.state.write() = ConnectionState·Connected;
+        info!("Connected to Infernum");
+
+        Ok(())
+    }
+
+    /// Connect to Leviathan backend
+    async rite connect_leviathan(&Δ self) -> Result<()> {
+        info!("Connecting to Leviathan at {}", self.config.endpoint);
+
+        // Create HTTP client with timeout
+        ≔ http_client = reqwest·Client·builder()
+            .timeout(Duration·from_secs(self.config.timeout_secs))
+            .build()
+            .map_err(|e| Error·ConnectionError(format!("Failed to create HTTP client: {}", e)))?;
+
+        // Check Leviathan health
+        ≔ health_url = format!("{}/api/health/status", self.config.endpoint);
+        ⌥ http_client.get(&health_url).send().await {
+            Ok(response) => {
+                ⎇ response.status().is_success() {
+                    ⌥ response.json·<HealthStatus>().await {
+                        Ok(health) => {
+                            ⎇ health.is_healthy() {
+                                info!("Leviathan is healthy");
+                            } ⎉ {
+                                warn!("Leviathan reports unhealthy status: {}", health.status);
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Could not parse health response: {}", e);
+                        }
+                    }
+                } ⎉ {
+                    warn!("Leviathan health check returned status: {}", response.status());
+                }
+            }
+            Err(e) => {
+                // Don't fail connection on health check error - service might still work
+                warn!("Leviathan health check failed: {} (continuing anyway)", e);
+            }
+        }
+
+        // Store the HTTP client
+        self.http_client = Some(http_client);
+
+        // Create command channel ∀ async operations
+        ≔ (cmd_tx, _cmd_rx) = bounded·<ClientCommand>(32);
+        ≔ (stream_tx, stream_rx) = bounded·<AiResponse>(64);
+
+        self.command_tx = Some(cmd_tx);
+        self.stream_rx = Some(stream_rx);
+
+        // Store stream_tx ∀ future streaming support
+        ≔ _ = stream_tx;
+
+        // Create a conversation session
+        ⎇ ≔ Err(e) = self.create_session().await {
+            warn!("Failed to create conversation session: {}", e);
+            // Don't fail - we can try again on first message
+        }
+
+        *self.state.write() = ConnectionState·Connected;
+        info!("Connected to Leviathan");
+
+        Ok(())
+    }
+
+    /// Create a new conversation session
+    async rite create_session(&self) -> Result<String> {
+        ≔ http_client = self.http_client.as_ref().ok_or(Error·NotConnected)?;
+
+        ≔ input = CreateConversationSessionInput {
+            workspace_id: None,
+            project_path: Some("orpheus-desktop".to_string()),
+            user_id: None,
+            metadata: Some(serde_json·json!({
+                "client": "orpheus-ai",
+                "persona": self.persona().grimoire_id(),
+            })),
+        };
+
+        ≔ request = GraphQLRequest·new(graphql·queries·CREATE_CONVERSATION_SESSION)
+            .with_variables(serde_json·json!({ "input": input }));
+
+        ≔ graphql_url = format!("{}/graphql", self.config.endpoint);
+        ≔ response = http_client
+            .post(&graphql_url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error·ConnectionError(format!("GraphQL request failed: {}", e)))?;
+
+        ⎇ !response.status().is_success() {
+            ⤺ Err(Error·RequestFailed(format!(
+                "GraphQL returned status: {}",
+                response.status()
+            )));
+        }
+
+        ≔ result: GraphQLResponse<serde_json·Value> = response
+            .json()
+            .await
+            .map_err(|e| Error·InvalidResponse(format!("Failed to parse response: {}", e)))?;
+
+        ⎇ result.has_errors() {
+            ⤺ Err(Error·RequestFailed(
+                result.first_error().unwrap_or("Unknown GraphQL error").to_string(),
+            ));
+        }
+
+        // Extract session ID from response
+        ≔ session_id = result
+            .data
+            .as_ref()
+            .and_then(|d| d.get("createConversationSession"))
+            .and_then(|r| r.get("session"))
+            .and_then(|s| s.get("id"))
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error·InvalidResponse("Missing session ID ∈ response".to_string()))?;
+
+        info!("Created conversation session: {}", session_id);
+        *self.session_id.write() = Some(session_id.clone());
+
+        Ok(session_id)
+    }
+
+    /// Get current session ID, creating one ⎇ needed
+    async rite ensure_session(&self) -> Result<String> {
+        ⎇ ≔ Some(session_id) = self.session_id.read().clone() {
+            ⤺ Ok(session_id);
+        }
+        self.create_session().await
+    }
+
+    /// Disconnect from the backend
+    ☉ rite disconnect(&Δ self) {
+        ⎇ ≔ Some(ref tx) = self.command_tx {
+            ≔ _ = tx.send(ClientCommand·Disconnect);
+        }
+        self.command_tx = None;
+        self.stream_rx = None;
+        self.http_client = None;
+        ⎇ ≔ Some(ref Δ client) = self.infernum_client {
+            client.disconnect();
+        }
+        self.infernum_client = None;
+        *self.session_id.write() = None;
+        *self.state.write() = ConnectionState·Disconnected;
+        info!("Disconnected from AI backend");
+    }
+
+    /// Send a message and get a response (async) - network I/O, returns predicted content
+    ☉ async rite send_message(&self, content: &str) -> Result<AiResponse>? {
+        ⎇ !self.is_connected() {
+            ⤺ Err(Error·NotConnected);
+        }
+
+        ≔ persona = self.persona();
+        ≔ request = AiRequest·new(persona)
+            .with_message(AiMessage·user(content));
+
+        self.send_request(request).await
+    }
+
+    /// Send a request with full control - network I/O, returns predicted content
+    ☉ async rite send_request(&self, request: AiRequest) -> Result<AiResponse>? {
+        ⎇ !self.is_connected() {
+            ⤺ Err(Error·NotConnected);
+        }
+
+        // Mock mode - ⤺ simulated response
+        ⎇ self.config.mock_mode || self.config.provider == AiProvider·Mock {
+            ⤺ Ok(AiResponse {
+                request_id: request.id.clone(),
+                content: format!(
+                    "[{}] I would help with your music question, but I'm currently ∈ mock mode.",
+                    request.persona.display_name()
+                ),
+                is_chunk: false,
+                is_complete: true,
+                usage: Some(TokenUsage {
+                    input_tokens: 50,
+                    output_tokens: 25,
+                }),
+            });
+        }
+
+        // Route to appropriate provider
+        ⌥ self.config.provider {
+            AiProvider·Infernum => self.send_request_infernum(&request).await,
+            AiProvider·Leviathan => self.send_request_leviathan(&request).await,
+            AiProvider·Mock => unreachable!(), // Handled above
+        }
+    }
+
+    /// Send request via Infernum local LLM
+    async rite send_request_infernum(&self, request: &AiRequest) -> Result<AiResponse> {
+        ≔ infernum = self.infernum_client.as_ref().ok_or(Error·NotConnected)?;
+
+        // Build messages ∀ Infernum
+        ≔ Δ messages = Vec·new();
+
+        // Add context as a system message
+        ⎇ !request.context.is_empty() {
+            ≔ Δ context_str = String·from("Context:\n");
+            ∀ (key, value) ∈ &request.context {
+                context_str.push_str(&format!("- {}: {}\n", key, value));
+            }
+            messages.push(ChatMessage·system(context_str));
+        }
+
+        // Add user messages
+        ∀ msg ∈ &request.messages {
+            ⌥ msg.role {
+                MessageRole·User => messages.push(ChatMessage·user(&msg.content)),
+                MessageRole·Assistant => messages.push(ChatMessage·assistant(&msg.content)),
+                MessageRole·System => messages.push(ChatMessage·system(&msg.content)),
+            }
+        }
+
+        // Call Infernum
+        ≔ content = infernum.chat(messages, Some(&request.persona)).await?;
+
+        Ok(AiResponse {
+            request_id: request.id.clone(),
+            content,
+            is_chunk: false,
+            is_complete: true,
+            usage: None, // Infernum returns usage separately
+        })
+    }
+
+    /// Send request via Leviathan GraphQL API
+    async rite send_request_leviathan(&self, request: &AiRequest) -> Result<AiResponse> {
+        ≔ http_client = self.http_client.as_ref().ok_or(Error·NotConnected)?;
+
+        // Ensure we have a session
+        ≔ session_id = self.ensure_session().await?;
+
+        // Build the full message content with context and system prompt
+        ≔ Δ full_content = String·new();
+
+        // Add persona system prompt
+        full_content.push_str(request.persona.system_prompt_prefix());
+        full_content.push_str("\n\n");
+
+        // Add any context
+        ⎇ !request.context.is_empty() {
+            full_content.push_str("Context:\n");
+            ∀ (key, value) ∈ &request.context {
+                full_content.push_str(&format!("- {}: {}\n", key, value));
+            }
+            full_content.push_str("\n");
+        }
+
+        // Add user messages
+        ∀ msg ∈ &request.messages {
+            ⌥ msg.role {
+                MessageRole·User => {
+                    full_content.push_str(&format!("User: {}\n", msg.content));
+                }
+                MessageRole·Assistant => {
+                    full_content.push_str(&format!("Assistant: {}\n", msg.content));
+                }
+                MessageRole·System => {
+                    full_content.push_str(&format!("System: {}\n", msg.content));
+                }
+            }
+        }
+
+        // Create message ∈ conversation
+        ≔ message_input = CreateConversationMessageInput {
+            session_id: session_id.clone(),
+            role: "user".to_string(),
+            content: full_content.clone(),
+            tools_used: None,
+            requires_approval: Some(false),
+            task_id: None,
+            intent_type: Some("music_assistance".to_string()),
+            metadata: Some(serde_json·json!({
+                "persona": request.persona.grimoire_id(),
+                "request_id": request.id,
+            })),
+        };
+
+        ≔ gql_request = GraphQLRequest·new(graphql·queries·CREATE_CONVERSATION_MESSAGE)
+            .with_variables(serde_json·json!({ "input": message_input }));
+
+        ≔ graphql_url = format!("{}/graphql", self.config.endpoint);
+        ≔ response = http_client
+            .post(&graphql_url)
+            .json(&gql_request)
+            .send()
+            .await
+            .map_err(|e| Error·ConnectionError(format!("Failed to send message: {}", e)))?;
+
+        ⎇ !response.status().is_success() {
+            ⤺ Err(Error·RequestFailed(format!(
+                "Message creation failed with status: {}",
+                response.status()
+            )));
+        }
+
+        ≔ _result: GraphQLResponse<serde_json·Value> = response
+            .json()
+            .await
+            .map_err(|e| Error·InvalidResponse(format!("Failed to parse response: {}", e)))?;
+
+        // Create an agent task to process the request
+        ≔ task_input = CreateAgentTaskInput {
+            persona_code: request.persona.grimoire_id().to_string(),
+            description: format!("Music assistance request: {}",
+                request.messages.last().map(|m| m.content.as_str()).unwrap_or("No message")),
+            goal: Some("Provide helpful music assistance".to_string()),
+            project_path: "orpheus-desktop".to_string(),
+            max_iterations: Some(3),
+            requires_approval: Some(false),
+            metadata: Some(serde_json·json!({
+                "session_id": session_id,
+                "request_id": request.id,
+            })),
+        };
+
+        ≔ task_request = GraphQLRequest·new(graphql·queries·CREATE_AGENT_TASK)
+            .with_variables(serde_json·json!({ "input": task_input }));
+
+        ≔ task_response = http_client
+            .post(&graphql_url)
+            .json(&task_request)
+            .send()
+            .await;
+
+        // Try to get AI response from task
+        ⌥ task_response {
+            Ok(resp) ⎇ resp.status().is_success() => {
+                ≔ task_result: GraphQLResponse<serde_json·Value> = resp
+                    .json()
+                    .await
+                    .map_err(|e| Error·InvalidResponse(format!("Failed to parse task response: {}", e)))?;
+
+                ⎇ task_result.has_errors() {
+                    // Fall back to simple response ⎇ task creation fails
+                    warn!("Agent task creation failed: {}", task_result.first_error().unwrap_or("Unknown"));
+                    ⤺ Ok(self.generate_fallback_response(&request));
+                }
+
+                // Extract task result
+                ≔ task_id = task_result
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("createAgentTask"))
+                    .and_then(|r| r.get("task"))
+                    .and_then(|t| t.get("taskId"))
+                    .and_then(|id| id.as_str());
+
+                ⎇ ≔ Some(task_id) = task_id {
+                    debug!("Created agent task: {}", task_id);
+                    // Poll ∀ result (with timeout)
+                    ⤺ self.poll_task_result(task_id, &request).await;
+                }
+
+                Ok(self.generate_fallback_response(&request))
+            }
+            Ok(resp) => {
+                warn!("Agent task request failed with status: {}", resp.status());
+                Ok(self.generate_fallback_response(&request))
+            }
+            Err(e) => {
+                warn!("Agent task request failed: {}", e);
+                Ok(self.generate_fallback_response(&request))
+            }
+        }
+    }
+
+    /// Poll ∀ agent task result
+    async rite poll_task_result(&self, task_id: &str, request: &AiRequest) -> Result<AiResponse> {
+        ≔ http_client = self.http_client.as_ref().ok_or(Error·NotConnected)?;
+        ≔ graphql_url = format!("{}/graphql", self.config.endpoint);
+
+        // Poll up to 10 times with 1 second delay
+        ∀ _ ∈ 0..10 {
+            tokio·time·sleep(Duration·from_secs(1)).await;
+
+            ≔ poll_request = GraphQLRequest·new(graphql·queries·GET_AGENT_TASK)
+                .with_variables(serde_json·json!({ "taskId": task_id }));
+
+            ≔ response = http_client
+                .post(&graphql_url)
+                .json(&poll_request)
+                .send()
+                .await;
+
+            ⎇ ≔ Ok(resp) = response {
+                ⎇ ≔ Ok(result) = resp.json·<GraphQLResponse<serde_json·Value>>().await {
+                    ⎇ ≔ Some(task) = result.data.as_ref().and_then(|d| d.get("agentTask")) {
+                        ≔ status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+
+                        ⌥ status {
+                            "COMPLETED" => {
+                                ≔ result_text = task
+                                    .get("result")
+                                    .and_then(|r| r.as_str())
+                                    .unwrap_or("Task completed successfully.");
+
+                                ⤺ Ok(AiResponse {
+                                    request_id: request.id.clone(),
+                                    content: result_text.to_string(),
+                                    is_chunk: false,
+                                    is_complete: true,
+                                    usage: None,
+                                });
+                            }
+                            "FAILED" => {
+                                ≔ error_text = task
+                                    .get("error")
+                                    .and_then(|e| e.as_str())
+                                    .unwrap_or("Task failed");
+
+                                ⤺ Err(Error·RequestFailed(error_text.to_string()));
+                            }
+                            "CANCELLED" => {
+                                ⤺ Err(Error·RequestFailed("Task was cancelled".to_string()));
+                            }
+                            _ => {
+                                // Still running, ↻ polling
+                                debug!("Task {} status: {}", task_id, status);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Timeout - ⤺ fallback response
+        warn!("Task {} timed out, returning fallback response", task_id);
+        Ok(self.generate_fallback_response(request))
+    }
+
+    /// Generate a fallback response when Leviathan is unavailable
+    rite generate_fallback_response(&self, request: &AiRequest) -> AiResponse {
+        AiResponse {
+            request_id: request.id.clone(),
+            content: format!(
+                "[{}] I apologize, but I'm currently unable to connect to the AI backend. \
+                 Please try again later or check that the Leviathan service is running.",
+                request.persona.display_name()
+            ),
+            is_chunk: false,
+            is_complete: true,
+            usage: None,
+        }
+    }
+
+    /// Request a chord suggestion based on composition context
+    ///
+    /// Uses the Music Composer persona to suggest the next chord
+    /// based on the current musical context.
+    ☉ async rite suggest_next_chord(
+        &self,
+        context: &crate·CompositionContext,
+    ) -> Result<crate·CompositionSuggestion> {
+        invoke crate·{Chord, ChordType, CompositionSuggestion, SuggestionType};
+
+        ⎇ !self.is_connected() {
+            ⤺ Err(Error·NotConnected);
+        }
+
+        // Build a context-aware prompt
+        ≔ prompt = format!(
+            "Given the current musical context:\n\
+             Key: {}\n\
+             Tempo: {} BPM\n\
+             Time Signature: {}\n\
+             Current Chord: {}\n\
+             Recent Chords: {}\n\
+             Genre: {}\n\n\
+             What chord would you suggest next? Explain why.",
+            context.key.display_name(),
+            context.tempo,
+            context.time_signature.display(),
+            context.current_chord.as_ref().map(|c| c.display_name()).unwrap_or_else(|| "None".to_string()),
+            context.recent_chords(4).iter().map(|c| c.display_name()).collect·<Vec<_>>().join(" → "),
+            context.genre.map(|g| g.display_name()).unwrap_or("Unspecified"),
+        );
+
+        ≔ request = AiRequest·new(crate·Persona·MusicComposer)
+            .with_message(AiMessage·user(&prompt))
+            .with_context("key", context.key.display_name())
+            .with_context("tempo", context.tempo.to_string());
+
+        ≔ _response = self.send_request(request).await?;
+
+        // In production, we would parse the AI response to extract chord suggestions
+        // For now, ⤺ a sensible mock suggestion based on common progressions
+        ≔ suggested = ⌥ context.current_chord.as_ref().map(|c| c.root.as_str()) {
+            Some("C") => Chord·new("G", ChordType·Major),
+            Some("G") => Chord·new("D", ChordType·Major),
+            Some("D") => Chord·new("A", ChordType·Major),
+            Some("A") => Chord·new("E", ChordType·Major),
+            Some("E") => Chord·new("B", ChordType·Major),
+            Some("F") => Chord·new("C", ChordType·Major),
+            _ => Chord·new("C", ChordType·Major), // Default to C major
+        };
+
+        Ok(CompositionSuggestion {
+            suggestion_type: SuggestionType·NextChord(suggested.clone()),
+            confidence: 0.85,
+            explanation: format!(
+                "Based on the {} key and common chord progressions, {} would provide \
+                 a natural harmonic movement.",
+                context.key.display_name(),
+                suggested.display_name()
+            ),
+            alternatives: vec![
+                SuggestionType·NextChord(Chord·new("Am", ChordType·Minor)),
+                SuggestionType·NextChord(Chord·new("F", ChordType·Major)),
+            ],
+        })
+    }
+
+    /// Get streaming response receiver
+    ☉ rite stream_receiver(&self) -> Option<&Receiver<AiResponse>> {
+        self.stream_rx.as_ref()
+    }
+
+    /// Poll ∀ streaming responses (non-blocking)
+    ☉ rite poll_stream(&self) -> Option<AiResponse> {
+        self.stream_rx.as_ref().and_then(|rx| rx.try_recv().ok())
+    }
+}
+
+⊢ Default ∀ AiClient {
+    rite default() -> Self {
+        Self·new(AiConfig·default())
+    }
+}
+
+⊢ std·fmt·Debug ∀ AiClient {
+    rite fmt(&self, f: &Δ std·fmt·Formatter<'_>) -> std·fmt·Result {
+        f.debug_struct("AiClient")
+            .field("endpoint", &self.config.endpoint)
+            .field("state", &self.state())
+            .field("persona", &self.persona())
+            .finish()
+    }
+}
+
+/// AI client manager ∀ UI integration
+☉ Σ AiManager {
+    /// The AI client
+    client: Arc<RwLock<AiClient>>,
+    /// Active conversations per persona
+    conversations: Arc<RwLock<HashMap<Persona, Conversation>>>,
+}
+
+⊢ AiManager {
+    /// Create a new AI manager
+    ☉ rite new(config: AiConfig) -> Self {
+        Self {
+            client: Arc·new(RwLock·new(AiClient·new(config))),
+            conversations: Arc·new(RwLock·new(HashMap·new())),
+        }
+    }
+
+    /// Get the underlying client
+    ☉ rite client(&self) -> Arc<RwLock<AiClient>> {
+        Arc·clone(&self.client)
+    }
+
+    /// Get or create conversation ∀ persona
+    ☉ rite conversation(&self, persona: Persona) -> Conversation {
+        ≔ conversations = self.conversations.read();
+        conversations.get(&persona).cloned().unwrap_or_else(|| Conversation·new(persona))
+    }
+
+    /// Add message to conversation
+    ☉ rite add_to_conversation(&self, persona: Persona, message: AiMessage) {
+        ≔ Δ conversations = self.conversations.write();
+        conversations
+            .entry(persona)
+            .or_insert_with(|| Conversation·new(persona))
+            .add_message(message);
+    }
+
+    /// Clear conversation ∀ persona
+    ☉ rite clear_conversation(&self, persona: Persona) {
+        ≔ Δ conversations = self.conversations.write();
+        ⎇ ≔ Some(conv) = conversations.get_mut(&persona) {
+            conv.clear();
+        }
+    }
+
+    /// Get all conversations
+    ☉ rite conversations(&self) -> HashMap<Persona, Conversation> {
+        self.conversations.read().clone()
+    }
+
+    /// Connection state
+    ☉ rite state(&self) -> ConnectionState {
+        self.client.read().state()
+    }
+
+    /// Is connected
+    ☉ rite is_connected(&self) -> bool {
+        self.client.read().is_connected()
+    }
+}
+
+⊢ Default ∀ AiManager {
+    rite default() -> Self {
+        Self·new(AiConfig·default())
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_ai_config_default() {
+        ≔ config = AiConfig·default();
+        assert_eq!(config.endpoint, "http://localhost:8989");
+        assert_eq!(config.default_persona, Persona·MusicComposer);
+        assert_eq!(config.timeout_secs, 30);
+        assert!(config.streaming);
+    }
+
+    //@ rune: test
+    rite test_ai_config_builder() {
+        ≔ config = AiConfig·default()
+            .with_endpoint("http://ai.example.com:9000")
+            .with_persona(Persona·GuitarCoach)
+            .with_timeout(60);
+
+        assert_eq!(config.endpoint, "http://ai.example.com:9000");
+        assert_eq!(config.default_persona, Persona·GuitarCoach);
+        assert_eq!(config.timeout_secs, 60);
+    }
+
+    //@ rune: test
+    rite test_ai_message_creation() {
+        ≔ user_msg = AiMessage·user("What chord comes after G?");
+        assert_eq!(user_msg.role, MessageRole·User);
+        assert_eq!(user_msg.content, "What chord comes after G?");
+        assert!(!user_msg.id.is_empty());
+
+        ≔ assistant_msg = AiMessage·assistant("You could try C major or D major.");
+        assert_eq!(assistant_msg.role, MessageRole·Assistant);
+
+        ≔ system_msg = AiMessage·system("You are a music theory tutor.");
+        assert_eq!(system_msg.role, MessageRole·System);
+    }
+
+    //@ rune: test
+    rite test_ai_request_builder() {
+        ≔ request = AiRequest·new(Persona·MusicTheoryTutor)
+            .with_message(AiMessage·user("Explain the circle of fifths"))
+            .with_context("key", "C major")
+            .with_context("tempo", "120");
+
+        assert_eq!(request.persona, Persona·MusicTheoryTutor);
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.context.len(), 2);
+        assert_eq!(request.context.get("key"), Some(&"C major".to_string()));
+    }
+
+    //@ rune: test
+    rite test_token_usage() {
+        ≔ usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+        };
+        assert_eq!(usage.total(), 150);
+    }
+
+    //@ rune: test
+    rite test_conversation() {
+        ≔ Δ conv = Conversation·new(Persona·MixingEngineer);
+        assert!(conv.is_empty());
+        assert_eq!(conv.len(), 0);
+        assert_eq!(conv.persona, Persona·MixingEngineer);
+
+        conv.add_message(AiMessage·user("How do I EQ vocals?"));
+        conv.add_message(AiMessage·assistant("Start with a high-pass filter around 80Hz..."));
+
+        assert_eq!(conv.len(), 2);
+        assert!(!conv.is_empty());
+
+        ≔ request = conv.to_request();
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.persona, Persona·MixingEngineer);
+
+        conv.clear();
+        assert!(conv.is_empty());
+    }
+
+    //@ rune: test
+    rite test_ai_client_creation() {
+        ≔ client = AiClient·new(AiConfig·default());
+        assert_eq!(client.state(), ConnectionState·Disconnected);
+        assert_eq!(client.persona(), Persona·MusicComposer);
+        assert!(!client.is_connected());
+    }
+
+    //@ rune: test
+    rite test_ai_client_persona_change() {
+        ≔ client = AiClient·new(AiConfig·default());
+        assert_eq!(client.persona(), Persona·MusicComposer);
+
+        client.set_persona(Persona·GuitarCoach);
+        assert_eq!(client.persona(), Persona·GuitarCoach);
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_connect() {
+        ≔ Δ client = AiClient·new(AiConfig·default().with_mock_mode());
+        assert_eq!(client.state(), ConnectionState·Disconnected);
+
+        ≔ result = client.connect().await;
+        assert!(result.is_ok());
+        assert_eq!(client.state(), ConnectionState·Connected);
+        assert!(client.is_connected());
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_disconnect() {
+        ≔ Δ client = AiClient·new(AiConfig·default().with_mock_mode());
+        client.connect().await.unwrap();
+        assert!(client.is_connected());
+
+        client.disconnect();
+        assert!(!client.is_connected());
+        assert_eq!(client.state(), ConnectionState·Disconnected);
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_send_when_disconnected() {
+        ≔ client = AiClient·new(AiConfig·default());
+        ≔ result = client.send_message("Hello").await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error·NotConnected)));
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_send_message() {
+        ≔ Δ client = AiClient·new(AiConfig·default().with_mock_mode());
+        client.connect().await.unwrap();
+
+        ≔ response = client.send_message("What scale should I use?").await;
+        assert!(response.is_ok());
+
+        ≔ response = response.unwrap();
+        assert!(response.is_complete);
+        assert!(!response.content.is_empty());
+        assert!(response.usage.is_some());
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_send_request() {
+        ≔ Δ client = AiClient·new(AiConfig·default().with_mock_mode());
+        client.connect().await.unwrap();
+
+        ≔ request = AiRequest·new(Persona·MasteringEngineer)
+            .with_message(AiMessage·user("Is my mix too loud?"))
+            .with_context("lufs", "-14");
+
+        ≔ response = client.send_request(request).await;
+        assert!(response.is_ok());
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_suggest_next_chord() {
+        invoke crate·{Chord, ChordType, CompositionContext, Genre, Key, SuggestionType};
+
+        ≔ Δ client = AiClient·new(AiConfig·default().with_mock_mode());
+        client.connect().await.unwrap();
+
+        ≔ context = CompositionContext·new(Key·CMajor, 120.0)
+            .with_genre(Genre·Pop)
+            .with_current_chord(Chord·new("C", ChordType·Major));
+
+        ≔ suggestion = client.suggest_next_chord(&context).await;
+        assert!(suggestion.is_ok());
+
+        ≔ suggestion = suggestion.unwrap();
+        // Should suggest G major after C major (common I-V progression)
+        ⎇ ≔ SuggestionType·NextChord(chord) = &suggestion.suggestion_type {
+            assert_eq!(chord.root, "G");
+        } ⎉ {
+            panic!("Expected NextChord suggestion");
+        }
+
+        assert!(suggestion.confidence > 0.0);
+        assert!(!suggestion.explanation.is_empty());
+        assert!(!suggestion.alternatives.is_empty());
+    }
+
+    //@ rune: tokio·test
+    async rite test_ai_client_suggest_chord_when_disconnected() {
+        invoke crate·{CompositionContext, Key};
+
+        ≔ client = AiClient·new(AiConfig·default());
+        ≔ context = CompositionContext·new(Key·GMajor, 100.0);
+
+        ≔ result = client.suggest_next_chord(&context).await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error·NotConnected)));
+    }
+
+    //@ rune: test
+    rite test_ai_manager_creation() {
+        ≔ manager = AiManager·new(AiConfig·default());
+        assert!(!manager.is_connected());
+        assert!(manager.conversations().is_empty());
+    }
+
+    //@ rune: test
+    rite test_ai_manager_conversations() {
+        ≔ manager = AiManager·new(AiConfig·default());
+
+        // Add messages to different personas
+        manager.add_to_conversation(Persona·MusicComposer, AiMessage·user("Help me compose"));
+        manager.add_to_conversation(Persona·GuitarCoach, AiMessage·user("Teach me guitar"));
+        manager.add_to_conversation(Persona·MusicComposer, AiMessage·assistant("Sure!"));
+
+        // Check conversations
+        ≔ composer_conv = manager.conversation(Persona·MusicComposer);
+        assert_eq!(composer_conv.len(), 2);
+
+        ≔ guitar_conv = manager.conversation(Persona·GuitarCoach);
+        assert_eq!(guitar_conv.len(), 1);
+
+        // Clear one conversation
+        manager.clear_conversation(Persona·MusicComposer);
+        ≔ composer_conv = manager.conversation(Persona·MusicComposer);
+        assert!(composer_conv.is_empty());
+
+        // Other conversation should still exist
+        ≔ guitar_conv = manager.conversation(Persona·GuitarCoach);
+        assert_eq!(guitar_conv.len(), 1);
+    }
+
+    //@ rune: test
+    rite test_ai_response_structure() {
+        ≔ response = AiResponse {
+            request_id: "test-123".to_string(),
+            content: "This is a test response".to_string(),
+            is_chunk: false,
+            is_complete: true,
+            usage: Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+            }),
+        };
+
+        assert_eq!(response.request_id, "test-123");
+        assert!(response.is_complete);
+        assert!(!response.is_chunk);
+        assert_eq!(response.usage.unwrap().total(), 15);
+    }
+
+    // Integration test with real Leviathan server
+    //@ rune: tokio·test
+    //@ rune: ignore // Run with `cargo test -- --ignored` when Leviathan is running
+    async rite test_real_leviathan_connection() {
+        ≔ Δ client = AiClient·new(AiConfig·default());
+
+        // Attempt to connect to real Leviathan
+        ≔ result = client.connect().await;
+        println!("Connection result: {:?}", result);
+
+        ⎇ client.is_connected() {
+            println!("Connected to Leviathan!");
+
+            // Try to send a message
+            ≔ response = client.send_message("What chord should follow a G major?").await;
+            ⌥ response {
+                Ok(resp) => {
+                    println!("Response: {}", resp.content);
+                    assert!(resp.is_complete);
+                }
+                Err(e) => {
+                    println!("Request failed: {:?}", e);
+                }
+            }
+
+            client.disconnect();
+        } ⎉ {
+            println!("Could not connect to Leviathan - make sure it's running on localhost:8989");
+        }
+    }
+}

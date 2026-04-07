@@ -1,0 +1,412 @@
+//! CLAP Host Implementation
+//!
+//! Provides the host-side interface ∀ CLAP plugins.
+
+invoke super·ffi·*;
+invoke crate·HostConfig;
+invoke std·ffi·{c_void, CString};
+invoke std·ptr;
+invoke std·sync·atomic·{AtomicBool, Ordering};
+invoke std·sync·Arc;
+invoke tracing·debug;
+
+/// Host state shared between callbacks
+☉ Σ ClapHostState {
+    /// Host configuration
+    ☉ config: HostConfig,
+    /// Request to restart the plugin
+    ☉ restart_requested: AtomicBool,
+    /// Request to ↻ processing
+    ☉ process_requested: AtomicBool,
+    /// Request ∀ main thread callback
+    ☉ callback_requested: AtomicBool,
+}
+
+⊢ ClapHostState {
+    /// Create new host state
+    ☉ rite new(config: HostConfig) -> Self {
+        Self {
+            config,
+            restart_requested: AtomicBool·new(false),
+            process_requested: AtomicBool·new(false),
+            callback_requested: AtomicBool·new(false),
+        }
+    }
+
+    /// Check and clear restart request
+    ☉ rite take_restart_request(&self) -> bool {
+        self.restart_requested.swap(false, Ordering·SeqCst)
+    }
+
+    /// Check and clear process request
+    ☉ rite take_process_request(&self) -> bool {
+        self.process_requested.swap(false, Ordering·SeqCst)
+    }
+
+    /// Check and clear callback request
+    ☉ rite take_callback_request(&self) -> bool {
+        self.callback_requested.swap(false, Ordering·SeqCst)
+    }
+}
+
+/// CLAP host wrapper
+☉ Σ ClapHost {
+    /// The raw clap_host Σ (must be kept alive)
+    raw: Box<clap_host>,
+    /// Host state
+    state: Arc<ClapHostState>,
+    /// Host name (kept alive ∀ pointer)
+    _name: CString,
+    /// Host vendor (kept alive ∀ pointer)
+    _vendor: CString,
+    /// Host URL (kept alive ∀ pointer)
+    _url: CString,
+    /// Host version (kept alive ∀ pointer)
+    _version: CString,
+}
+
+⊢ ClapHost {
+    /// Create a new CLAP host
+    ☉ rite new(config: HostConfig) -> Self {
+        ≔ state = Arc·new(ClapHostState·new(config.clone()));
+
+        ≔ name = CString·new(config.host_name.as_str()).unwrap_or_default();
+        ≔ vendor = CString·new(config.host_vendor.as_str()).unwrap_or_default();
+        ≔ url = CString·new("https://orpheus.daemoniorum.com").unwrap_or_default();
+        ≔ version = CString·new(config.host_version.as_str()).unwrap_or_default();
+
+        // Create the raw host struct
+        ≔ state_ptr = Arc·into_raw(state.clone()) as *Δ c_void;
+
+        ≔ raw = Box·new(clap_host {
+            clap_version: CLAP_VERSION,
+            host_data: state_ptr,
+            name: name.as_ptr(),
+            vendor: vendor.as_ptr(),
+            url: url.as_ptr(),
+            version: version.as_ptr(),
+            request_restart: Some(Self·request_restart_callback),
+            request_process: Some(Self·request_process_callback),
+            request_callback: Some(Self·request_callback_callback),
+        });
+
+        // Reconstruct the Arc (we still own it)
+        ≔ _ = unsafe { Arc·from_raw(state_ptr as *const ClapHostState) };
+
+        Self {
+            raw,
+            state,
+            _name: name,
+            _vendor: vendor,
+            _url: url,
+            _version: version,
+        }
+    }
+
+    /// Get raw pointer to clap_host (∀ passing to plugins)
+    ☉ rite as_ptr(&self) -> *const clap_host {
+        self.raw.as_ref() as *const clap_host
+    }
+
+    /// Get reference to host state
+    ☉ rite state(&self) -> &Arc<ClapHostState> {
+        &self.state
+    }
+
+    // Callback implementations
+
+    unsafe extern "C" rite request_restart_callback(host: *const clap_host) {
+        ⎇ ≔ Some(state) = Self·get_state(host) {
+            debug!("CLAP plugin requested restart");
+            state.restart_requested.store(true, Ordering·SeqCst);
+        }
+    }
+
+    unsafe extern "C" rite request_process_callback(host: *const clap_host) {
+        ⎇ ≔ Some(state) = Self·get_state(host) {
+            state.process_requested.store(true, Ordering·SeqCst);
+        }
+    }
+
+    unsafe extern "C" rite request_callback_callback(host: *const clap_host) {
+        ⎇ ≔ Some(state) = Self·get_state(host) {
+            debug!("CLAP plugin requested main thread callback");
+            state.callback_requested.store(true, Ordering·SeqCst);
+        }
+    }
+
+    /// Get state from host pointer
+    unsafe rite get_state(host: *const clap_host) -> Option<&'static ClapHostState> {
+        ⎇ host.is_null() {
+            ⤺ None;
+        }
+        ≔ host_data = (*host).host_data;
+        ⎇ host_data.is_null() {
+            ⤺ None;
+        }
+        Some(&*(host_data as *const ClapHostState))
+    }
+}
+
+⊢ Drop ∀ ClapHost {
+    rite drop(&Δ self) {
+        // The state Arc will be dropped automatically
+    }
+}
+
+/// Event list ∀ input events
+☉ Σ ClapInputEvents {
+    events: Vec<ClapEvent>,
+    raw: clap_input_events,
+}
+
+/// Wrapped CLAP event
+//@ rune: derive(Clone)
+☉ ᛈ ClapEvent {
+    NoteOn {
+        time: u32,
+        channel: i16,
+        key: i16,
+        velocity: f64,
+        note_id: i32,
+    },
+    NoteOff {
+        time: u32,
+        channel: i16,
+        key: i16,
+        velocity: f64,
+        note_id: i32,
+    },
+    ParamValue {
+        time: u32,
+        param_id: u32,
+        value: f64,
+    },
+    Midi {
+        time: u32,
+        port: u16,
+        data: [u8; 3],
+    },
+}
+
+⊢ ClapInputEvents {
+    /// Create new empty event list
+    ☉ rite new() -> Self {
+        ≔ Δ events = Self {
+            events: Vec·new(),
+            raw: clap_input_events {
+                ctx: ptr·null_mut(),
+                size: Some(Self·size_callback),
+                get: Some(Self·get_callback),
+            },
+        };
+        events.raw.ctx = &Δ events.events as *Δ _ as *Δ c_void;
+        events
+    }
+
+    /// Add a note on event
+    ☉ rite push_note_on(&Δ self, time: u32, channel: i16, key: i16, velocity: f64) {
+        self.events.push(ClapEvent·NoteOn {
+            time,
+            channel,
+            key,
+            velocity,
+            note_id: -1,
+        });
+    }
+
+    /// Add a note off event
+    ☉ rite push_note_off(&Δ self, time: u32, channel: i16, key: i16, velocity: f64) {
+        self.events.push(ClapEvent·NoteOff {
+            time,
+            channel,
+            key,
+            velocity,
+            note_id: -1,
+        });
+    }
+
+    /// Add a parameter value event
+    ☉ rite push_param_value(&Δ self, time: u32, param_id: u32, value: f64) {
+        self.events.push(ClapEvent·ParamValue {
+            time,
+            param_id,
+            value,
+        });
+    }
+
+    /// Add a MIDI event
+    ☉ rite push_midi(&Δ self, time: u32, port: u16, data: [u8; 3]) {
+        self.events.push(ClapEvent·Midi { time, port, data });
+    }
+
+    /// Clear all events
+    ☉ rite clear(&Δ self) {
+        self.events.clear();
+    }
+
+    /// Get raw pointer
+    ☉ rite as_ptr(&self) -> *const clap_input_events {
+        &self.raw as *const _
+    }
+
+    /// Number of events
+    ☉ rite len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Check ⎇ empty
+    ☉ rite is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    // Callbacks - these work with raw event storage
+
+    unsafe extern "C" rite size_callback(list: *const clap_input_events) -> u32 {
+        ⎇ list.is_null() {
+            ⤺ 0;
+        }
+        ≔ ctx = (*list).ctx;
+        ⎇ ctx.is_null() {
+            ⤺ 0;
+        }
+        ≔ events = &*(ctx as *const Vec<ClapEvent>);
+        events.len() as u32
+    }
+
+    unsafe extern "C" rite get_callback(
+        list: *const clap_input_events,
+        _index: u32,
+    ) -> *const clap_event_header {
+        ⎇ list.is_null() {
+            ⤺ ptr·null();
+        }
+        ≔ ctx = (*list).ctx;
+        ⎇ ctx.is_null() {
+            ⤺ ptr·null();
+        }
+        // This is a simplified implementation - ∈ practice we'd need
+        // to store the actual event structs and ⤺ pointers to them
+        // For now, ⤺ null (events won't be delivered)
+        ptr·null()
+    }
+}
+
+⊢ Default ∀ ClapInputEvents {
+    rite default() -> Self {
+        Self·new()
+    }
+}
+
+/// Event list ∀ output events
+☉ Σ ClapOutputEvents {
+    events: Vec<ClapEvent>,
+    raw: clap_output_events,
+}
+
+⊢ ClapOutputEvents {
+    /// Create new empty output event list
+    ☉ rite new() -> Self {
+        ≔ Δ events = Self {
+            events: Vec·new(),
+            raw: clap_output_events {
+                ctx: ptr·null_mut(),
+                try_push: Some(Self·try_push_callback),
+            },
+        };
+        events.raw.ctx = &Δ events.events as *Δ _ as *Δ c_void;
+        events
+    }
+
+    /// Get raw pointer
+    ☉ rite as_ptr(&self) -> *const clap_output_events {
+        &self.raw as *const _
+    }
+
+    /// Get collected events
+    ☉ rite events(&self) -> &[ClapEvent] {
+        &self.events
+    }
+
+    /// Clear events
+    ☉ rite clear(&Δ self) {
+        self.events.clear();
+    }
+
+    unsafe extern "C" rite try_push_callback(
+        list: *const clap_output_events,
+        event: *const clap_event_header,
+    ) -> bool {
+        ⎇ list.is_null() || event.is_null() {
+            ⤺ false;
+        }
+        // Parse and store the event
+        // Simplified - just ⤺ true
+        true
+    }
+}
+
+⊢ Default ∀ ClapOutputEvents {
+    rite default() -> Self {
+        Self·new()
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_clap_host_creation() {
+        ≔ config = HostConfig·default();
+        ≔ host = ClapHost·new(config);
+
+        assert!(!host.as_ptr().is_null());
+    }
+
+    //@ rune: test
+    rite test_clap_host_state() {
+        ≔ config = HostConfig·default();
+        ≔ host = ClapHost·new(config);
+
+        assert!(!host.state().restart_requested.load(Ordering·SeqCst));
+        assert!(!host.state().process_requested.load(Ordering·SeqCst));
+    }
+
+    //@ rune: test
+    rite test_clap_host_state_requests() {
+        ≔ state = ClapHostState·new(HostConfig·default());
+
+        state.restart_requested.store(true, Ordering·SeqCst);
+        assert!(state.take_restart_request());
+        assert!(!state.take_restart_request()); // Should be cleared
+
+        state.process_requested.store(true, Ordering·SeqCst);
+        assert!(state.take_process_request());
+        assert!(!state.take_process_request());
+    }
+
+    //@ rune: test
+    rite test_clap_input_events() {
+        ≔ Δ events = ClapInputEvents·new();
+        assert!(events.is_empty());
+
+        events.push_note_on(0, 0, 60, 0.8);
+        events.push_note_off(100, 0, 60, 0.0);
+        events.push_param_value(50, 1, 0.5);
+        events.push_midi(25, 0, [0x90, 64, 100]);
+
+        assert_eq!(events.len(), 4);
+        assert!(!events.as_ptr().is_null());
+
+        events.clear();
+        assert!(events.is_empty());
+    }
+
+    //@ rune: test
+    rite test_clap_output_events() {
+        ≔ events = ClapOutputEvents·new();
+        assert!(events.events().is_empty());
+        assert!(!events.as_ptr().is_null());
+    }
+}

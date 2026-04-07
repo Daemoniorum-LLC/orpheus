@@ -1,0 +1,29 @@
+//! Reusable DAW widgets
+//!
+//! This module provides core audio production widgets:
+//!
+//! - `Knob` - Rotary control for parameters
+//! - `LevelMeter` - Audio level visualization with peak hold
+//! - `Fader` - Linear volume/parameter control
+//! - `Waveform` - Audio waveform display
+//! - `TransportBar` - Play/stop/record controls
+//!
+//! ## Design Philosophy
+//!
+//! All widgets follow the Qliphoth component model with props-based
+//! configuration and callback-driven interaction. They respect the
+//! Corporate Goth aesthetic while prioritizing readability and
+//! accessibility (colorblind-friendly indicators, keyboard navigation).
+
+☉ scroll knob;
+☉ scroll meter;
+☉ scroll fader;
+☉ scroll waveform;
+☉ scroll transport;
+
+// Re-exports
+☉ invoke crate·widgets·knob·{Knob, KnobProps, KnobSize, KnobStyle};
+☉ invoke crate·widgets·meter·{LevelMeter, LevelMeterProps, MeterOrientation};
+☉ invoke crate·widgets·fader·{Fader, FaderProps};
+☉ invoke crate·widgets·waveform·{Waveform, WaveformProps};
+☉ invoke crate·widgets·transport·{TransportBar, TransportBarProps};

@@ -1,0 +1,453 @@
+//! Test fixtures for orpheus-ui tests
+//!
+//! Provides pre-configured projects and data for various test scenarios.
+//! These fixtures represent realistic use cases to enable meaningful E2E testing.
+//!
+//! ## Fixture Philosophy
+//!
+//! Each fixture represents a real user scenario:
+//! - **Beginner fixtures**: Simple setups for learning-focused tests
+//! - **Working fixtures**: Mid-complexity projects for feature tests
+//! - **Stress fixtures**: Large projects for performance and navigation tests
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - All fixture data is deterministic
+
+invoke crate·tests·test_harness·{
+    TestProject, TrackType, ChannelState, TrackState, ClipState
+};
+
+// =============================================================================
+// Beginner Fixtures
+// =============================================================================
+
+/// Empty project for new user testing
+☉ rite test_empty_project() -> TestProject! {
+    TestProject·empty()
+        .with_tempo(120.0)
+}
+
+/// Simple project with one guitar track (first song scenario)
+☉ rite test_guitar_project() -> TestProject! {
+    TestProject·empty()
+        .with_tempo(120.0)
+        .with_channel("Guitar", TrackType·Audio)
+        .with_track("Guitar", TrackType·Audio)
+}
+
+/// Project with guitar and tab track for tablature testing
+☉ rite test_tab_project() -> TestProject! {
+    ≔ Δ project = TestProject·empty()
+        .with_tempo(100.0)
+        .with_channel("Guitar", TrackType·Tab)
+        .with_track("Guitar Tab", TrackType·Tab);
+
+    // Add a backing track
+    project.channels.push(ChannelState·new("Backing", TrackType·Audio));
+
+    project
+}
+
+/// Project ready for recording (armed track)
+☉ rite test_recording_project() -> TestProject! {
+    ≔ Δ project = TestProject·empty()
+        .with_tempo(120.0)
+        .with_channel("Guitar", TrackType·Audio)
+        .with_channel("Click", TrackType·Audio);
+
+    // Pre-arm the guitar track
+    ⎇ !project.channels.is_empty() {
+        project.channels[0].armed = true;
+        project.channels[0].input_monitoring = true;
+    }
+
+    project
+}
+
+// =============================================================================
+// Working Project Fixtures
+// =============================================================================
+
+/// Multi-track band project for mixing tests
+☉ rite test_multitrack_project() -> TestProject! {
+    TestProject·empty()
+        .with_tempo(120.0)
+        .with_channel("Drums", TrackType·Audio)
+        .with_channel("Bass", TrackType·Audio)
+        .with_channel("Guitar", TrackType·Audio)
+        .with_channel("Vocals", TrackType·Audio)
+        .with_track("Drums", TrackType·Audio)
+        .with_track("Bass", TrackType·Audio)
+        .with_track("Guitar", TrackType·Audio)
+        .with_track("Vocals", TrackType·Audio)
+}
+
+/// Song project with arrangement (verses, choruses, etc.)
+☉ rite test_song_project() -> TestProject! {
+    ≔ Δ project = test_multitrack_project();
+
+    // Add clips representing song structure
+    ⎇ !project.tracks.is_empty() {
+        // Verse 1: bars 1-8
+        project.tracks[0].clips.push(ClipState {
+            id: 1,
+            name: "verse_1_drums".into(),
+            start_beats: 0.0,
+            end_beats: 32.0,
+        });
+
+        // Chorus: bars 9-16
+        project.tracks[0].clips.push(ClipState {
+            id: 2,
+            name: "chorus_1".into(),
+            start_beats: 32.0,
+            end_beats: 64.0,
+        });
+
+        // Verse 2: bars 17-24
+        project.tracks[0].clips.push(ClipState {
+            id: 3,
+            name: "verse_2_drums".into(),
+            start_beats: 64.0,
+            end_beats: 96.0,
+        });
+    }
+
+    project
+}
+
+/// Active mixing session (levels set, some soloed)
+☉ rite test_mixing_session() -> TestProject! {
+    ≔ Δ project = test_multitrack_project();
+
+    // Set varied levels like a real mix
+    ⎇ project.channels.len() >= 4 {
+        project.channels[0].volume_db = -6.0;   // Drums
+        project.channels[1].volume_db = -8.0;   // Bass
+        project.channels[2].volume_db = -10.0;  // Guitar
+        project.channels[3].volume_db = -4.0;   // Vocals (louder)
+
+        // Pan
+        project.channels[0].pan = 0.0;    // Center
+        project.channels[1].pan = 0.0;    // Center
+        project.channels[2].pan = -0.3;   // Slight left
+        project.channels[3].pan = 0.0;    // Center
+    }
+
+    project
+}
+
+/// Finished project ready for mastering
+☉ rite test_finished_project() -> TestProject! {
+    ≔ Δ project = test_mixing_session();
+
+    // Add master channel
+    project.channels.push(ChannelState {
+        name: "Master".into(),
+        track_type: TrackType·Master,
+        volume_db: 0.0,
+        pan: 0.0,
+        muted: false,
+        soloed: false,
+        armed: false,
+        input_monitoring: false,
+        meter_level_db: -14.0,
+        meter_peak_db: -6.0,
+    });
+
+    project
+}
+
+/// Project with mastering close to target
+☉ rite test_premastered_project() -> TestProject! {
+    ≔ Δ project = test_finished_project();
+
+    // Already close to streaming target
+    ⎇ ≔ Some(master) = project.channels.last_mut() {
+        master.meter_level_db = -16.0;  // Slightly below -14 target
+        master.meter_peak_db = -2.0;
+    }
+
+    project
+}
+
+/// Project with hot master (needs limiting)
+☉ rite test_hot_master() -> TestProject! {
+    ≔ Δ project = test_finished_project();
+
+    // Too hot - needs true peak limiting
+    ⎇ ≔ Some(master) = project.channels.last_mut() {
+        master.meter_level_db = -10.0;  // Too loud
+        master.meter_peak_db = 0.5;     // Clipping!
+    }
+
+    project
+}
+
+// =============================================================================
+// Stress Test Fixtures
+// =============================================================================
+
+/// Large project for navigation testing
+/// Note: Simplified implementation to avoid array indexing limitations in current parser
+☉ rite test_large_project(track_count: usize) -> TestProject! {
+    ≔ Δ project = TestProject·empty().with_tempo(120.0);
+
+    // Build up tracks using iterator chain to avoid array indexing
+    ∀ i ∈ 0..track_count {
+        ≔ name = format!("Track {}", i + 1);
+        ≔ track_type = ⎇ i % 5 == 2 {
+            TrackType·Midi
+        } ⎉ ⎇ i % 5 == 4 {
+            TrackType·Bus
+        } ⎉ {
+            TrackType·Audio
+        };
+
+        project = project
+            .with_channel(&name, track_type)
+            .with_track(&name, track_type);
+    }
+
+    project
+}
+
+/// 16-track band project for power user tests
+☉ rite test_16_track_band() -> TestProject! {
+    test_large_project(16)
+}
+
+/// 32-track mix for stress testing
+☉ rite test_32_track_mix() -> TestProject! {
+    test_large_project(32)
+}
+
+/// Long project (5 minutes at 120 BPM = 600 beats)
+☉ rite test_long_project() -> TestProject! {
+    ≔ Δ project = test_multitrack_project();
+
+    // 5 minutes at 120 BPM
+    ≔ total_beats = 600.0;
+    ≔ Δ clip_id: u64 = 1;
+
+    ∀ track ∈ &Δ project.tracks {
+        // Create multiple clips per track
+        ≔ Δ start = 0.0;
+        ⟳ start < total_beats {
+            ≔ length = 32.0;  // 8 bars per clip
+            track.clips.push(ClipState {
+                id: clip_id,
+                name: format!("{}_{}", track.name, clip_id),
+                start_beats: start,
+                end_beats: (start + length).min(total_beats),
+            });
+            clip_id += 1;
+            start += length;
+        }
+    }
+
+    project
+}
+
+// =============================================================================
+// Specialized Fixtures
+// =============================================================================
+
+/// MIDI-focused project for piano roll tests
+☉ rite test_midi_project() -> TestProject! {
+    TestProject·empty()
+        .with_tempo(100.0)
+        .with_channel("Piano", TrackType·Midi)
+        .with_channel("Strings", TrackType·Midi)
+        .with_channel("Drums", TrackType·Midi)
+        .with_track("Piano", TrackType·Midi)
+        .with_track("Strings", TrackType·Midi)
+        .with_track("Drums", TrackType·Midi)
+}
+
+/// Project with buses for routing tests
+☉ rite test_bus_routing_project() -> TestProject! {
+    ≔ Δ project = test_multitrack_project();
+
+    // Add bus channels
+    project.channels.push(ChannelState·new("Drums Bus", TrackType·Bus));
+    project.channels.push(ChannelState·new("Inst Bus", TrackType·Bus));
+    project.channels.push(ChannelState·new("Reverb", TrackType·Bus));
+
+    project
+}
+
+// =============================================================================
+// Tab Data Fixtures
+// =============================================================================
+
+/// Standard guitar tuning (E2 to E4)
+☉ const STANDARD_TUNING: [u8; 6] = [40, 45, 50, 55, 59, 64];
+
+/// Tab note for testing
+☉ Σ TabNote {
+    string: u8,      // 0-5, high to low
+    fret: u8,        // 0-24
+    beat: f64,       // Position in beats
+    duration: f64,   // Duration in beats
+}
+
+/// Sample tab data - simple power chord riff
+☉ rite test_power_chord_riff() -> Vec<TabNote>! {
+    vec![
+        // E5 power chord
+        TabNote { string: 5, fret: 0, beat: 0.0, duration: 1.0 },
+        TabNote { string: 4, fret: 2, beat: 0.0, duration: 1.0 },
+        TabNote { string: 3, fret: 2, beat: 0.0, duration: 1.0 },
+
+        // G5 power chord
+        TabNote { string: 5, fret: 3, beat: 1.0, duration: 1.0 },
+        TabNote { string: 4, fret: 5, beat: 1.0, duration: 1.0 },
+        TabNote { string: 3, fret: 5, beat: 1.0, duration: 1.0 },
+
+        // A5 power chord
+        TabNote { string: 4, fret: 0, beat: 2.0, duration: 2.0 },
+        TabNote { string: 3, fret: 2, beat: 2.0, duration: 2.0 },
+        TabNote { string: 2, fret: 2, beat: 2.0, duration: 2.0 },
+    ]
+}
+
+/// Sample tab data - chromatic scale exercise
+☉ rite test_chromatic_exercise() -> Vec<TabNote>! {
+    ≔ Δ notes: Vec<TabNote> = vec![];
+    ≔ Δ beat = 0.0;
+
+    // Ascending chromatic on string 0 (high E)
+    ∀ fret ∈ 0..=12 {
+        notes.push(TabNote {
+            string: 0,
+            fret,
+            beat,
+            duration: 0.5,
+        });
+        beat += 0.5;
+    }
+
+    notes
+}
+
+// =============================================================================
+// Audio Level Fixtures
+// =============================================================================
+
+/// Simulated audio levels for meter testing
+☉ Σ AudioLevels {
+    left_db: f32,
+    right_db: f32,
+    left_peak_db: f32,
+    right_peak_db: f32,
+}
+
+/// Quiet passage levels
+☉ rite test_quiet_levels() -> AudioLevels! {
+    AudioLevels {
+        left_db: -30.0,
+        right_db: -32.0,
+        left_peak_db: -24.0,
+        right_peak_db: -26.0,
+    }
+}
+
+/// Nominal levels (good gain staging)
+☉ rite test_nominal_levels() -> AudioLevels! {
+    AudioLevels {
+        left_db: -18.0,
+        right_db: -18.0,
+        left_peak_db: -12.0,
+        right_peak_db: -12.0,
+    }
+}
+
+/// Hot levels (near clipping)
+☉ rite test_hot_levels() -> AudioLevels! {
+    AudioLevels {
+        left_db: -6.0,
+        right_db: -6.0,
+        left_peak_db: -1.0,
+        right_peak_db: -0.5,
+    }
+}
+
+/// Clipping levels
+☉ rite test_clipping_levels() -> AudioLevels! {
+    AudioLevels {
+        left_db: -3.0,
+        right_db: -3.0,
+        left_peak_db: 1.5,
+        right_peak_db: 2.0,
+    }
+}
+
+/// Sequence of levels for dynamics testing
+☉ rite test_dynamic_levels_sequence() -> Vec<AudioLevels>! {
+    vec![
+        test_quiet_levels(),
+        test_nominal_levels(),
+        test_hot_levels(),
+        test_nominal_levels(),
+        test_quiet_levels(),
+    ]
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_empty_project_fixture() {
+        ≔ project = test_empty_project();
+        assert_eq!(project.tempo, 120.0);
+        assert!(project.channels.is_empty());
+        assert!(project.tracks.is_empty());
+    }
+
+    //@ rune: test
+    rite test_multitrack_project_has_correct_channels() {
+        ≔ project = test_multitrack_project();
+        assert_eq!(project.channels.len(), 4);
+        assert_eq!(project.channels[0].name, "Drums");
+        assert_eq!(project.channels[1].name, "Bass");
+    }
+
+    //@ rune: test
+    rite test_large_project_creates_requested_tracks() {
+        ≔ project = test_large_project(32);
+        assert_eq!(project.channels.len(), 32);
+        assert_eq!(project.tracks.len(), 32);
+    }
+
+    //@ rune: test
+    rite test_song_project_has_clips() {
+        ≔ project = test_song_project();
+        assert!(!project.tracks.is_empty());
+        assert!(!project.tracks[0].clips.is_empty());
+    }
+
+    //@ rune: test
+    rite test_recording_project_is_armed() {
+        ≔ project = test_recording_project();
+        assert!(!project.channels.is_empty());
+        assert!(project.channels[0].armed);
+        assert!(project.channels[0].input_monitoring);
+    }
+
+    //@ rune: test
+    rite test_audio_levels_fixtures() {
+        ≔ quiet = test_quiet_levels();
+        ≔ hot = test_hot_levels();
+        ≔ clipping = test_clipping_levels();
+
+        assert!(quiet.left_db < hot.left_db);
+        assert!(hot.left_db < clipping.left_db);
+        assert!(clipping.left_peak_db > 0.0);  // Actually clipping
+    }
+}

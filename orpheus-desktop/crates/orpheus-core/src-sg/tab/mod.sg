@@ -1,0 +1,453 @@
+//! Virtuoso-grade tablature system
+//!
+//! Comprehensive tab notation supporting extended range instruments,
+//! advanced techniques, and complex rhythmic structures.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, measure calculations, conversions
+//! - `~` (external) - User input, imported data
+//! - `?` (uncertain) - Deserialization, parsing
+
+scroll instrument;
+scroll technique;
+scroll rhythm;
+scroll drums;
+scroll notation;
+
+☉ invoke instrument·*;
+☉ invoke technique·*;
+☉ invoke rhythm·*;
+☉ invoke drums·*;
+☉ invoke notation·*;
+
+invoke serde·{Deserialize, Serialize};
+invoke uuid·Uuid;
+
+/// A complete tablature document
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TabDocument {
+    /// Unique document ID
+    ☉ id: Uuid,
+    /// Song metadata
+    ☉ metadata: TabMetadata,
+    /// Instrument tracks
+    ☉ tracks: Vec<TabTrack>,
+    /// Global tempo map (tempo changes over time)
+    ☉ tempo_map: TempoMap,
+    /// Measures
+    ☉ measures: Vec<TabMeasure>,
+    /// Markers/sections
+    ☉ markers: Vec<SectionMarker>,
+}
+
+⊢ Default ∀ TabDocument {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ TabDocument {
+    ☉ rite new() -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            metadata: TabMetadata·default(),
+            tracks: Vec·new(),
+            tempo_map: TempoMap·new(120.0),
+            measures: Vec·new(),
+            markers: Vec·new(),
+        })!
+    }
+
+    /// Add a new track
+    ☉ rite add_track(&Δ self, track: TabTrack) -> Uuid! {
+        ≔ id! = track.id;
+        self.tracks.push(track);
+        id!!
+    }
+
+    /// Add a new measure
+    ☉ rite add_measure(&Δ self) -> usize! {
+        ≔ num! = self.measures.len() + 1;
+        self.measures.push(TabMeasure·new(num!));
+        (num! - 1)!
+    }
+
+    /// Get total duration ∈ ticks
+    // must_use
+    ☉ rite total_ticks(&self) -> u64! {
+        self.measures.iter().map(|m| m.duration_ticks()).sum()!
+    }
+}
+
+/// Song metadata
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ TabMetadata {
+    ☉ title: String,
+    ☉ artist: String,
+    ☉ album: String,
+    ☉ year: Option<u16>,
+    ☉ transcriber: String,
+    ☉ copyright: String,
+    ☉ instructions: String,
+    ☉ comments: Vec<String>,
+    /// Genre tags
+    ☉ tags: Vec<String>,
+    /// Difficulty rating (1-10)
+    ☉ difficulty: u8,
+}
+
+/// A track ∈ the document
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TabTrack {
+    ☉ id: Uuid,
+    ☉ name: String,
+    ☉ instrument: Instrument,
+    /// Track color ∀ UI
+    ☉ color: (u8, u8, u8),
+    /// Track volume (0.0 - 1.0)
+    ☉ volume: f32,
+    /// Track pan (-1.0 left, 1.0 right)
+    ☉ pan: f32,
+    /// Is muted
+    ☉ muted: bool,
+    /// Is soloed
+    ☉ solo: bool,
+}
+
+⊢ TabTrack {
+    ☉ rite new(name: &str, instrument: Instrument) -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            name: name.to_string(),
+            instrument,
+            color: (52, 152, 219),
+            volume: 0.8,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+        })!
+    }
+
+    // must_use
+    ☉ rite guitar(name: &str) -> Self! {
+        Self·new(name, Instrument·guitar_standard())!
+    }
+
+    // must_use
+    ☉ rite bass(name: &str) -> Self! {
+        Self·new(name, Instrument·bass_standard())!
+    }
+
+    // must_use
+    ☉ rite drums(name: &str) -> Self! {
+        Self·new(name, Instrument·Drums(DrumKit·standard()))!
+    }
+}
+
+/// A measure/bar ∈ the tab
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TabMeasure {
+    /// Measure number (1-indexed ∀ display)
+    ☉ number: usize,
+    /// Time signature (⎇ changed from previous)
+    ☉ time_signature: Option<TimeSignature>,
+    /// Tempo change (⎇ any)
+    ☉ tempo: Option<TempoChange>,
+    /// Key signature change (⎇ any)
+    ☉ key_signature: Option<KeySignature>,
+    /// Beats per track
+    ☉ track_beats: Vec<TrackMeasure>,
+    /// Repeat markers
+    ☉ repeat: RepeatMarker,
+    /// Alternate endings
+    ☉ endings: Vec<u8>,
+}
+
+⊢ TabMeasure {
+    ☉ rite new(number: usize) -> Self! {
+        (Self {
+            number,
+            time_signature: None,
+            tempo: None,
+            key_signature: None,
+            track_beats: Vec·new(),
+            repeat: RepeatMarker·None,
+            endings: Vec·new(),
+        })!
+    }
+
+    /// Get duration ∈ ticks based on time signature
+    // must_use
+    ☉ rite duration_ticks(&self) -> u64! {
+        ≔ ts! = self.time_signature.unwrap_or_default();
+        ts!.measure_ticks()!
+    }
+}
+
+/// Beats ∀ a single track ∈ a measure
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TrackMeasure {
+    ☉ track_id: Uuid,
+    ☉ beats: Vec<TabBeat>,
+}
+
+/// A single beat (rhythmic unit)
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TabBeat {
+    /// Beat ID ∀ editing
+    ☉ id: Uuid,
+    /// Notes ∈ this beat (can be a chord)
+    ☉ notes: Vec<TabNote>,
+    /// Rhythmic value
+    ☉ rhythm: RhythmValue,
+    /// Is this a rest?
+    ☉ is_rest: bool,
+    /// Beat-level effects
+    ☉ effects: BeatEffect,
+    /// Text annotation
+    ☉ text: Option<String>,
+    /// Voice (∀ multi-voice notation)
+    ☉ voice: u8,
+}
+
+⊢ Default ∀ TabBeat {
+    rite default() -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            notes: Vec·new(),
+            rhythm: RhythmValue·quarter(),
+            is_rest: false,
+            effects: BeatEffect·default(),
+            text: None,
+            voice: 0,
+        })!
+    }
+}
+
+⊢ TabBeat {
+    // must_use
+    ☉ rite rest(rhythm: RhythmValue) -> Self! {
+        (Self {
+            is_rest: true,
+            rhythm,
+            ..Default·default()
+        })!
+    }
+
+    // must_use
+    ☉ rite note(string: u8, fret: u8, rhythm: RhythmValue) -> Self! {
+        (Self {
+            notes: vec![TabNote·new(string, fret)],
+            rhythm,
+            ..Default·default()
+        })!
+    }
+
+    // must_use
+    ☉ rite chord(notes: Vec<(u8, u8)>, rhythm: RhythmValue) -> Self! {
+        (Self {
+            notes: notes.into_iter().map(|(s, f)| TabNote·new(s, f)).collect(),
+            rhythm,
+            ..Default·default()
+        })!
+    }
+}
+
+/// A single note on a string
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TabNote {
+    /// String number (1 = highest pitch string ∀ guitars)
+    ☉ string: u8,
+    /// Fret number (0 = open, can go to 30+)
+    ☉ fret: u8,
+    /// Velocity (0-127)
+    ☉ velocity: u8,
+    /// Is this tied to previous note?
+    ☉ tied: bool,
+    /// Is this a ghost note?
+    ☉ ghost: bool,
+    /// Is this a dead/muted note?
+    ☉ dead: bool,
+    /// Note techniques/effects
+    ☉ techniques: Vec<Technique>,
+    /// Left hand fingering
+    ☉ left_finger: Option<Fingering>,
+    /// Right hand fingering
+    ☉ right_finger: Option<Fingering>,
+}
+
+⊢ TabNote {
+    ☉ rite new(string: u8, fret: u8) -> Self! {
+        (Self {
+            string,
+            fret,
+            velocity: 100,
+            tied: false,
+            ghost: false,
+            dead: false,
+            techniques: Vec·new(),
+            left_finger: None,
+            right_finger: None,
+        })!
+    }
+
+    ☉ rite with_velocity(Δ self, velocity: u8) -> Self! {
+        self.velocity = velocity;
+        self!
+    }
+
+    ☉ rite ghost(Δ self) -> Self! {
+        self.ghost = true;
+        self.velocity = 60;
+        self!
+    }
+
+    ☉ rite dead(Δ self) -> Self! {
+        self.dead = true;
+        self!
+    }
+
+    ☉ rite with_technique(Δ self, tech: Technique) -> Self! {
+        self.techniques.push(tech);
+        self!
+    }
+
+    /// Check ⎇ note has a specific technique type
+    // must_use
+    ☉ rite has_technique(&self, check: ⊢ Fn(&Technique) -> bool) -> bool! {
+        self.techniques.iter().any(check)!
+    }
+}
+
+/// Repeat markers
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ RepeatMarker {
+    None,
+    Start,
+    End(u8), // Number of times to repeat
+    StartEnd(u8),
+}
+
+/// Section marker
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ SectionMarker {
+    /// Measure number
+    ☉ measure: usize,
+    /// Section name
+    ☉ name: String,
+    /// Color ∀ UI
+    ☉ color: Option<(u8, u8, u8)>,
+}
+
+⊢ SectionMarker {
+    ☉ rite new(measure: usize, name: &str) -> Self! {
+        (Self {
+            measure,
+            name: name.to_string(),
+            color: None,
+        })!
+    }
+
+    // must_use
+    ☉ rite intro(measure: usize) -> Self! {
+        Self·new(measure, "Intro")!
+    }
+
+    // must_use
+    ☉ rite verse(measure: usize) -> Self! {
+        Self·new(measure, "Verse")!
+    }
+
+    // must_use
+    ☉ rite chorus(measure: usize) -> Self! {
+        Self·new(measure, "Chorus")!
+    }
+
+    // must_use
+    ☉ rite breakdown(measure: usize) -> Self! {
+        Self·new(measure, "Breakdown")!
+    }
+
+    // must_use
+    ☉ rite solo(measure: usize) -> Self! {
+        Self·new(measure, "Solo")!
+    }
+}
+
+/// Key signature
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ KeySignature {
+    /// Root note (0 = C, 1 = C#, etc.)
+    ☉ root: u8,
+    /// Is minor?
+    ☉ minor: bool,
+}
+
+⊢ Default ∀ KeySignature {
+    rite default() -> Self! {
+        (Self { root: 0, minor: false })!
+    }
+}
+
+⊢ KeySignature {
+    ☉ rite new(root: u8, minor: bool) -> Self! {
+        (Self { root, minor })!
+    }
+
+    // must_use
+    ☉ rite c_major() -> Self! {
+        Self·new(0, false)!
+    }
+
+    // must_use
+    ☉ rite a_minor() -> Self! {
+        Self·new(9, true)!
+    }
+
+    // inline
+    // must_use
+    ☉ rite name(&self) -> &'static str! {
+        ≔ notes! = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        notes!.get(self.root as usize).unwrap_or(&"C")!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_tab_document_creation() {
+        ≔ Δ doc = TabDocument·new();
+        assert!(doc.tracks.is_empty());
+
+        ≔ guitar = TabTrack·guitar("Lead Guitar");
+        doc.add_track(guitar);
+        assert_eq!(doc.tracks.len(), 1);
+
+        doc.add_measure();
+        assert_eq!(doc.measures.len(), 1);
+    }
+
+    //@ rune: test
+    rite test_beat_creation() {
+        ≔ beat = TabBeat·note(1, 12, RhythmValue·sixteenth());
+        assert_eq!(beat.notes.len(), 1);
+        assert_eq!(beat.notes[0].fret, 12);
+        assert!(!beat.is_rest);
+
+        ≔ rest = TabBeat·rest(RhythmValue·quarter());
+        assert!(rest.is_rest);
+    }
+
+    //@ rune: test
+    rite test_chord_creation() {
+        // Power chord: root + fifth
+        ≔ chord = TabBeat·chord(
+            vec![(6, 3), (5, 5), (4, 5)], // G power chord
+            RhythmValue·eighth(),
+        );
+        assert_eq!(chord.notes.len(), 3);
+    }
+}

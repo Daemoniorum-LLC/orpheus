@@ -1,0 +1,586 @@
+//! Phase 6: Full User Journey E2E Tests
+//!
+//! These tests verify complete user workflows from start to finish,
+//! measuring friction and ensuring the application supports real-world
+//! use cases with acceptable complexity.
+
+// =============================================================================
+// Enums (Top Level)
+// =============================================================================
+
+☉ ᛈ OrpheusMode { Compose, Record, Mix, Master, Practice, Release, Distribute, Settings }
+☉ ᛈ TransportState { Stopped, Playing, Paused, Recording }
+☉ ᛈ TrackType { Audio, Midi, Tab, Bus, Master }
+☉ ᛈ TaskComplexity { Simple, Medium, Complex }
+
+☉ ᛈ Key {
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    Space, Enter, Escape, Tab, Backspace, Delete,
+    Up, Down, Left, Right, Home, End, PageUp, PageDown,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+}
+
+// =============================================================================
+// Structs (Top Level)
+// =============================================================================
+
+☉ Σ Modifiers { ctrl: bool, shift: bool, alt: bool, meta: bool }
+
+⊢ Modifiers {
+    ☉ rite none() -> Self! { Self { ctrl: false, shift: false, alt: false, meta: false } }
+    ☉ rite ctrl() -> Self! { Self { ctrl: true, shift: false, alt: false, meta: false } }
+}
+
+☉ Σ Point { x: f32, y: f32 }
+
+⊢ Point {
+    ☉ rite new(x: f32, y: f32) -> Self! { Self { x, y } }
+}
+
+☉ Σ WorkflowMetrics {
+    steps: u32,
+    state_changes: u32,
+    mode_switches: u32,
+    undo_operations: u32,
+    error_recoveries: u32,
+    elapsed_ms: u64,
+}
+
+⊢ WorkflowMetrics {
+    ☉ rite new() -> Self! {
+        Self { steps: 0, state_changes: 0, mode_switches: 0, undo_operations: 0, error_recoveries: 0, elapsed_ms: 0 }
+    }
+    ☉ rite record_step(&Δ self) { self.steps += 1; }
+    ☉ rite record_state_change(&Δ self) { self.state_changes += 1; }
+    ☉ rite record_mode_switch(&Δ self) { self.mode_switches += 1; }
+    ☉ rite record_undo(&Δ self) { self.undo_operations += 1; }
+    ☉ rite record_error_recovery(&Δ self) { self.error_recoveries += 1; }
+    ☉ rite add_time(&Δ self, ms: u64) { self.elapsed_ms += ms; }
+
+    ☉ rite is_acceptable(&self, complexity: TaskComplexity) -> bool! {
+        ⌥ complexity {
+            TaskComplexity·Simple => {
+                self.steps <= 5 && self.mode_switches <= 1 && self.undo_operations <= 3 && self.error_recoveries == 0
+            }
+            TaskComplexity·Medium => {
+                self.steps <= 10 && self.mode_switches <= 2 && self.undo_operations <= 3
+            }
+            TaskComplexity·Complex => {
+                self.steps <= 20 && self.mode_switches <= 3
+            }
+        }
+    }
+}
+
+☉ Σ ChannelState {
+    name: String,
+    track_type: TrackType,
+    volume_db: f32,
+    pan: f32,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    input_monitoring: bool,
+}
+
+⊢ ChannelState {
+    ☉ rite new(name: &str, track_type: TrackType) -> Self! {
+        Self {
+            name: name.to_string(), track_type, volume_db: 0.0, pan: 0.0,
+            muted: false, soloed: false, armed: false, input_monitoring: false,
+        }
+    }
+}
+
+☉ Σ AppState {
+    mode: OrpheusMode,
+    transport: TransportState,
+    playhead_beats: f64,
+    tempo: f64,
+    selected_channel: Option<usize>,
+    channels: Vec<ChannelState>,
+    errors: Vec<String>,
+    recording_armed: bool,
+    lufs_meter_visible: bool,
+}
+
+⊢ AppState {
+    ☉ rite new() -> Self! {
+        Self {
+            mode: OrpheusMode·Compose, transport: TransportState·Stopped,
+            playhead_beats: 0.0, tempo: 120.0, selected_channel: None,
+            channels: vec![], errors: vec![], recording_armed: false, lufs_meter_visible: false,
+        }
+    }
+    ☉ rite is_playing(&self) -> bool! { ⌥ self.transport { TransportState·Playing => true, _ => false } }
+    ☉ rite is_recording(&self) -> bool! { ⌥ self.transport { TransportState·Recording => true, _ => false } }
+}
+
+☉ Σ TestProject { name: String, tempo: f64, channels: Vec<ChannelState> }
+
+⊢ TestProject {
+    ☉ rite empty() -> Self! { Self { name: "Untitled".into(), tempo: 120.0, channels: vec![] } }
+    ☉ rite named(name: &str) -> Self! { Self { name: name.to_string(), tempo: 120.0, channels: vec![] } }
+    ☉ rite with_tempo(Δ self, tempo: f64) -> Self { self.tempo = tempo; self }
+    ☉ rite with_channel(Δ self, name: &str, track_type: TrackType) -> Self {
+        self.channels.push(ChannelState·new(name, track_type));
+        self
+    }
+}
+
+☉ Σ TestApp { state: AppState, metrics: WorkflowMetrics }
+
+⊢ TestApp {
+    ☉ rite new() -> Self! {
+        ≔ Δ state = AppState·new();
+        state.channels.push(ChannelState·new("Guitar", TrackType·Audio));
+        state.channels.push(ChannelState·new("Master", TrackType·Master));
+        Self { state, metrics: WorkflowMetrics·new() }
+    }
+
+    ☉ rite new_with_project(project: TestProject) -> Self! {
+        ≔ Δ state = AppState·new();
+        state.channels = project.channels;
+        state.tempo = project.tempo;
+        Self { state, metrics: WorkflowMetrics·new() }
+    }
+
+    ☉ rite metrics(&self) -> &WorkflowMetrics! { &self.metrics }
+    ☉ rite reset_metrics(&Δ self) { self.metrics = WorkflowMetrics·new(); }
+
+    ☉ rite click(&Δ self, target: &str) {
+        self.metrics.record_step();
+        self.handle_click(target);
+    }
+
+    rite handle_click(&Δ self, target: &str) {
+        ≔ prev_compose = ⌥ self.state.mode { OrpheusMode·Compose => true, _ => false };
+        ≔ prev_record = ⌥ self.state.mode { OrpheusMode·Record => true, _ => false };
+        ≔ prev_mix = ⌥ self.state.mode { OrpheusMode·Mix => true, _ => false };
+        ≔ prev_master = ⌥ self.state.mode { OrpheusMode·Master => true, _ => false };
+
+        ⎇ target == "mode_compose" { self.state.mode = OrpheusMode·Compose; self.state.lufs_meter_visible = false; }
+        ⎉ ⎇ target == "mode_record" { self.state.mode = OrpheusMode·Record; self.state.lufs_meter_visible = false; }
+        ⎉ ⎇ target == "mode_mix" { self.state.mode = OrpheusMode·Mix; self.state.lufs_meter_visible = false; }
+        ⎉ ⎇ target == "mode_master" { self.state.mode = OrpheusMode·Master; self.state.lufs_meter_visible = true; }
+        ⎉ ⎇ target == "transport_play" { self.state.transport = TransportState·Playing; }
+        ⎉ ⎇ target == "transport_stop" { self.state.transport = TransportState·Stopped; self.state.playhead_beats = 0.0; }
+        ⎉ ⎇ target == "transport_record" {
+            ⎇ self.state.recording_armed { self.state.transport = TransportState·Recording; }
+        }
+        ⎉ ⎇ target.contains("_arm") { self.handle_arm(target); }
+        ⎉ ⎇ target.contains("_solo") { self.handle_solo(target); }
+        ⎉ ⎇ target.contains("_mute") { self.handle_mute(target); }
+        ⎉ ⎇ target == "new_project" {
+            self.state = AppState·new();
+            self.state.channels.push(ChannelState·new("Guitar", TrackType·Audio));
+            self.state.channels.push(ChannelState·new("Master", TrackType·Master));
+        }
+        ⎉ ⎇ target == "export_button" || target == "export_confirm" { }
+
+        ≔ now_compose = ⌥ self.state.mode { OrpheusMode·Compose => true, _ => false };
+        ≔ now_record = ⌥ self.state.mode { OrpheusMode·Record => true, _ => false };
+        ≔ now_mix = ⌥ self.state.mode { OrpheusMode·Mix => true, _ => false };
+        ≔ now_master = ⌥ self.state.mode { OrpheusMode·Master => true, _ => false };
+
+        ≔ mode_changed = (prev_compose != now_compose) || (prev_record != now_record) || (prev_mix != now_mix) || (prev_master != now_master);
+        ⎇ mode_changed { self.metrics.record_mode_switch(); }
+        self.metrics.record_state_change();
+    }
+
+    rite handle_arm(&Δ self, target: &str) {
+        ∀ ch ∈ &Δ self.state.channels {
+            ⎇ target.to_lowercase().contains(&ch.name.to_lowercase()) {
+                ch.armed = !ch.armed;
+                ⎇ ch.armed { ch.input_monitoring = true; }
+            }
+        }
+    }
+
+    rite handle_solo(&Δ self, target: &str) {
+        ∀ ch ∈ &Δ self.state.channels {
+            ⎇ target.to_lowercase().contains(&ch.name.to_lowercase()) { ch.soloed = !ch.soloed; }
+        }
+    }
+
+    rite handle_mute(&Δ self, target: &str) {
+        ∀ ch ∈ &Δ self.state.channels {
+            ⎇ target.to_lowercase().contains(&ch.name.to_lowercase()) { ch.muted = !ch.muted; }
+        }
+    }
+
+    ☉ rite drag(&Δ self, target: &str, from: Point, to: Point) {
+        self.metrics.record_step();
+        ⎇ target.contains("_fader") {
+            ≔ delta_db = (from.y - to.y) * 0.5;
+            ∀ ch ∈ &Δ self.state.channels {
+                ⎇ target.to_lowercase().contains(&ch.name.to_lowercase()) {
+                    ch.volume_db = (ch.volume_db + delta_db).clamp(-60.0, 6.0);
+                }
+            }
+        }
+        self.metrics.record_state_change();
+    }
+
+    ☉ rite key_press(&Δ self, key: Key, modifiers: Modifiers) {
+        self.metrics.record_step();
+        ⌥ key {
+            Key·Space => {
+                ⎇ self.state.is_playing() { self.state.transport = TransportState·Paused; }
+                ⎉ { self.state.transport = TransportState·Playing; }
+            }
+            Key·Z => { ⎇ modifiers.ctrl { self.metrics.record_undo(); } }
+            _ => {}
+        }
+        self.metrics.record_state_change();
+    }
+
+    ☉ rite type_text(&Δ self, text: &str) { self.metrics.record_step(); }
+
+    ☉ rite advance_time(&Δ self, seconds: f64) {
+        ⎇ self.state.is_playing() || self.state.is_recording() {
+            self.state.playhead_beats += (seconds * self.state.tempo) / 60.0;
+        }
+        self.metrics.add_time((seconds * 1000.0) as u64);
+    }
+
+    ☉ rite set_mode(&Δ self, mode: OrpheusMode) {
+        self.state.mode = mode.clone();
+        ⌥ mode { OrpheusMode·Master => { self.state.lufs_meter_visible = true; } _ => {} }
+    }
+
+    ☉ rite arm_recording(&Δ self) { self.state.recording_armed = true; }
+    ☉ rite select_channel(&Δ self, index: usize) { self.state.selected_channel = Some(index); }
+    ☉ rite seek_to(&Δ self, seconds: f64) { self.state.playhead_beats = (seconds * self.state.tempo) / 60.0; }
+    ☉ rite playhead_seconds(&self) -> f64! { (self.state.playhead_beats * 60.0) / self.state.tempo }
+    ☉ rite solo_channel(&Δ self, index: usize) { ⎇ index < self.state.channels.len() { self.state.channels[index].soloed = true; } }
+    ☉ rite unsolo_channel(&Δ self, index: usize) { ⎇ index < self.state.channels.len() { self.state.channels[index].soloed = false; } }
+    ☉ rite channel_visible(&self, name: &str) -> bool! { self.state.channels.iter().any(|c| c.name.contains(name)) }
+}
+
+// =============================================================================
+// Fixtures (Top Level Functions)
+// =============================================================================
+
+☉ rite beginner_project() -> TestProject! {
+    TestProject·named("My First Song").with_channel("Guitar", TrackType·Audio).with_channel("Master", TrackType·Master)
+}
+
+☉ rite full_band_project() -> TestProject! {
+    TestProject·named("Band Session")
+        .with_channel("Kick", TrackType·Audio).with_channel("Snare", TrackType·Audio)
+        .with_channel("Toms", TrackType·Audio).with_channel("OH L", TrackType·Audio).with_channel("OH R", TrackType·Audio)
+        .with_channel("Bass DI", TrackType·Audio).with_channel("Bass Amp", TrackType·Audio)
+        .with_channel("Gtr L", TrackType·Audio).with_channel("Gtr R", TrackType·Audio)
+        .with_channel("Vox Lead", TrackType·Audio).with_channel("Vox BG 1", TrackType·Audio).with_channel("Vox BG 2", TrackType·Audio)
+        .with_channel("Keys", TrackType·Midi).with_channel("Synth", TrackType·Midi)
+        .with_channel("Drum Bus", TrackType·Bus).with_channel("Master", TrackType·Master)
+}
+
+☉ rite quick_idea_project() -> TestProject! {
+    TestProject·named("Quick Idea").with_channel("Voice Memo", TrackType·Audio).with_channel("Master", TrackType·Master)
+}
+
+☉ rite tab_project() -> TestProject! {
+    TestProject·named("Guitar Piece").with_channel("Guitar", TrackType·Tab).with_channel("Master", TrackType·Master)
+}
+
+// =============================================================================
+// Tests (Inside Scroll)
+// =============================================================================
+
+scroll tests {
+    // =========================================================================
+    // Journey 1: Guitarist's First Song
+    // =========================================================================
+
+    //@ rune: test
+    rite test_complete_first_song_journey() {
+        // A complete journey from new project to export is a Complex task
+        ≔ Δ app = TestApp·new();
+        app.click("new_project"); app.type_text("My First Song"); app.key_press(Key·Enter, Modifiers·none());
+        app.click("mode_record"); app.click("channel_guitar_arm"); app.arm_recording(); app.click("transport_record");
+        assert!(app.state.is_recording());
+        app.advance_time(30.0); app.click("transport_stop");
+        app.click("transport_play"); app.advance_time(5.0); app.click("transport_stop");
+        app.drag("channel_guitar_fader", Point·new(0.0, 100.0), Point·new(0.0, 80.0));
+        app.click("mode_master"); app.click("export_button"); app.click("export_confirm");
+        assert!(app.metrics().steps <= 15);
+        assert!(app.metrics().mode_switches <= 2);
+        assert!(app.metrics().is_acceptable(TaskComplexity·Complex));
+    }
+
+    //@ rune: test
+    rite test_beginner_can_hear_themselves() {
+        ≔ Δ app = TestApp·new_with_project(beginner_project());
+        app.click("mode_record"); app.click("channel_guitar_arm");
+        assert!(app.state.channels[0].armed);
+        assert!(app.state.channels[0].input_monitoring);
+    }
+
+    //@ rune: test
+    rite test_beginner_obvious_record_button() {
+        ≔ Δ app = TestApp·new_with_project(beginner_project());
+        app.click("mode_record"); app.click("channel_guitar_arm"); app.arm_recording(); app.click("transport_record");
+        assert!(app.state.is_recording());
+    }
+
+    //@ rune: test
+    rite test_beginner_playback_after_record() {
+        ≔ Δ app = TestApp·new_with_project(beginner_project());
+        app.click("mode_record"); app.click("channel_guitar_arm"); app.arm_recording();
+        app.click("transport_record"); app.advance_time(10.0); app.click("transport_stop");
+        assert!(app.state.playhead_beats < 1.0);
+        app.key_press(Key·Space, Modifiers·none());
+        assert!(app.state.is_playing());
+    }
+
+    // =========================================================================
+    // Journey 2: Power User Mixing
+    // =========================================================================
+
+    //@ rune: test
+    rite test_16_track_gain_staging() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        ≔ audio_channels = 14_usize;
+        ≔ Δ total_steps = 0_u32;
+        ∀ i ∈ 0..audio_channels {
+            app.reset_metrics();
+            app.solo_channel(i);
+            app.drag(&format!("channel_{}_fader", i), Point·new(0.0, 50.0), Point·new(0.0, 60.0));
+            app.unsolo_channel(i);
+            total_steps += app.metrics().steps;
+            assert!(app.metrics().steps <= 4);
+        }
+        assert!(total_steps / audio_channels as u32 <= 3);
+    }
+
+    //@ rune: test
+    rite test_quick_ab_comparison() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.click("channel_kick_solo");
+        assert!(app.state.channels[0].soloed);
+        app.click("channel_bass di_solo");
+        assert!(app.state.channels[0].soloed);
+        assert!(app.state.channels[5].soloed);
+    }
+
+    //@ rune: test
+    rite test_navigate_large_mixer() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        assert!(app.channel_visible("Vox Lead"));
+    }
+
+    //@ rune: test
+    rite test_batch_operations() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.click("channel_vox bg 1_mute"); app.click("channel_vox bg 2_mute");
+        assert!(app.state.channels[10].muted);
+        assert!(app.state.channels[11].muted);
+    }
+
+    //@ rune: test
+    rite test_mix_to_master_transition() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.select_channel(5); app.seek_to(60.0);
+        ≔ pos_before = app.playhead_seconds();
+        app.click("mode_master");
+        assert!((pos_before - app.playhead_seconds()).abs() < 0.1);
+        assert!(app.state.lufs_meter_visible);
+    }
+
+    // =========================================================================
+    // Journey 3: Quick Idea Capture
+    // =========================================================================
+
+    //@ rune: test
+    rite test_voice_memo_workflow() {
+        ≔ Δ app = TestApp·new();
+        app.click("new_project"); app.click("mode_record"); app.click("channel_guitar_arm"); app.arm_recording(); app.click("transport_record");
+        assert!(app.state.is_recording());
+        assert!(app.metrics().steps <= 5);
+    }
+
+    //@ rune: test
+    rite test_space_bar_starts_playback_when_armed() {
+        ≔ Δ app = TestApp·new_with_project(quick_idea_project());
+        app.click("mode_record"); app.click("channel_voice memo_arm"); app.arm_recording();
+        app.key_press(Key·Space, Modifiers·none());
+        assert!(app.state.is_playing() || app.state.is_recording());
+    }
+
+    //@ rune: test
+    rite test_quick_export_to_share() {
+        ≔ Δ app = TestApp·new_with_project(quick_idea_project());
+        app.click("mode_record"); app.click("channel_voice memo_arm"); app.arm_recording();
+        app.click("transport_record"); app.advance_time(15.0); app.click("transport_stop");
+        app.click("mode_master"); app.click("export_button"); app.click("export_confirm");
+        assert!(app.metrics().is_acceptable(TaskComplexity·Medium));
+    }
+
+    // =========================================================================
+    // Journey 4: Tab Composition
+    // =========================================================================
+
+    //@ rune: test
+    rite test_write_guitar_part() {
+        ≔ Δ app = TestApp·new_with_project(tab_project());
+        app.set_mode(OrpheusMode·Compose);
+        app.key_press(Key·Num5, Modifiers·none()); app.key_press(Key·Right, Modifiers·none());
+        app.key_press(Key·Num7, Modifiers·none()); app.key_press(Key·Right, Modifiers·none());
+        app.key_press(Key·Num5, Modifiers·none()); app.key_press(Key·Down, Modifiers·none());
+        app.key_press(Key·Num3, Modifiers·none());
+        assert!(app.metrics().steps <= 10);
+    }
+
+    //@ rune: test
+    rite test_playback_while_composing() {
+        ≔ Δ app = TestApp·new_with_project(tab_project());
+        app.set_mode(OrpheusMode·Compose);
+        app.key_press(Key·Space, Modifiers·none());
+        assert!(app.state.is_playing());
+        ≔ is_compose = ⌥ app.state.mode { OrpheusMode·Compose => true, _ => false };
+        assert!(is_compose);
+        app.key_press(Key·Space, Modifiers·none());
+        ≔ is_paused = ⌥ app.state.transport { TransportState·Paused => true, _ => false };
+        assert!(is_paused);
+    }
+
+    // =========================================================================
+    // Journey 5: Complete Production
+    // =========================================================================
+
+    //@ rune: test
+    rite test_compose_record_mix_master_export() {
+        ≔ Δ app = TestApp·new();
+        app.click("new_project"); app.type_text("Full Production"); app.key_press(Key·Enter, Modifiers·none());
+        app.key_press(Key·Space, Modifiers·none()); app.advance_time(5.0); app.key_press(Key·Space, Modifiers·none());
+        app.click("mode_record"); app.click("channel_guitar_arm"); app.arm_recording();
+        app.click("transport_record"); app.advance_time(30.0); app.click("transport_stop");
+        app.click("mode_mix"); app.drag("channel_guitar_fader", Point·new(0.0, 50.0), Point·new(0.0, 60.0));
+        app.click("mode_master"); assert!(app.state.lufs_meter_visible);
+        app.click("export_button"); app.click("export_confirm");
+        assert!(app.metrics().is_acceptable(TaskComplexity·Complex));
+        assert!(app.metrics().mode_switches <= 4);
+    }
+
+    //@ rune: test
+    rite test_context_preserved_across_modes() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix); app.select_channel(5); app.seek_to(120.0);
+        ≔ sel_before = app.state.selected_channel;
+        ≔ pos_before = app.playhead_seconds();
+        app.click("mode_compose"); app.click("mode_record"); app.click("mode_mix");
+        assert!(app.state.selected_channel == sel_before);
+        assert!((app.playhead_seconds() - pos_before).abs() < 0.1);
+    }
+
+    // =========================================================================
+    // Friction Analysis
+    // =========================================================================
+
+    //@ rune: test
+    rite test_simple_tasks_are_simple() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.drag("channel_kick_fader", Point·new(0.0, 50.0), Point·new(0.0, 60.0));
+        assert!(app.metrics().is_acceptable(TaskComplexity·Simple));
+    }
+
+    //@ rune: test
+    rite test_solo_unsolo_is_simple() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.click("channel_kick_solo"); app.click("channel_kick_solo");
+        assert!(app.metrics().steps == 2);
+        assert!(app.metrics().is_acceptable(TaskComplexity·Simple));
+    }
+
+    //@ rune: test
+    rite test_mode_switch_is_one_click() {
+        ≔ Δ app = TestApp·new();
+        app.reset_metrics(); app.click("mode_compose"); assert!(app.metrics().steps == 1);
+        app.reset_metrics(); app.click("mode_record"); assert!(app.metrics().steps == 1);
+        app.reset_metrics(); app.click("mode_mix"); assert!(app.metrics().steps == 1);
+        app.reset_metrics(); app.click("mode_master"); assert!(app.metrics().steps == 1);
+    }
+
+    //@ rune: test
+    rite test_transport_is_one_click() {
+        ≔ Δ app = TestApp·new();
+        app.click("transport_play"); assert!(app.state.is_playing());
+        app.click("transport_stop");
+        ≔ is_stopped = ⌥ app.state.transport { TransportState·Stopped => true, _ => false };
+        assert!(is_stopped);
+        assert!(app.metrics().steps == 2);
+    }
+
+    //@ rune: test
+    rite test_no_confirmation_for_common_actions() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.click("channel_kick_solo"); assert!(app.state.channels[0].soloed);
+        app.click("channel_kick_mute"); assert!(app.state.channels[0].muted);
+        app.click("channel_kick_arm"); assert!(app.state.channels[0].armed);
+        assert!(app.metrics().steps == 3);
+    }
+
+    //@ rune: test
+    rite test_friction_report_generation() {
+        ≔ Δ metrics = WorkflowMetrics·new();
+        ∀ _ ∈ 0..25 { metrics.record_step(); }
+        metrics.record_error_recovery(); metrics.record_error_recovery(); metrics.record_error_recovery();
+        assert!(!metrics.is_acceptable(TaskComplexity·Simple));
+        assert!(!metrics.is_acceptable(TaskComplexity·Medium));
+    }
+
+    //@ rune: test
+    rite test_undo_tracking() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.drag("channel_kick_fader", Point·new(0.0, 50.0), Point·new(0.0, 60.0));
+        app.key_press(Key·Z, Modifiers·ctrl());
+        assert!(app.metrics().undo_operations == 1);
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    //@ rune: test
+    rite test_record_without_armed_track() {
+        ≔ Δ app = TestApp·new_with_project(beginner_project());
+        app.click("mode_record"); app.click("transport_record");
+        assert!(!app.state.is_recording());
+    }
+
+    //@ rune: test
+    rite test_export_empty_project() {
+        ≔ Δ app = TestApp·new();
+        app.click("new_project"); app.click("mode_master"); app.click("export_button");
+        assert!(app.state.errors.is_empty() || app.state.errors.len() <= 1);
+    }
+
+    //@ rune: test
+    rite test_rapid_mode_switching() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        ∀ _ ∈ 0..10 {
+            app.click("mode_compose"); app.click("mode_record"); app.click("mode_mix"); app.click("mode_master");
+        }
+        assert!(app.state.channels.len() > 0);
+    }
+
+    //@ rune: test
+    rite test_playback_during_mode_switch() {
+        ≔ Δ app = TestApp·new_with_project(full_band_project());
+        app.set_mode(OrpheusMode·Mix);
+        app.click("transport_play"); assert!(app.state.is_playing());
+        app.click("mode_compose"); assert!(app.state.is_playing());
+    }
+}

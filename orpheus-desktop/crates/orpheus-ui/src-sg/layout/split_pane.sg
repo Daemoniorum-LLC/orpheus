@@ -1,0 +1,395 @@
+//! Split pane layout component
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Pane sizes
+//! - `~` (external) - User resize operations
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+
+/// Split handle size in pixels
+Λ HANDLE_SIZE: f32 = 6.0;
+
+/// Minimum pane size
+Λ MIN_PANE_SIZE: f32 = 50.0;
+
+/// Split orientation
+☉ ᛈ SplitOrientation {
+    Horizontal,
+    Vertical,
+}
+
+/// Split pane properties
+☉ Σ SplitPaneProps {
+    /// Split orientation
+    orientation: SplitOrientation,
+    /// Initial split position (0.0 - 1.0)
+    initial_split: f32,
+    /// Minimum size for first pane (pixels)
+    min_first: f32,
+    /// Minimum size for second pane (pixels)
+    min_second: f32,
+    /// First pane content
+    first: Element,
+    /// Second pane content
+    second: Element,
+    /// Callback when split changes
+    on_split_change: Option<Box<dyn Fn(f32)>>,
+    /// Collapsible first pane
+    collapsible_first: bool,
+    /// Collapsible second pane
+    collapsible_second: bool,
+}
+
+⊢ ◊ SplitPaneProps {
+    rite default() -> Self {
+        Self {
+            orientation: SplitOrientation·Horizontal,
+            initial_split: 0.5,
+            min_first: MIN_PANE_SIZE,
+            min_second: MIN_PANE_SIZE,
+            first: element! { <div /> },
+            second: element! { <div /> },
+            on_split_change: None,
+            collapsible_first: false,
+            collapsible_second: false,
+        }
+    }
+}
+
+/// Split pane component
+☉ Σ SplitPane {
+    props: SplitPaneProps,
+    split: f32,
+    dragging: bool,
+    drag_start: f32,
+    drag_start_split: f32,
+    first_collapsed: bool,
+    second_collapsed: bool,
+}
+
+⊢ SplitPane {
+    ☉ rite new(props: SplitPaneProps) -> Self! {
+        ≔ split = props.initial_split;
+        Self {
+            props,
+            split,
+            dragging: false,
+            drag_start: 0.0,
+            drag_start_split: 0.0,
+            first_collapsed: false,
+            second_collapsed: false,
+        }
+    }
+
+    /// Calculate pane sizes
+    rite calculate_sizes(&self, total_size: f32) -> (f32, f32)! {
+        ⎇ self.first_collapsed {
+            ⮐ (0.0, total_size - HANDLE_SIZE);
+        }
+        ⎇ self.second_collapsed {
+            ⮐ (total_size - HANDLE_SIZE, 0.0);
+        }
+
+        ≔ first_size = (total_size - HANDLE_SIZE) * self.split;
+        ≔ second_size = total_size - HANDLE_SIZE - first_size;
+        (first_size, second_size)
+    }
+
+    /// Handle resize
+    rite handle_resize(&Δ self, mouse_pos: f32, total_size: f32) {
+        ⎇ self.dragging {
+            ≔ delta = mouse_pos - self.drag_start;
+            ≔ delta_ratio = delta / (total_size - HANDLE_SIZE);
+            ≔ new_split = (self.drag_start_split + delta_ratio).clamp(0.0, 1.0);
+
+            // Enforce minimum sizes
+            ≔ first_size = (total_size - HANDLE_SIZE) * new_split;
+            ≔ second_size = total_size - HANDLE_SIZE - first_size;
+
+            ⎇ first_size >= self.props.min_first && second_size >= self.props.min_second {
+                self.split = new_split;
+                ⎇ ≔ Some(ref on_change) = self.props.on_split_change {
+                    on_change(self.split);
+                }
+            }
+        }
+    }
+
+    /// Toggle collapse for first pane
+    rite toggle_first(&Δ self) {
+        ⎇ self.props.collapsible_first {
+            self.first_collapsed = !self.first_collapsed;
+            ⎇ self.first_collapsed {
+                self.second_collapsed = false;
+            }
+        }
+    }
+
+    /// Toggle collapse for second pane
+    rite toggle_second(&Δ self) {
+        ⎇ self.props.collapsible_second {
+            self.second_collapsed = !self.second_collapsed;
+            ⎇ self.second_collapsed {
+                self.first_collapsed = false;
+            }
+        }
+    }
+}
+
+⊢ Component ∀ SplitPane {
+    type Props = SplitPaneProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bounds = ctx.bounds();
+        ≔ is_horizontal = self.props.orientation == SplitOrientation·Horizontal;
+        ≔ total_size = ⎇ is_horizontal { bounds.width } ⎉ { bounds.height };
+        ≔ (first_size, second_size) = self.calculate_sizes(total_size);
+
+        element! {
+            <div
+                class="split-pane"
+                style={style! {
+                    display: "flex",
+                    flex_direction: ⎇ is_horizontal { "row" } ⎉ { "column" },
+                    width: "100%",
+                    height: "100%",
+                    background: VOID.to_css(),
+                }}
+                on_mouse_move={|e| {
+                    ≔ pos = ⎇ is_horizontal { e.client_x as f32 } ⎉ { e.client_y as f32 };
+                    self.handle_resize(pos, total_size);
+                }}
+                on_mouse_up={|_| self.dragging = false}
+                on_mouse_leave={|_| self.dragging = false}
+            >
+                // First pane
+                ⎇ !self.first_collapsed {
+                    <div class="split-pane-first" style={style! {
+                        width: ⎇ is_horizontal { px(first_size) } ⎉ { "100%" },
+                        height: ⎇ is_horizontal { "100%" } ⎉ { px(first_size) },
+                        overflow: "hidden",
+                        flex_shrink: 0,
+                    }}>
+                        {self.props.first.clone()}
+                    </div>
+                }
+
+                // Resize handle
+                <div
+                    class="split-handle"
+                    style={style! {
+                        width: ⎇ is_horizontal { px(HANDLE_SIZE) } ⎉ { "100%" },
+                        height: ⎇ is_horizontal { "100%" } ⎉ { px(HANDLE_SIZE) },
+                        background: ABYSS.to_css(),
+                        cursor: ⎇ is_horizontal { "ew-resize" } ⎉ { "ns-resize" },
+                        flex_shrink: 0,
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                        position: "relative",
+                    }}
+                    on_mouse_down={|e| {
+                        self.dragging = true;
+                        self.drag_start = ⎇ is_horizontal { e.client_x as f32 } ⎉ { e.client_y as f32 };
+                        self.drag_start_split = self.split;
+                    }}
+                >
+                    // Handle grip indicator
+                    <div style={style! {
+                        width: ⎇ is_horizontal { "2px" } ⎉ { "24px" },
+                        height: ⎇ is_horizontal { "24px" } ⎉ { "2px" },
+                        background: SILVER.with_alpha(0.3).to_css(),
+                        border_radius: "1px",
+                    }} />
+
+                    // Collapse buttons
+                    ⎇ self.props.collapsible_first || self.props.collapsible_second {
+                        <div style={style! {
+                            position: "absolute",
+                            display: "flex",
+                            gap: "2px",
+                            flex_direction: ⎇ is_horizontal { "column" } ⎉ { "row" },
+                        }}>
+                            ⎇ self.props.collapsible_first {
+                                <button style={style! {
+                                    width: "12px",
+                                    height: "12px",
+                                    background: ABYSS.to_css(),
+                                    border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                                    border_radius: "2px",
+                                    color: SILVER.with_alpha(0.6).to_css(),
+                                    font_size: "8px",
+                                    cursor: "pointer",
+                                    display: "flex",
+                                    align_items: "center",
+                                    justify_content: "center",
+                                }}
+                                on_click={|_| self.toggle_first()}>
+                                    {⎇ is_horizontal {
+                                        ⎇ self.first_collapsed { "▶" } ⎉ { "◀" }
+                                    } ⎉ {
+                                        ⎇ self.first_collapsed { "▼" } ⎉ { "▲" }
+                                    }}
+                                </button>
+                            }
+                            ⎇ self.props.collapsible_second {
+                                <button style={style! {
+                                    width: "12px",
+                                    height: "12px",
+                                    background: ABYSS.to_css(),
+                                    border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                                    border_radius: "2px",
+                                    color: SILVER.with_alpha(0.6).to_css(),
+                                    font_size: "8px",
+                                    cursor: "pointer",
+                                    display: "flex",
+                                    align_items: "center",
+                                    justify_content: "center",
+                                }}
+                                on_click={|_| self.toggle_second()}>
+                                    {⎇ is_horizontal {
+                                        ⎇ self.second_collapsed { "◀" } ⎉ { "▶" }
+                                    } ⎉ {
+                                        ⎇ self.second_collapsed { "▲" } ⎉ { "▼" }
+                                    }}
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+
+                // Second pane
+                ⎇ !self.second_collapsed {
+                    <div class="split-pane-second" style={style! {
+                        width: ⎇ is_horizontal { px(second_size) } ⎉ { "100%" },
+                        height: ⎇ is_horizontal { "100%" } ⎉ { px(second_size) },
+                        overflow: "hidden",
+                        flex_shrink: 0,
+                    }}>
+                        {self.props.second.clone()}
+                    </div>
+                }
+            </div>
+        }
+    }
+}
+
+/// Three-way split pane for complex layouts
+☉ Σ ThreeWaySplitProps {
+    orientation: SplitOrientation,
+    splits: (f32, f32),
+    first: Element,
+    second: Element,
+    third: Element,
+    min_sizes: (f32, f32, f32),
+}
+
+☉ Σ ThreeWaySplit {
+    props: ThreeWaySplitProps,
+    splits: (f32, f32),
+    dragging: Option<u8>,
+    drag_start: f32,
+    drag_start_split: (f32, f32),
+}
+
+⊢ ThreeWaySplit {
+    ☉ rite new(props: ThreeWaySplitProps) -> Self! {
+        ≔ splits = props.splits;
+        Self {
+            props,
+            splits,
+            dragging: None,
+            drag_start: 0.0,
+            drag_start_split: (0.0, 0.0),
+        }
+    }
+}
+
+⊢ Component ∀ ThreeWaySplit {
+    type Props = ThreeWaySplitProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bounds = ctx.bounds();
+        ≔ is_horizontal = self.props.orientation == SplitOrientation·Horizontal;
+        ≔ total_size = ⎇ is_horizontal { bounds.width } ⎉ { bounds.height };
+        ≔ usable_size = total_size - HANDLE_SIZE * 2.0;
+
+        ≔ first_size = usable_size * self.splits.0;
+        ≔ second_size = usable_size * (self.splits.1 - self.splits.0);
+        ≔ third_size = usable_size * (1.0 - self.splits.1);
+
+        element! {
+            <div
+                class="three-way-split"
+                style={style! {
+                    display: "flex",
+                    flex_direction: ⎇ is_horizontal { "row" } ⎉ { "column" },
+                    width: "100%",
+                    height: "100%",
+                    background: VOID.to_css(),
+                }}
+                on_mouse_up={|_| self.dragging = None}
+            >
+                // First pane
+                <div style={style! {
+                    width: ⎇ is_horizontal { px(first_size) } ⎉ { "100%" },
+                    height: ⎇ is_horizontal { "100%" } ⎉ { px(first_size) },
+                    overflow: "hidden",
+                    flex_shrink: 0,
+                }}>
+                    {self.props.first.clone()}
+                </div>
+
+                // First handle
+                <div style={style! {
+                    width: ⎇ is_horizontal { px(HANDLE_SIZE) } ⎉ { "100%" },
+                    height: ⎇ is_horizontal { "100%" } ⎉ { px(HANDLE_SIZE) },
+                    background: ABYSS.to_css(),
+                    cursor: ⎇ is_horizontal { "ew-resize" } ⎉ { "ns-resize" },
+                    flex_shrink: 0,
+                }}
+                on_mouse_down={|e| {
+                    self.dragging = Some(0);
+                    self.drag_start = ⎇ is_horizontal { e.client_x as f32 } ⎉ { e.client_y as f32 };
+                    self.drag_start_split = self.splits;
+                }} />
+
+                // Second pane
+                <div style={style! {
+                    width: ⎇ is_horizontal { px(second_size) } ⎉ { "100%" },
+                    height: ⎇ is_horizontal { "100%" } ⎉ { px(second_size) },
+                    overflow: "hidden",
+                    flex_shrink: 0,
+                }}>
+                    {self.props.second.clone()}
+                </div>
+
+                // Second handle
+                <div style={style! {
+                    width: ⎇ is_horizontal { px(HANDLE_SIZE) } ⎉ { "100%" },
+                    height: ⎇ is_horizontal { "100%" } ⎉ { px(HANDLE_SIZE) },
+                    background: ABYSS.to_css(),
+                    cursor: ⎇ is_horizontal { "ew-resize" } ⎉ { "ns-resize" },
+                    flex_shrink: 0,
+                }}
+                on_mouse_down={|e| {
+                    self.dragging = Some(1);
+                    self.drag_start = ⎇ is_horizontal { e.client_x as f32 } ⎉ { e.client_y as f32 };
+                    self.drag_start_split = self.splits;
+                }} />
+
+                // Third pane
+                <div style={style! {
+                    width: ⎇ is_horizontal { px(third_size) } ⎉ { "100%" },
+                    height: ⎇ is_horizontal { "100%" } ⎉ { px(third_size) },
+                    overflow: "hidden",
+                    flex_shrink: 0,
+                }}>
+                    {self.props.third.clone()}
+                </div>
+            </div>
+        }
+    }
+}

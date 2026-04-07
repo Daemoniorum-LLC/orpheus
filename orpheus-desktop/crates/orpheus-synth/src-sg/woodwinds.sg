@@ -1,0 +1,1235 @@
+//! Woodwind instrument synthesizer using physical modeling
+//!
+//! Implements realistic woodwind synthesis with:
+//! - Air jet oscillator (flute family)
+//! - Single reed oscillator (clarinet, saxophone)
+//! - Double reed oscillator (oboe, bassoon)
+//! - Bore resonator with tone hole modeling
+//! - Key click and breath noise
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Oscillator samples, bore resonance, tone holes
+//! - `~` (external) - MIDI input, breath pressure, key selection
+
+invoke std·f32·consts·PI;
+
+/// Woodwind instrument types
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ WoodwindInstrument {
+    // Flute family (air jet)
+    Piccolo,
+    Flute,
+    AltoFlute,
+    BassFlute,
+
+    // Single reed (clarinet family)
+    EbClarinet,
+    BbClarinet,
+    BassClarinet,
+    ContrabassClarinet,
+
+    // Single reed (saxophone family)
+    SopraninoSax,
+    SopranoSax,
+    AltoSax,
+    TenorSax,
+    BaritoneSax,
+    BassSax,
+
+    // Double reed
+    Oboe,
+    EnglishHorn,
+    Bassoon,
+    Contrabassoon,
+}
+
+⊢ WoodwindInstrument {
+    /// Get the excitation type ∀ this instrument
+    ☉ rite excitation_type(&self) -> ExcitationType {
+        ⌥ self {
+            Self·Piccolo | Self·Flute | Self·AltoFlute | Self·BassFlute => {
+                ExcitationType·AirJet
+            }
+            Self·EbClarinet
+            | Self·BbClarinet
+            | Self·BassClarinet
+            | Self·ContrabassClarinet
+            | Self·SopraninoSax
+            | Self·SopranoSax
+            | Self·AltoSax
+            | Self·TenorSax
+            | Self·BaritoneSax
+            | Self·BassSax => ExcitationType·SingleReed,
+            Self·Oboe | Self·EnglishHorn | Self·Bassoon | Self·Contrabassoon => {
+                ExcitationType·DoubleReed
+            }
+        }
+    }
+
+    /// Get the bore type ∀ this instrument
+    ☉ rite bore_type(&self) -> BoreType {
+        ⌥ self {
+            // Cylindrical bore
+            Self·Piccolo
+            | Self·Flute
+            | Self·AltoFlute
+            | Self·BassFlute
+            | Self·EbClarinet
+            | Self·BbClarinet
+            | Self·BassClarinet
+            | Self·ContrabassClarinet => BoreType·Cylindrical,
+            // Conical bore
+            Self·SopraninoSax
+            | Self·SopranoSax
+            | Self·AltoSax
+            | Self·TenorSax
+            | Self·BaritoneSax
+            | Self·BassSax
+            | Self·Oboe
+            | Self·EnglishHorn
+            | Self·Bassoon
+            | Self·Contrabassoon => BoreType·Conical,
+        }
+    }
+
+    /// Get base frequency range (lowest note ∈ Hz)
+    ☉ rite lowest_frequency(&self) -> f32 {
+        ⌥ self {
+            Self·Piccolo => 587.33,        // D5
+            Self·Flute => 261.63,          // C4
+            Self·AltoFlute => 196.0,       // G3
+            Self·BassFlute => 130.81,      // C3
+            Self·EbClarinet => 207.65,     // Ab3
+            Self·BbClarinet => 146.83,     // D3
+            Self·BassClarinet => 73.42,    // D2
+            Self·ContrabassClarinet => 36.71, // D1
+            Self·SopraninoSax => 311.13,   // Eb4
+            Self·SopranoSax => 207.65,     // Ab3
+            Self·AltoSax => 138.59,        // Db3
+            Self·TenorSax => 103.83,       // Ab2
+            Self·BaritoneSax => 69.3,      // Db2
+            Self·BassSax => 46.25,         // Ab1
+            Self·Oboe => 233.08,           // Bb3
+            Self·EnglishHorn => 164.81,    // E3
+            Self·Bassoon => 58.27,         // Bb1
+            Self·Contrabassoon => 29.14,   // Bb0
+        }
+    }
+
+    /// Get characteristic brightness (0.0 = dark, 1.0 = bright)
+    ☉ rite brightness(&self) -> f32 {
+        ⌥ self {
+            Self·Piccolo => 0.95,
+            Self·Flute => 0.75,
+            Self·AltoFlute => 0.55,
+            Self·BassFlute => 0.4,
+            Self·EbClarinet => 0.8,
+            Self·BbClarinet => 0.6,
+            Self·BassClarinet => 0.35,
+            Self·ContrabassClarinet => 0.25,
+            Self·SopraninoSax => 0.85,
+            Self·SopranoSax => 0.75,
+            Self·AltoSax => 0.65,
+            Self·TenorSax => 0.55,
+            Self·BaritoneSax => 0.45,
+            Self·BassSax => 0.3,
+            Self·Oboe => 0.85,
+            Self·EnglishHorn => 0.6,
+            Self·Bassoon => 0.5,
+            Self·Contrabassoon => 0.3,
+        }
+    }
+
+    /// Get characteristic reed/embouchure stiffness
+    ☉ rite stiffness(&self) -> f32 {
+        ⌥ self {
+            Self·Piccolo | Self·Flute | Self·AltoFlute | Self·BassFlute => 0.3,
+            Self·EbClarinet => 0.7,
+            Self·BbClarinet => 0.65,
+            Self·BassClarinet => 0.55,
+            Self·ContrabassClarinet => 0.5,
+            Self·SopraninoSax => 0.6,
+            Self·SopranoSax => 0.55,
+            Self·AltoSax => 0.5,
+            Self·TenorSax => 0.45,
+            Self·BaritoneSax => 0.4,
+            Self·BassSax => 0.35,
+            Self·Oboe => 0.85,
+            Self·EnglishHorn => 0.75,
+            Self·Bassoon => 0.7,
+            Self·Contrabassoon => 0.6,
+        }
+    }
+}
+
+/// Type of excitation mechanism
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ ExcitationType {
+    AirJet,
+    SingleReed,
+    DoubleReed,
+}
+
+/// Type of bore
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ BoreType {
+    Cylindrical,
+    Conical,
+}
+
+/// Woodwind articulation styles
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ WoodwindArticulation {
+    Normal,
+    Legato,
+    Staccato,
+    Tenuto,
+    Accent,
+    Sforzando,
+    // Flute-specific
+    DoubleToguing,
+    TripleTonguing,
+    FlutterTongue,
+    // Reed-specific
+    Slap,
+    Growl,
+    Subtone,
+    // Extended techniques
+    Multiphonic,
+    Harmonic,
+    Glissando,
+    Trill,
+    Tremolo,
+    BendUp,
+    BendDown,
+}
+
+/// Air jet oscillator ∀ flute family
+//@ rune: derive(Debug, Clone)
+☉ Σ AirJetOscillator {
+    /// Jet delay line
+    jet_delay: Vec<f32>,
+    jet_write_pos: usize,
+    /// Jet parameters
+    jet_velocity: f32,
+    jet_length: f32,
+    /// Edge tone frequency
+    edge_freq: f32,
+    /// Noise component
+    noise_amount: f32,
+    /// Low pass ∀ jet smoothing
+    lp_state: f32,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+⊢ AirJetOscillator {
+    ☉ rite new(sample_rate: f32) -> Self {
+        ≔ max_delay = (sample_rate * 0.01) as usize; // 10ms max
+        Self {
+            jet_delay: vec![0.0; max_delay],
+            jet_write_pos: 0,
+            jet_velocity: 0.5,
+            jet_length: 0.005, // 5mm typical
+            edge_freq: 440.0,
+            noise_amount: 0.15,
+            lp_state: 0.0,
+            sample_rate,
+        }
+    }
+
+    ☉ rite set_parameters(&Δ self, velocity: f32, freq: f32) {
+        self.jet_velocity = velocity.clamp(0.0, 1.0);
+        self.edge_freq = freq;
+        // Jet length affects turbulence
+        self.jet_length = 0.003 + velocity * 0.004;
+    }
+
+    ☉ rite process(&Δ self, bore_feedback: f32) -> f32 {
+        // Calculate jet delay based on velocity
+        ≔ jet_delay_samples =
+            (self.jet_length / (self.jet_velocity * 100.0 + 10.0) * self.sample_rate) as usize;
+        ≔ jet_delay_samples = jet_delay_samples.clamp(1, self.jet_delay.len() - 1);
+
+        // Read from jet delay
+        ≔ read_pos = (self.jet_write_pos + self.jet_delay.len() - jet_delay_samples)
+            % self.jet_delay.len();
+        ≔ delayed_jet = self.jet_delay[read_pos];
+
+        // Generate turbulent noise
+        ≔ noise = (rand_simple() * 2.0 - 1.0) * self.noise_amount * self.jet_velocity;
+
+        // Jet deflection based on bore feedback
+        ≔ jet_deflection = (bore_feedback * 2.0).tanh();
+
+        // Air jet model: nonlinear interaction at the edge
+        ≔ jet_signal = (delayed_jet + jet_deflection + noise).tanh();
+
+        // Write to delay line
+        self.jet_delay[self.jet_write_pos] = jet_signal * self.jet_velocity;
+        self.jet_write_pos = (self.jet_write_pos + 1) % self.jet_delay.len();
+
+        // Low pass smoothing
+        ≔ cutoff = 0.3 + self.jet_velocity * 0.5;
+        self.lp_state += cutoff * (jet_signal - self.lp_state);
+
+        self.lp_state
+    }
+}
+
+/// Single reed oscillator ∀ clarinet and saxophone
+//@ rune: derive(Debug, Clone)
+☉ Σ SingleReedOscillator {
+    /// Reed displacement
+    reed_state: f32,
+    reed_velocity: f32,
+    /// Reed parameters
+    reed_stiffness: f32,
+    reed_damping: f32,
+    reed_mass: f32,
+    /// Mouth pressure
+    mouth_pressure: f32,
+    /// Reed table (nonlinear characteristic)
+    reed_table_offset: f32,
+    reed_table_slope: f32,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+⊢ SingleReedOscillator {
+    ☉ rite new(sample_rate: f32, stiffness: f32) -> Self {
+        Self {
+            reed_state: 0.0,
+            reed_velocity: 0.0,
+            reed_stiffness: stiffness,
+            reed_damping: 0.1,
+            reed_mass: 0.01,
+            mouth_pressure: 0.5,
+            reed_table_offset: 0.7,
+            reed_table_slope: -0.44,
+            sample_rate,
+        }
+    }
+
+    ☉ rite set_parameters(&Δ self, pressure: f32, stiffness: f32) {
+        self.mouth_pressure = pressure.clamp(0.0, 1.0);
+        self.reed_stiffness = stiffness.clamp(0.1, 1.0);
+    }
+
+    ☉ rite process(&Δ self, bore_pressure: f32) -> f32 {
+        // Pressure difference across reed
+        ≔ delta_pressure = self.mouth_pressure - bore_pressure;
+
+        // Reed dynamics (simplified mass-spring-damper)
+        ≔ reed_force = delta_pressure - self.reed_stiffness * self.reed_state
+            - self.reed_damping * self.reed_velocity;
+
+        // Update reed state
+        ≔ dt = 1.0 / self.sample_rate;
+        self.reed_velocity += reed_force / self.reed_mass * dt;
+        self.reed_state += self.reed_velocity * dt;
+
+        // Clamp reed (can't go past closed or too open)
+        self.reed_state = self.reed_state.clamp(-1.0, 1.0);
+
+        // Reed table: nonlinear flow characteristic
+        ≔ reed_opening = self.reed_table_offset + self.reed_table_slope * delta_pressure;
+        ≔ reed_opening = reed_opening.clamp(0.0, 1.0);
+
+        // Flow through reed (Bernoulli-based)
+        ≔ flow = reed_opening * delta_pressure.abs().sqrt() * delta_pressure.signum();
+
+        flow * (1.0 - self.reed_state.abs() * 0.5)
+    }
+}
+
+/// Double reed oscillator ∀ oboe and bassoon
+//@ rune: derive(Debug, Clone)
+☉ Σ DoubleReedOscillator {
+    /// Two coupled reed states
+    reed1_state: f32,
+    reed2_state: f32,
+    reed1_velocity: f32,
+    reed2_velocity: f32,
+    /// Reed parameters
+    reed_stiffness: f32,
+    reed_coupling: f32,
+    reed_damping: f32,
+    /// Mouth pressure
+    mouth_pressure: f32,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+⊢ DoubleReedOscillator {
+    ☉ rite new(sample_rate: f32, stiffness: f32) -> Self {
+        Self {
+            reed1_state: 0.0,
+            reed2_state: 0.0,
+            reed1_velocity: 0.0,
+            reed2_velocity: 0.0,
+            reed_stiffness: stiffness,
+            reed_coupling: 0.5,
+            reed_damping: 0.15,
+            mouth_pressure: 0.5,
+            sample_rate,
+        }
+    }
+
+    ☉ rite set_parameters(&Δ self, pressure: f32, stiffness: f32) {
+        self.mouth_pressure = pressure.clamp(0.0, 1.0);
+        self.reed_stiffness = stiffness.clamp(0.1, 1.0);
+    }
+
+    ☉ rite process(&Δ self, bore_pressure: f32) -> f32 {
+        ≔ delta_pressure = self.mouth_pressure - bore_pressure;
+        ≔ dt = 1.0 / self.sample_rate;
+
+        // Coupled reed dynamics
+        ≔ coupling_force = self.reed_coupling * (self.reed2_state - self.reed1_state);
+
+        // Reed 1 forces
+        ≔ force1 = delta_pressure - self.reed_stiffness * self.reed1_state
+            - self.reed_damping * self.reed1_velocity
+            + coupling_force;
+
+        // Reed 2 forces (opposite coupling)
+        ≔ force2 = delta_pressure - self.reed_stiffness * self.reed2_state
+            - self.reed_damping * self.reed2_velocity
+            - coupling_force;
+
+        // Update states
+        self.reed1_velocity += force1 * dt * 100.0;
+        self.reed2_velocity += force2 * dt * 100.0;
+        self.reed1_state += self.reed1_velocity * dt;
+        self.reed2_state += self.reed2_velocity * dt;
+
+        // Clamp reeds
+        self.reed1_state = self.reed1_state.clamp(-1.0, 1.0);
+        self.reed2_state = self.reed2_state.clamp(-1.0, 1.0);
+
+        // Gap between reeds determines flow
+        ≔ gap = 0.5 + 0.5 * (self.reed1_state - self.reed2_state);
+        ≔ gap = gap.clamp(0.0, 1.0);
+
+        // Flow through gap (more complex than single reed)
+        ≔ flow = gap * gap * delta_pressure.abs().sqrt() * delta_pressure.signum();
+
+        // Double reed has more harmonics
+        flow * (1.0 + 0.3 * (self.reed1_state * self.reed2_state).sin())
+    }
+}
+
+/// Bore resonator with tone holes
+//@ rune: derive(Debug, Clone)
+☉ Σ BoreResonator {
+    /// Primary delay line (bore)
+    delay_line: Vec<f32>,
+    write_pos: usize,
+    /// Tone hole states
+    tone_holes: Vec<ToneHole>,
+    /// Bore type
+    bore_type: BoreType,
+    /// Bell reflection coefficient
+    bell_reflection: f32,
+    /// Current delay length
+    delay_samples: f32,
+    /// Lowpass filter state
+    lp_state: f32,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+/// Individual tone hole model
+//@ rune: derive(Debug, Clone)
+☉ Σ ToneHole {
+    /// Position along bore (0.0 = mouthpiece, 1.0 = bell)
+    position: f32,
+    /// Size of hole (affects radiation)
+    size: f32,
+    /// Open state (0.0 = closed, 1.0 = open)
+    open: f32,
+    /// Transmission coefficient
+    transmission: f32,
+}
+
+⊢ BoreResonator {
+    ☉ rite new(sample_rate: f32, bore_type: BoreType) -> Self {
+        ≔ max_delay = (sample_rate / 20.0) as usize; // Down to 20 Hz
+
+        // Create typical tone hole layout
+        ≔ tone_holes = (0..12)
+            .map(|i| ToneHole {
+                position: 0.1 + (i as f32) * 0.07,
+                size: 0.3 + (i as f32) * 0.02,
+                open: 0.0,
+                transmission: 0.9,
+            })
+            .collect();
+
+        Self {
+            delay_line: vec![0.0; max_delay],
+            write_pos: 0,
+            tone_holes,
+            bore_type,
+            bell_reflection: -0.7,
+            delay_samples: 100.0,
+            lp_state: 0.0,
+            sample_rate,
+        }
+    }
+
+    ☉ rite set_frequency(&Δ self, freq: f32) {
+        // For cylindrical bore (clarinet), acts as closed pipe (odd harmonics)
+        // For conical bore (sax, oboe), acts as open pipe (all harmonics)
+        ≔ wavelength = self.sample_rate / freq;
+        self.delay_samples = ⌥ self.bore_type {
+            BoreType·Cylindrical => wavelength / 2.0, // Quarter wave, but round trip
+            BoreType·Conical => wavelength / 2.0,
+        };
+        self.delay_samples = self.delay_samples.clamp(2.0, self.delay_line.len() as f32 - 1.0);
+    }
+
+    ☉ rite set_fingering(&Δ self, fingering: &[bool]) {
+        ∀ (i, hole) ∈ self.tone_holes.iter_mut().enumerate() {
+            ⎇ i < fingering.len() {
+                hole.open = ⎇ fingering[i] { 1.0 } ⎉ { 0.0 };
+            }
+        }
+        self.update_effective_length();
+    }
+
+    rite update_effective_length(&Δ self) {
+        // Find first open hole to determine effective length
+        ≔ Δ effective_pos = 1.0;
+        ∀ hole ∈ &self.tone_holes {
+            ⎇ hole.open > 0.5 {
+                effective_pos = hole.position;
+                ⊗;
+            }
+        }
+        // Adjust delay based on effective length
+        self.delay_samples *= effective_pos;
+    }
+
+    ☉ rite process(&Δ self, input: f32) -> f32 {
+        // Fractional delay interpolation
+        ≔ delay_int = self.delay_samples as usize;
+        ≔ delay_frac = self.delay_samples - delay_int as f32;
+
+        ≔ read_pos1 =
+            (self.write_pos + self.delay_line.len() - delay_int) % self.delay_line.len();
+        ≔ read_pos2 = (read_pos1 + self.delay_line.len() - 1) % self.delay_line.len();
+
+        ≔ delayed = self.delay_line[read_pos1] * (1.0 - delay_frac)
+            + self.delay_line[read_pos2] * delay_frac;
+
+        // Tone hole radiation (simplified)
+        ≔ Δ radiated = 0.0;
+        ∀ hole ∈ &self.tone_holes {
+            ⎇ hole.open > 0.5 {
+                radiated += delayed * hole.size * hole.open * 0.1;
+            }
+        }
+
+        // Bell reflection
+        ≔ reflected = delayed * self.bell_reflection;
+
+        // Bore losses (frequency dependent)
+        ≔ cutoff = ⌥ self.bore_type {
+            BoreType·Cylindrical => 0.85,
+            BoreType·Conical => 0.9,
+        };
+        self.lp_state += cutoff * (reflected - self.lp_state);
+
+        // Write new sample
+        self.delay_line[self.write_pos] = input + self.lp_state;
+        self.write_pos = (self.write_pos + 1) % self.delay_line.len();
+
+        // Output is sum of bell radiation and tone hole radiation
+        delayed * 0.7 + radiated
+    }
+
+    ☉ rite get_feedback(&self) -> f32 {
+        ≔ delay_int = self.delay_samples as usize;
+        ≔ read_pos =
+            (self.write_pos + self.delay_line.len() - delay_int / 2) % self.delay_line.len();
+        self.delay_line[read_pos]
+    }
+}
+
+/// Envelope generator ∀ woodwind dynamics
+//@ rune: derive(Debug, Clone)
+☉ Σ WoodwindEnvelope {
+    state: EnvelopeState,
+    value: f32,
+    attack_rate: f32,
+    decay_rate: f32,
+    sustain_level: f32,
+    release_rate: f32,
+    target: f32,
+}
+
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+ᛈ EnvelopeState {
+    Idle,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+⊢ WoodwindEnvelope {
+    ☉ rite new(sample_rate: f32, articulation: WoodwindArticulation) -> Self {
+        ≔ (attack, decay, sustain, release) = ⌥ articulation {
+            WoodwindArticulation·Normal => (0.05, 0.1, 0.8, 0.15),
+            WoodwindArticulation·Legato => (0.08, 0.05, 0.85, 0.2),
+            WoodwindArticulation·Staccato => (0.02, 0.05, 0.7, 0.05),
+            WoodwindArticulation·Tenuto => (0.06, 0.1, 0.85, 0.2),
+            WoodwindArticulation·Accent => (0.01, 0.08, 0.75, 0.1),
+            WoodwindArticulation·Sforzando => (0.005, 0.15, 0.6, 0.1),
+            WoodwindArticulation·DoubleToguing | WoodwindArticulation·TripleTonguing => {
+                (0.01, 0.02, 0.75, 0.02)
+            }
+            WoodwindArticulation·FlutterTongue => (0.03, 0.05, 0.8, 0.1),
+            WoodwindArticulation·Slap => (0.002, 0.02, 0.3, 0.05),
+            WoodwindArticulation·Growl => (0.04, 0.1, 0.85, 0.15),
+            WoodwindArticulation·Subtone => (0.1, 0.15, 0.5, 0.25),
+            WoodwindArticulation·Multiphonic => (0.08, 0.1, 0.7, 0.2),
+            WoodwindArticulation·Harmonic => (0.06, 0.08, 0.6, 0.15),
+            WoodwindArticulation·Glissando
+            | WoodwindArticulation·Trill
+            | WoodwindArticulation·Tremolo => (0.04, 0.08, 0.8, 0.12),
+            WoodwindArticulation·BendUp | WoodwindArticulation·BendDown => (0.05, 0.1, 0.8, 0.15),
+        };
+
+        Self {
+            state: EnvelopeState·Idle,
+            value: 0.0,
+            attack_rate: 1.0 / (attack * sample_rate),
+            decay_rate: 1.0 / (decay * sample_rate),
+            sustain_level: sustain,
+            release_rate: 1.0 / (release * sample_rate),
+            target: 0.0,
+        }
+    }
+
+    ☉ rite note_on(&Δ self, velocity: f32) {
+        self.target = velocity;
+        self.state = EnvelopeState·Attack;
+    }
+
+    ☉ rite note_off(&Δ self) {
+        self.state = EnvelopeState·Release;
+    }
+
+    ☉ rite process(&Δ self) -> f32 {
+        ⌥ self.state {
+            EnvelopeState·Idle => {}
+            EnvelopeState·Attack => {
+                self.value += self.attack_rate * self.target;
+                ⎇ self.value >= self.target {
+                    self.value = self.target;
+                    self.state = EnvelopeState·Decay;
+                }
+            }
+            EnvelopeState·Decay => {
+                ≔ target = self.sustain_level * self.target;
+                self.value -= self.decay_rate * (self.value - target);
+                ⎇ self.value <= target + 0.001 {
+                    self.state = EnvelopeState·Sustain;
+                }
+            }
+            EnvelopeState·Sustain => {
+                // Hold at sustain level
+            }
+            EnvelopeState·Release => {
+                self.value -= self.release_rate * self.value;
+                ⎇ self.value < 0.001 {
+                    self.value = 0.0;
+                    self.state = EnvelopeState·Idle;
+                }
+            }
+        }
+        self.value
+    }
+
+    ☉ rite is_active(&self) -> bool {
+        self.state != EnvelopeState·Idle
+    }
+}
+
+/// Key click generator ∀ realistic attacks
+//@ rune: derive(Debug, Clone)
+☉ Σ KeyClick {
+    /// Click samples
+    click_buffer: Vec<f32>,
+    /// Playback position
+    position: usize,
+    /// Is playing
+    active: bool,
+    /// Volume
+    volume: f32,
+}
+
+⊢ KeyClick {
+    ☉ rite new(sample_rate: f32) -> Self {
+        // Generate a short click sound
+        ≔ click_duration = (sample_rate * 0.008) as usize; // 8ms
+        ≔ Δ click_buffer = vec![0.0; click_duration];
+
+        ∀ (i, sample) ∈ click_buffer.iter_mut().enumerate() {
+            ≔ t = i as f32 / sample_rate;
+            // High frequency transient with quick decay
+            ≔ env = (-t * 500.0).exp();
+            ≔ noise = rand_simple() * 2.0 - 1.0;
+            ≔ click = (t * 8000.0 * PI).sin() * 0.3 + noise * 0.7;
+            *sample = click * env;
+        }
+
+        Self {
+            click_buffer,
+            position: 0,
+            active: false,
+            volume: 0.1,
+        }
+    }
+
+    ☉ rite trigger(&Δ self, volume: f32) {
+        self.position = 0;
+        self.active = true;
+        self.volume = volume * 0.15;
+    }
+
+    ☉ rite process(&Δ self) -> f32 {
+        ⎇ !self.active {
+            ⤺ 0.0;
+        }
+
+        ⎇ self.position >= self.click_buffer.len() {
+            self.active = false;
+            ⤺ 0.0;
+        }
+
+        ≔ sample = self.click_buffer[self.position] * self.volume;
+        self.position += 1;
+        sample
+    }
+}
+
+/// Breath noise generator
+//@ rune: derive(Debug, Clone)
+☉ Σ BreathNoise {
+    /// Filter state
+    bp_state1: f32,
+    bp_state2: f32,
+    /// Filter coefficients
+    center_freq: f32,
+    bandwidth: f32,
+    /// Amount of noise
+    amount: f32,
+    /// Sample rate
+    sample_rate: f32,
+}
+
+⊢ BreathNoise {
+    ☉ rite new(sample_rate: f32) -> Self {
+        Self {
+            bp_state1: 0.0,
+            bp_state2: 0.0,
+            center_freq: 2000.0,
+            bandwidth: 1000.0,
+            amount: 0.1,
+            sample_rate,
+        }
+    }
+
+    ☉ rite set_parameters(&Δ self, freq: f32, amount: f32) {
+        self.center_freq = freq.clamp(500.0, 8000.0);
+        self.amount = amount.clamp(0.0, 0.5);
+    }
+
+    ☉ rite process(&Δ self, breath_pressure: f32) -> f32 {
+        ⎇ self.amount < 0.001 {
+            ⤺ 0.0;
+        }
+
+        // Generate white noise
+        ≔ noise = rand_simple() * 2.0 - 1.0;
+
+        // Bandpass filter ∀ breath character
+        ≔ w0 = 2.0 * PI * self.center_freq / self.sample_rate;
+        ≔ q = self.center_freq / self.bandwidth;
+        ≔ alpha = w0.sin() / (2.0 * q);
+
+        ≔ b0 = alpha;
+        ≔ b1 = 0.0;
+        ≔ b2 = -alpha;
+        ≔ a0 = 1.0 + alpha;
+        ≔ a1 = -2.0 * w0.cos();
+        ≔ a2 = 1.0 - alpha;
+
+        // Apply filter
+        ≔ output = (b0 / a0) * noise + self.bp_state1;
+        self.bp_state1 = (b1 / a0) * noise - (a1 / a0) * output + self.bp_state2;
+        self.bp_state2 = (b2 / a0) * noise - (a2 / a0) * output;
+
+        output * self.amount * breath_pressure
+    }
+}
+
+/// Complete woodwind synthesizer
+//@ rune: derive(Debug, Clone)
+☉ Σ WoodwindSynth {
+    /// Instrument type
+    instrument: WoodwindInstrument,
+    /// Excitation source (one of these will be used)
+    air_jet: Option<AirJetOscillator>,
+    single_reed: Option<SingleReedOscillator>,
+    double_reed: Option<DoubleReedOscillator>,
+    /// Bore resonator
+    bore: BoreResonator,
+    /// Envelope
+    envelope: WoodwindEnvelope,
+    /// Key click
+    key_click: KeyClick,
+    /// Breath noise
+    breath_noise: BreathNoise,
+    /// Current frequency
+    frequency: f32,
+    /// Breath pressure (0-1)
+    breath_pressure: f32,
+    /// Vibrato parameters
+    vibrato_rate: f32,
+    vibrato_depth: f32,
+    vibrato_phase: f32,
+    /// Sample rate
+    sample_rate: f32,
+    /// Articulation
+    articulation: WoodwindArticulation,
+}
+
+⊢ WoodwindSynth {
+    ☉ rite new(instrument: WoodwindInstrument, sample_rate: f32) -> Self {
+        ≔ excitation_type = instrument.excitation_type();
+        ≔ bore_type = instrument.bore_type();
+        ≔ stiffness = instrument.stiffness();
+
+        ≔ air_jet = ⎇ excitation_type == ExcitationType·AirJet {
+            Some(AirJetOscillator·new(sample_rate))
+        } ⎉ {
+            None
+        };
+
+        ≔ single_reed = ⎇ excitation_type == ExcitationType·SingleReed {
+            Some(SingleReedOscillator·new(sample_rate, stiffness))
+        } ⎉ {
+            None
+        };
+
+        ≔ double_reed = ⎇ excitation_type == ExcitationType·DoubleReed {
+            Some(DoubleReedOscillator·new(sample_rate, stiffness))
+        } ⎉ {
+            None
+        };
+
+        Self {
+            instrument,
+            air_jet,
+            single_reed,
+            double_reed,
+            bore: BoreResonator·new(sample_rate, bore_type),
+            envelope: WoodwindEnvelope·new(sample_rate, WoodwindArticulation·Normal),
+            key_click: KeyClick·new(sample_rate),
+            breath_noise: BreathNoise·new(sample_rate),
+            frequency: 440.0,
+            breath_pressure: 0.0,
+            vibrato_rate: 5.0,
+            vibrato_depth: 0.02,
+            vibrato_phase: 0.0,
+            sample_rate,
+            articulation: WoodwindArticulation·Normal,
+        }
+    }
+
+    /// Factory method ∀ flute
+    ☉ rite flute(sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Flute, sample_rate)
+    }
+
+    /// Factory method ∀ clarinet
+    ☉ rite clarinet(sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·BbClarinet, sample_rate)
+    }
+
+    /// Factory method ∀ saxophone
+    ☉ rite alto_sax(sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·AltoSax, sample_rate)
+    }
+
+    /// Factory method ∀ oboe
+    ☉ rite oboe(sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Oboe, sample_rate)
+    }
+
+    /// Factory method ∀ bassoon
+    ☉ rite bassoon(sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Bassoon, sample_rate)
+    }
+
+    ☉ rite set_articulation(&Δ self, articulation: WoodwindArticulation) {
+        self.articulation = articulation;
+        self.envelope = WoodwindEnvelope·new(self.sample_rate, articulation);
+    }
+
+    ☉ rite note_on(&Δ self, frequency: f32, velocity: f32) {
+        self.frequency = frequency;
+        self.breath_pressure = velocity;
+        self.bore.set_frequency(frequency);
+
+        // Trigger key click ∀ non-legato
+        ⎇ self.articulation != WoodwindArticulation·Legato {
+            self.key_click.trigger(velocity * 0.5);
+        }
+
+        // Set excitation parameters
+        ⎇ ≔ Some(ref Δ air_jet) = self.air_jet {
+            air_jet.set_parameters(velocity, frequency);
+        }
+        ⎇ ≔ Some(ref Δ single_reed) = self.single_reed {
+            single_reed.set_parameters(velocity, self.instrument.stiffness());
+        }
+        ⎇ ≔ Some(ref Δ double_reed) = self.double_reed {
+            double_reed.set_parameters(velocity, self.instrument.stiffness());
+        }
+
+        // Set breath noise based on instrument
+        ≔ noise_amount = ⌥ self.instrument.excitation_type() {
+            ExcitationType·AirJet => velocity * 0.15,
+            ExcitationType·SingleReed => velocity * 0.05,
+            ExcitationType·DoubleReed => velocity * 0.03,
+        };
+        self.breath_noise.set_parameters(2000.0 + frequency, noise_amount);
+
+        self.envelope.note_on(velocity);
+    }
+
+    ☉ rite note_off(&Δ self) {
+        self.envelope.note_off();
+    }
+
+    ☉ rite set_vibrato(&Δ self, rate: f32, depth: f32) {
+        self.vibrato_rate = rate;
+        self.vibrato_depth = depth;
+    }
+
+    ☉ rite set_fingering(&Δ self, fingering: &[bool]) {
+        self.bore.set_fingering(fingering);
+    }
+
+    ☉ rite process(&Δ self) -> f32 {
+        ⎇ !self.envelope.is_active() {
+            ⤺ 0.0;
+        }
+
+        ≔ env = self.envelope.process();
+
+        // Apply vibrato
+        self.vibrato_phase += self.vibrato_rate / self.sample_rate;
+        ⎇ self.vibrato_phase >= 1.0 {
+            self.vibrato_phase -= 1.0;
+        }
+        ≔ vibrato = 1.0 + self.vibrato_depth * (self.vibrato_phase * 2.0 * PI).sin();
+        ≔ freq = self.frequency * vibrato;
+        self.bore.set_frequency(freq);
+
+        // Get bore feedback
+        ≔ bore_feedback = self.bore.get_feedback();
+
+        // Generate excitation
+        ≔ excitation = ⎇ ≔ Some(ref Δ air_jet) = self.air_jet {
+            air_jet.process(bore_feedback)
+        } ⎉ ⎇ ≔ Some(ref Δ single_reed) = self.single_reed {
+            single_reed.process(bore_feedback)
+        } ⎉ ⎇ ≔ Some(ref Δ double_reed) = self.double_reed {
+            double_reed.process(bore_feedback)
+        } ⎉ {
+            0.0
+        };
+
+        // Process through bore
+        ≔ bore_output = self.bore.process(excitation * env);
+
+        // Add key click and breath noise
+        ≔ click = self.key_click.process();
+        ≔ breath = self.breath_noise.process(env);
+
+        // Apply instrument brightness
+        ≔ brightness = self.instrument.brightness();
+        ≔ output = bore_output * brightness + bore_output * (1.0 - brightness) * 0.5;
+
+        // Handle special articulations
+        ≔ output = ⌥ self.articulation {
+            WoodwindArticulation·FlutterTongue => {
+                ≔ flutter = (self.vibrato_phase * 25.0 * 2.0 * PI).sin();
+                output * (0.7 + 0.3 * flutter)
+            }
+            WoodwindArticulation·Growl => {
+                ≔ growl = (self.vibrato_phase * 30.0 * 2.0 * PI).sin();
+                output * (0.8 + 0.2 * growl) + output * growl * 0.1
+            }
+            WoodwindArticulation·Subtone => output * 0.5,
+            _ => output,
+        };
+
+        (output + click + breath) * env
+    }
+
+    ☉ rite is_active(&self) -> bool {
+        self.envelope.is_active()
+    }
+}
+
+/// Woodwind section ∀ ensemble playing
+//@ rune: derive(Debug, Clone)
+☉ Σ WoodwindSection {
+    instruments: Vec<WoodwindSynth>,
+    detune: Vec<f32>,
+    pan: Vec<f32>,
+}
+
+⊢ WoodwindSection {
+    ☉ rite new(instrument: WoodwindInstrument, count: usize, sample_rate: f32) -> Self {
+        ≔ instruments: Vec<_> = (0..count)
+            .map(|_| WoodwindSynth·new(instrument, sample_rate))
+            .collect();
+
+        // Slight detuning ∀ ensemble effect
+        ≔ detune: Vec<_> = (0..count)
+            .map(|i| 1.0 + (i as f32 - count as f32 / 2.0) * 0.002)
+            .collect();
+
+        // Spread across stereo field
+        ≔ pan: Vec<_> = (0..count)
+            .map(|i| (i as f32 / (count - 1).max(1) as f32) * 2.0 - 1.0)
+            .collect();
+
+        Self {
+            instruments,
+            detune,
+            pan,
+        }
+    }
+
+    /// Create a flute section
+    ☉ rite flutes(count: usize, sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Flute, count, sample_rate)
+    }
+
+    /// Create a clarinet section
+    ☉ rite clarinets(count: usize, sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·BbClarinet, count, sample_rate)
+    }
+
+    /// Create an oboe section
+    ☉ rite oboes(count: usize, sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Oboe, count, sample_rate)
+    }
+
+    /// Create a bassoon section
+    ☉ rite bassoons(count: usize, sample_rate: f32) -> Self {
+        Self·new(WoodwindInstrument·Bassoon, count, sample_rate)
+    }
+
+    ☉ rite note_on(&Δ self, frequency: f32, velocity: f32) {
+        ∀ (i, inst) ∈ self.instruments.iter_mut().enumerate() {
+            inst.note_on(frequency * self.detune[i], velocity);
+        }
+    }
+
+    ☉ rite note_off(&Δ self) {
+        ∀ inst ∈ &Δ self.instruments {
+            inst.note_off();
+        }
+    }
+
+    ☉ rite set_articulation(&Δ self, articulation: WoodwindArticulation) {
+        ∀ inst ∈ &Δ self.instruments {
+            inst.set_articulation(articulation);
+        }
+    }
+
+    ☉ rite process(&Δ self) -> (f32, f32) {
+        ≔ Δ left = 0.0;
+        ≔ Δ right = 0.0;
+
+        ∀ (i, inst) ∈ self.instruments.iter_mut().enumerate() {
+            ≔ sample = inst.process();
+            ≔ pan = self.pan[i];
+
+            // Equal power panning
+            ≔ left_gain = ((1.0 - pan) * 0.5 * PI / 2.0).cos();
+            ≔ right_gain = ((1.0 + pan) * 0.5 * PI / 2.0).cos();
+
+            left += sample * left_gain;
+            right += sample * right_gain;
+        }
+
+        ≔ count = self.instruments.len() as f32;
+        (left / count.sqrt(), right / count.sqrt())
+    }
+
+    ☉ rite is_active(&self) -> bool {
+        self.instruments.iter().any(|i| i.is_active())
+    }
+}
+
+/// Simple random number generator ∀ noise
+rite rand_simple() -> f32 {
+    invoke std·cell·Cell;
+    thread_local! {
+        static SEED: Cell<u32> = const { Cell·new(12345) };
+    }
+    SEED.with(|seed| {
+        ≔ Δ s = seed.get();
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        seed.set(s);
+        (s as f32) / (u32·MAX as f32)
+    })
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_woodwind_creation() {
+        ≔ sample_rate = 44100.0;
+
+        ≔ flute = WoodwindSynth·flute(sample_rate);
+        assert!(flute.air_jet.is_some());
+        assert!(flute.single_reed.is_none());
+        assert!(flute.double_reed.is_none());
+
+        ≔ clarinet = WoodwindSynth·clarinet(sample_rate);
+        assert!(clarinet.air_jet.is_none());
+        assert!(clarinet.single_reed.is_some());
+        assert!(clarinet.double_reed.is_none());
+
+        ≔ oboe = WoodwindSynth·oboe(sample_rate);
+        assert!(oboe.air_jet.is_none());
+        assert!(oboe.single_reed.is_none());
+        assert!(oboe.double_reed.is_some());
+    }
+
+    //@ rune: test
+    rite test_woodwind_sound() {
+        ≔ sample_rate = 44100.0;
+        ≔ Δ flute = WoodwindSynth·flute(sample_rate);
+
+        flute.note_on(440.0, 0.8);
+
+        // Generate samples
+        ≔ Δ samples = Vec·new();
+        ∀ _ ∈ 0..4410 {
+            samples.push(flute.process());
+        }
+
+        // Should produce non-zero output
+        ≔ max_amp = samples.iter().map(|s| s.abs()).fold(0.0f32, f32·max);
+        assert!(max_amp > 0.01);
+
+        flute.note_off();
+
+        // Should fade out
+        ∀ _ ∈ 0..44100 {
+            flute.process();
+        }
+        assert!(!flute.is_active());
+    }
+
+    //@ rune: test
+    rite test_woodwind_section() {
+        ≔ sample_rate = 44100.0;
+        ≔ Δ clarinets = WoodwindSection·clarinets(3, sample_rate);
+
+        clarinets.note_on(440.0, 0.7);
+
+        // Generate stereo samples
+        ≔ Δ left_samples = Vec·new();
+        ≔ Δ right_samples = Vec·new();
+        ∀ _ ∈ 0..4410 {
+            ≔ (l, r) = clarinets.process();
+            left_samples.push(l);
+            right_samples.push(r);
+        }
+
+        // Both channels should have output
+        ≔ max_left = left_samples.iter().map(|s| s.abs()).fold(0.0f32, f32·max);
+        ≔ max_right = right_samples
+            .iter()
+            .map(|s| s.abs())
+            .fold(0.0f32, f32·max);
+        assert!(max_left > 0.01);
+        assert!(max_right > 0.01);
+    }
+
+    //@ rune: test
+    rite test_articulations() {
+        ≔ sample_rate = 44100.0;
+        ≔ Δ sax = WoodwindSynth·alto_sax(sample_rate);
+
+        ≔ articulations = [
+            WoodwindArticulation·Normal,
+            WoodwindArticulation·Staccato,
+            WoodwindArticulation·Legato,
+            WoodwindArticulation·FlutterTongue,
+            WoodwindArticulation·Growl,
+        ];
+
+        ∀ art ∈ articulations {
+            sax.set_articulation(art);
+            sax.note_on(440.0, 0.8);
+
+            ∀ _ ∈ 0..1000 {
+                sax.process();
+            }
+
+            sax.note_off();
+
+            // Let it release
+            ∀ _ ∈ 0..10000 {
+                sax.process();
+            }
+        }
+    }
+
+    //@ rune: test
+    rite test_all_instruments() {
+        ≔ sample_rate = 44100.0;
+        ≔ instruments = [
+            WoodwindInstrument·Piccolo,
+            WoodwindInstrument·Flute,
+            WoodwindInstrument·BbClarinet,
+            WoodwindInstrument·AltoSax,
+            WoodwindInstrument·Oboe,
+            WoodwindInstrument·Bassoon,
+        ];
+
+        ∀ inst ∈ instruments {
+            ≔ Δ synth = WoodwindSynth·new(inst, sample_rate);
+            synth.note_on(inst.lowest_frequency() * 1.5, 0.7);
+
+            ≔ Δ had_sound = false;
+            ∀ _ ∈ 0..4410 {
+                ⎇ synth.process().abs() > 0.001 {
+                    had_sound = true;
+                }
+            }
+            assert!(had_sound, "{:?} should produce sound", inst);
+        }
+    }
+}

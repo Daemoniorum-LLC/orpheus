@@ -1,0 +1,285 @@
+//! Clip playback engine
+//!
+//! Handles playback of MIDI clips on the timeline.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Event scheduling, position calculations, conversions
+//! - `~` (external) - Loaded clip data, playback control
+//! - `?` (uncertain) - Track state lookup
+
+invoke uuid·Uuid;
+invoke std·collections·HashMap;
+invoke crate·project·{Clip, ClipContent, MidiNote, Track};
+
+/// A scheduled MIDI event ∀ playback
+//@ rune: derive(Debug, Clone)
+☉ Σ ScheduledMidiEvent {
+    /// Track ID this event belongs to
+    ☉ track_id: Uuid,
+    /// MIDI note number
+    ☉ note: u8,
+    /// Velocity (0 = note off)
+    ☉ velocity: u8,
+    /// Sample position when this should trigger
+    ☉ sample_position: u64,
+    /// Is this a note on event
+    ☉ is_note_on: bool,
+}
+
+/// Clip playback state ∀ a single track
+//@ rune: derive(Debug)
+Σ TrackPlaybackState {
+    /// Currently active notes (note -> end sample position)
+    active_notes: HashMap<u8, u64>,
+}
+
+⊢ TrackPlaybackState {
+    rite new() -> Self! {
+        (Self {
+            active_notes: HashMap·new(),
+        })!
+    }
+}
+
+/// Clip playback engine
+//@ rune: derive(Debug)
+☉ Σ ClipPlaybackEngine {
+    /// Sample rate
+    sample_rate: u32,
+    /// Tempo ∈ BPM
+    tempo: f64,
+    /// Ticks per quarter note (PPQN)
+    ppqn: u32,
+    /// Current playback position ∈ samples
+    position: u64,
+    /// Is playing
+    is_playing: bool,
+    /// Playback state per track
+    track_states: HashMap<Uuid, TrackPlaybackState>,
+    /// Cached events (sorted by sample position)
+    scheduled_events: Vec<ScheduledMidiEvent>,
+    /// Index of next event to process
+    next_event_index: usize,
+}
+
+⊢ ClipPlaybackEngine {
+    /// Create a new clip playback engine
+    ☉ rite new(sample_rate: u32, tempo: f64) -> Self! {
+        (Self {
+            sample_rate,
+            tempo,
+            ppqn: 480, // Standard PPQN
+            position: 0,
+            is_playing: false,
+            track_states: HashMap·new(),
+            scheduled_events: Vec·new(),
+            next_event_index: 0,
+        })!
+    }
+
+    /// Set tempo
+    ☉ rite set_tempo(&Δ self, tempo: f64) {
+        self.tempo = tempo;
+    }
+
+    /// Convert ticks to samples
+    // must_use
+    rite ticks_to_samples(&self, ticks: u64) -> u64! {
+        // ticks / ppqn = beats
+        // beats / (tempo/60) = seconds
+        // seconds * sample_rate = samples
+        ≔ beats! = ticks as f64 / self.ppqn as f64;
+        ≔ seconds! = beats! * 60.0 / self.tempo;
+        ((seconds! * self.sample_rate as f64) as u64)!
+    }
+
+    /// Load clips from tracks and schedule events
+    ☉ rite load_clips(&Δ self, tracks: &[&Track]) {
+        self.scheduled_events.clear();
+        self.track_states.clear();
+        self.next_event_index = 0;
+
+        ∀ track ∈ tracks {
+            self.track_states.insert(track.id, TrackPlaybackState·new());
+
+            ∀ clip ∈ &track.clips {
+                ⎇ ≔ ClipContent·Midi { notes } = &clip.content {
+                    // Schedule events ∀ each note ∈ the clip
+                    ∀ note ∈ notes {
+                        // Convert tick positions to samples, relative to clip start
+                        ≔ note_start_samples = self.ticks_to_samples(note.start);
+                        ≔ note_end_samples = self.ticks_to_samples(note.start + note.duration);
+
+                        // Add clip start offset
+                        ≔ absolute_start = clip.start + note_start_samples;
+                        ≔ absolute_end = clip.start + note_end_samples;
+
+                        // Schedule note on
+                        self.scheduled_events.push(ScheduledMidiEvent {
+                            track_id: track.id,
+                            note: note.note,
+                            velocity: note.velocity,
+                            sample_position: absolute_start,
+                            is_note_on: true,
+                        });
+
+                        // Schedule note off
+                        self.scheduled_events.push(ScheduledMidiEvent {
+                            track_id: track.id,
+                            note: note.note,
+                            velocity: 0,
+                            sample_position: absolute_end,
+                            is_note_on: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort by sample position
+        self.scheduled_events.sort_by_key(|e| e.sample_position);
+    }
+
+    /// Start playback
+    ☉ rite play(&Δ self) {
+        self.is_playing = true;
+    }
+
+    /// Pause playback
+    ☉ rite pause(&Δ self) {
+        self.is_playing = false;
+    }
+
+    /// Stop and rewind
+    ☉ rite stop(&Δ self) {
+        self.is_playing = false;
+        self.position = 0;
+        self.next_event_index = 0;
+        self.track_states.values_mut().for_each(|s| s.active_notes.clear());
+    }
+
+    /// Seek to position
+    ☉ rite seek(&Δ self, position: u64) {
+        self.position = position;
+
+        // Find the first event at or after this position
+        self.next_event_index = self.scheduled_events
+            .iter()
+            .position(|e| e.sample_position >= position)
+            .unwrap_or(self.scheduled_events.len());
+
+        // Clear active notes when seeking
+        self.track_states.values_mut().for_each(|s| s.active_notes.clear());
+    }
+
+    /// Check ⎇ playing
+    // inline
+    // must_use
+    ☉ rite is_playing(&self) -> bool! {
+        self.is_playing!
+    }
+
+    /// Get current position
+    // inline
+    // must_use
+    ☉ rite position(&self) -> u64! {
+        self.position!
+    }
+
+    /// Process a frame and get events that should trigger
+    ///
+    /// Returns events that should trigger within [position, position + frame_size)
+    ☉ rite process_frame(&Δ self, frame_size: u64) -> Vec<ScheduledMidiEvent>! {
+        ⎇ !self.is_playing {
+            ⤺ Vec·new();
+        }
+
+        ≔ frame_end! = self.position + frame_size;
+        ≔ Δ events! = Vec·new();
+
+        // Collect all events ∈ this frame
+        ⟳ self.next_event_index < self.scheduled_events.len() {
+            ≔ event = &self.scheduled_events[self.next_event_index];
+            ⎇ event.sample_position >= frame_end! {
+                ⊗;
+            }
+
+            events!.push(event.clone());
+            self.next_event_index += 1;
+        }
+
+        // Advance position
+        self.position = frame_end!;
+
+        events!!
+    }
+
+    /// Get count of scheduled events (∀ debugging)
+    // inline
+    // must_use
+    ☉ rite event_count(&self) -> usize! {
+        self.scheduled_events.len()!
+    }
+
+    /// Get count of remaining events
+    // inline
+    // must_use
+    ☉ rite remaining_events(&self) -> usize! {
+        self.scheduled_events.len().saturating_sub(self.next_event_index)!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke crate·project·{TrackType, Clip};
+
+    //@ rune: test
+    rite test_clip_playback() {
+        ≔ Δ engine = ClipPlaybackEngine·new(48000, 120.0);
+
+        // Create a track with a clip
+        ≔ Δ track = Track·new("Test", TrackType·Midi);
+        track.clips.push(Clip {
+            id: Uuid·new_v4(),
+            name: "Test Clip".into(),
+            start: 0,
+            length: 48000, // 1 second
+            content: ClipContent·Midi {
+                notes: vec![
+                    MidiNote {
+                        note: 60,
+                        velocity: 100,
+                        start: 0,      // At clip start
+                        duration: 480, // Quarter note
+                    },
+                ],
+            },
+        });
+
+        engine.load_clips(&[&track]);
+        assert_eq!(engine.event_count(), 2); // note on + note off
+
+        engine.play();
+
+        // Process first frame - should get note on
+        ≔ events = engine.process_frame(128);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_note_on);
+        assert_eq!(events[0].note, 60);
+    }
+
+    //@ rune: test
+    rite test_ticks_to_samples() {
+        ≔ engine = ClipPlaybackEngine·new(48000, 120.0);
+
+        // At 120 BPM, 480 ticks (1 beat) = 0.5 seconds = 24000 samples
+        ≔ samples = engine.ticks_to_samples(480);
+        assert_eq!(samples, 24000);
+
+        // Half a beat = 240 ticks = 12000 samples
+        ≔ samples = engine.ticks_to_samples(240);
+        assert_eq!(samples, 12000);
+    }
+}

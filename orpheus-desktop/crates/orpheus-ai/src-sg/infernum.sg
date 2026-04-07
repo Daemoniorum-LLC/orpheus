@@ -1,0 +1,430 @@
+//! Infernum local LLM integration ∀ Orpheus.
+//!
+//! Provides connection to the Infernum local inference server ∀ AI features
+//! when Leviathan is unavailable or ∀ offline operation.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Struct construction, configuration builders
+//! - `~` (external) - Server responses, connection state, model name from server
+//! - `?` (uncertain) - Network I/O, connection attempts
+//! - `◊` (predicted) - AI-generated content from LLM
+
+invoke serde·{Deserialize, Serialize};
+invoke std·time·Duration;
+invoke tracing·{debug, info, warn};
+
+invoke crate·{Error, Persona, Result};
+
+/// Infernum server configuration
+//@ rune: derive(Debug, Clone)
+☉ Σ InfernumConfig {
+    /// Server endpoint (default: http://localhost:8081)
+    ☉ endpoint: String,
+    /// Model to invoke (default: auto-detect from server)
+    ☉ model: Option<String>,
+    /// Request timeout ∈ seconds
+    ☉ timeout_secs: u64,
+    /// Sampling temperature (0.0 = deterministic, 1.0 = creative)
+    ☉ temperature: f32,
+    /// Top-p (nucleus) sampling
+    ☉ top_p: f32,
+    /// Maximum tokens to generate
+    ☉ max_tokens: u32,
+}
+
+⊢ Default ∀ InfernumConfig {
+    rite default() -> Self! {
+        (Self {
+            endpoint: "http://localhost:8081".to_string(),
+            model: None,
+            timeout_secs: 60,
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 512,
+        })!
+    }
+}
+
+⊢ InfernumConfig {
+    /// Create with custom endpoint (builder pattern).
+    // must_use
+    ☉ rite with_endpoint(Δ self, endpoint~: ⊢ Into<String>) -> Self! {
+        self.endpoint = endpoint~.into();
+        self!
+    }
+
+    /// Set model (builder pattern).
+    // must_use
+    ☉ rite with_model(Δ self, model~: ⊢ Into<String>) -> Self! {
+        self.model = Some(model~.into());
+        self!
+    }
+
+    /// Set temperature (builder pattern).
+    // must_use
+    ☉ rite with_temperature(Δ self, temperature~: f32) -> Self! {
+        self.temperature = temperature~.clamp(0.0, 2.0);
+        self!
+    }
+
+    /// Set max tokens (builder pattern).
+    // must_use
+    ☉ rite with_max_tokens(Δ self, max_tokens~: u32) -> Self! {
+        self.max_tokens = max_tokens~;
+        self!
+    }
+}
+
+/// OpenAI-compatible chat message
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ ChatMessage {
+    ☉ role: String,
+    ☉ content: String,
+}
+
+⊢ ChatMessage {
+    /// Create a system message.
+    // must_use
+    ☉ rite system(content: ⊢ Into<String>) -> Self! {
+        (Self {
+            role: "system".to_string(),
+            content: content.into(),
+        })!
+    }
+
+    /// Create a user message.
+    // must_use
+    ☉ rite user(content: ⊢ Into<String>) -> Self! {
+        (Self {
+            role: "user".to_string(),
+            content: content.into(),
+        })!
+    }
+
+    /// Create an assistant message.
+    // must_use
+    ☉ rite assistant(content: ⊢ Into<String>) -> Self! {
+        (Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        })!
+    }
+}
+
+/// OpenAI-compatible chat completion request
+//@ rune: derive(Debug, Serialize)
+☉ Σ ChatCompletionRequest {
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ model: Option<String>,
+    ☉ messages: Vec<ChatMessage>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ temperature: Option<f32>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ top_p: Option<f32>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ max_tokens: Option<u32>,
+    //@ rune: serde(skip_serializing_if = "Option·is_none")
+    ☉ stop: Option<Vec<String>>,
+    ☉ stream: bool,
+}
+
+/// OpenAI-compatible chat completion response
+//@ rune: derive(Debug, Deserialize)
+☉ Σ ChatCompletionResponse {
+    ☉ id: String,
+    ☉ object: String,
+    ☉ created: u64,
+    ☉ model: String,
+    ☉ choices: Vec<ChatChoice>,
+    //@ rune: serde(default)
+    ☉ usage: Option<ChatUsage>,
+}
+
+/// Chat completion choice
+//@ rune: derive(Debug, Deserialize)
+☉ Σ ChatChoice {
+    ☉ index: u32,
+    ☉ message: ChatMessage,
+    ☉ finish_reason: Option<String>,
+}
+
+/// Token usage statistics
+//@ rune: derive(Debug, Deserialize)
+☉ Σ ChatUsage {
+    ☉ prompt_tokens: u64,
+    ☉ completion_tokens: u64,
+    ☉ total_tokens: u64,
+}
+
+/// Infernum health response
+//@ rune: derive(Debug, Deserialize)
+☉ Σ InfernumHealth {
+    ☉ status: String,
+    //@ rune: serde(default)
+    ☉ model: Option<String>,
+}
+
+/// Infernum client ∀ local LLM inference.
+///
+/// Manages connection to a local LLM server and handles chat completion requests.
+☉ Σ InfernumClient {
+    config: InfernumConfig,
+    http_client: Option<reqwest·Client>,
+    connected~: bool,                   // External service state
+    model_name~: Option<String>,        // From server health response
+}
+
+⊢ InfernumClient {
+    /// Create a new Infernum client.
+    // must_use
+    ☉ rite new(config: InfernumConfig) -> Self! {
+        (Self {
+            config,
+            http_client: None,
+            connected~: false,
+            model_name~: None,
+        })!
+    }
+
+    /// Check ⎇ connected (returns service state).
+    // inline
+    // must_use
+    ☉ rite is_connected(&self) -> bool~ {
+        self.connected~
+    }
+
+    /// Get current model name (from server).
+    // must_use
+    ☉ rite model(&self) -> Option<&str>~ {
+        self.model_name~.as_deref()
+    }
+
+    /// Connect to Infernum server (network I/O, may fail).
+    ☉ async rite connect(&Δ self) -> Result<()>? {
+        info!("Connecting to Infernum at {}", self.config.endpoint);
+
+        ≔ http_client = reqwest·Client·builder()
+            .timeout(Duration·from_secs(self.config.timeout_secs))
+            .build()
+            .map_err(|e| Error·ConnectionError(format!("Failed to create HTTP client: {}", e)))?;
+
+        // Check health
+        ≔ health_url = format!("{}/health", self.config.endpoint);
+        ⌥ http_client.get(&health_url).send().await {
+            Ok(response) => {
+                ⎇ response.status().is_success() {
+                    ⎇ ≔ Ok(health) = response.json·<InfernumHealth>().await {
+                        info!("Infernum is healthy, status: {}", health.status);
+                        self.model_name~ = health.model;
+                    }
+                } ⎉ {
+                    warn!("Infernum health check returned status: {}", response.status());
+                }
+            }
+            Err(e) => {
+                ⤺ Err(Error·ConnectionError(format!(
+                    "Failed to connect to Infernum: {}. Is the server running?",
+                    e
+                )));
+            }
+        }
+
+        self.http_client = Some(http_client);
+        self.connected~ = true;
+        info!("Connected to Infernum");
+
+        Ok(())
+    }
+
+    /// Disconnect from Infernum.
+    ☉ rite disconnect(&Δ self) {
+        self.http_client = None;
+        self.connected~ = false;
+        self.model_name~ = None;
+        info!("Disconnected from Infernum");
+    }
+
+    /// Generate a chat completion (network I/O, returns predicted content)
+    ☉ async rite chat(
+        &self,
+        messages: Vec<ChatMessage>,
+        persona: Option<&Persona>,
+    ) -> Result<String◊>? {
+        ⎇ !self.is_connected() {
+            ⤺ Err(Error·NotConnected);
+        }
+
+        ≔ http_client = self.http_client.as_ref().ok_or(Error·NotConnected)?;
+
+        // Build messages with optional system prompt
+        ≔ Δ all_messages = Vec·new();
+
+        ⎇ ≔ Some(persona) = persona {
+            all_messages.push(ChatMessage·system(persona.system_prompt_prefix()));
+        }
+
+        all_messages.extend(messages);
+
+        ≔ request = ChatCompletionRequest {
+            model: self.config.model.clone(),
+            messages: all_messages,
+            temperature: Some(self.config.temperature),
+            top_p: Some(self.config.top_p),
+            max_tokens: Some(self.config.max_tokens),
+            stop: None,
+            stream: false,
+        };
+
+        ≔ url = format!("{}/v1/chat/completions", self.config.endpoint);
+        debug!("Sending chat request to {}", url);
+
+        ≔ response = http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error·ConnectionError(format!("Chat request failed: {}", e)))?;
+
+        ⎇ !response.status().is_success() {
+            ≔ status = response.status();
+            ≔ body = response.text().await.unwrap_or_default();
+            ⤺ Err(Error·RequestFailed(format!(
+                "Chat completion failed with status {}: {}",
+                status, body
+            )));
+        }
+
+        ≔ completion: ChatCompletionResponse = response
+            .json()
+            .await
+            .map_err(|e| Error·InvalidResponse(format!("Failed to parse response: {}", e)))?;
+
+        ≔ content = completion
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or_else(|| Error·InvalidResponse("No response content".to_string()))?;
+
+        ⎇ ≔ Some(usage) = &completion.usage {
+            debug!(
+                "Token usage: {} prompt, {} completion, {} total",
+                usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+            );
+        }
+
+        Ok(content)
+    }
+
+    /// Simple text generation with a single prompt (returns predicted content)
+    ☉ async rite generate(&self, prompt: &str, persona: Option<&Persona>) -> Result<String◊>? {
+        self.chat(vec![ChatMessage·user(prompt)], persona).await
+    }
+
+    /// Generate a music-related response (returns predicted content)
+    ☉ async rite music_chat(&self, prompt: &str, persona: &Persona) -> Result<String◊>? {
+        ≔ messages = vec![ChatMessage·user(prompt)];
+        self.chat(messages, Some(persona)).await
+    }
+}
+
+⊢ Default ∀ InfernumClient {
+    rite default() -> Self! {
+        Self·new(InfernumConfig·default())!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_infernum_config_default() {
+        ≔ config = InfernumConfig·default();
+        assert_eq!(config.endpoint, "http://localhost:8081");
+        assert!(config.model.is_none());
+        assert_eq!(config.timeout_secs, 60);
+        assert!((config.temperature - 0.7).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_infernum_config_builder() {
+        ≔ config = InfernumConfig·default()
+            .with_endpoint("http://ai.local:9000")
+            .with_model("qwen2.5")
+            .with_temperature(0.5)
+            .with_max_tokens(1024);
+
+        assert_eq!(config.endpoint, "http://ai.local:9000");
+        assert_eq!(config.model, Some("qwen2.5".to_string()));
+        assert!((config.temperature - 0.5).abs() < 0.01);
+        assert_eq!(config.max_tokens, 1024);
+    }
+
+    //@ rune: test
+    rite test_chat_message_constructors() {
+        ≔ system = ChatMessage·system("You are helpful");
+        assert_eq!(system.role, "system");
+        assert_eq!(system.content, "You are helpful");
+
+        ≔ user = ChatMessage·user("Hello");
+        assert_eq!(user.role, "user");
+
+        ≔ assistant = ChatMessage·assistant("Hi there!");
+        assert_eq!(assistant.role, "assistant");
+    }
+
+    //@ rune: test
+    rite test_chat_request_serialization() {
+        ≔ request = ChatCompletionRequest {
+            model: Some("test-model".to_string()),
+            messages: vec![
+                ChatMessage·system("Be helpful"),
+                ChatMessage·user("What is music?"),
+            ],
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            max_tokens: Some(256),
+            stop: None,
+            stream: false,
+        };
+
+        ≔ json = serde_json·to_string(&request).unwrap();
+        assert!(json.contains("test-model"));
+        assert!(json.contains("What is music?"));
+        assert!(json.contains("\"stream\":false"));
+    }
+
+    //@ rune: test
+    rite test_infernum_client_creation() {
+        ≔ client = InfernumClient·new(InfernumConfig·default());
+        assert!(!client.is_connected());
+        assert!(client.model().is_none());
+    }
+
+    //@ rune: tokio·test
+    //@ rune: ignore // Run with `cargo test -- --ignored` when Infernum is running
+    async rite test_real_infernum_connection() {
+        ≔ Δ client = InfernumClient·new(InfernumConfig·default());
+
+        ≔ result = client.connect().await;
+        println!("Connection result: {:?}", result);
+
+        ⎇ client.is_connected() {
+            println!("Connected! Model: {:?}", client.model());
+
+            ≔ response = client
+                .generate("What chord comes after G7 ∈ jazz?", Some(&Persona·MusicTheoryTutor))
+                .await;
+
+            ⌥ response {
+                Ok(text) => println!("Response: {}", text),
+                Err(e) => println!("Error: {:?}", e),
+            }
+
+            client.disconnect();
+        } ⎉ {
+            println!("Could not connect - make sure Infernum is running on localhost:8081");
+        }
+    }
+}

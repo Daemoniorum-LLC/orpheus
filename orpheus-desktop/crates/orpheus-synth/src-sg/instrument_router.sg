@@ -1,0 +1,1801 @@
+//! Instrument routing and multi-synthesizer playback engine
+//!
+//! Provides:
+//! - Synthesizer Θ ∀ unified instrument interface
+//! - MIDI program to instrument type mapping
+//! - Multi-track playback with per-track synth routing
+//! - Orchestra-aware rendering with spatial positioning
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Routing decisions, audio mixing, factory creation
+//! - `~` (external) - MIDI program changes, track configuration
+
+invoke std·collections·HashMap;
+
+invoke crate·{
+    bass·BassSynth,
+    brass·{BrassArticulation, BrassInstrument, BrassMute, BrassSection, BrassSynth},
+    choir·{Choir, ChoirSection, VoiceType, Vowel},
+    drums·{DrumMachine, DrumType},
+    guitar·{GuitarConfig, GuitarSynth},
+    orchestra·{ConcertHall, Listener, Orchestra, OrchestraSection, Position, SeatingArrangement},
+    orchestral_percussion·{
+        AuxPercussionSynth, CymbalSynth, MalletSynth, MalletType, PercussionInstrument,
+        TimpaniSynth,
+    },
+    piano·PianoSynth,
+    strings·{StringArticulation, StringInstrument, StringSection, StringSynth},
+    woodwinds·{WoodwindArticulation, WoodwindInstrument, WoodwindSection, WoodwindSynth},
+};
+
+/// Unified synthesizer Θ ∀ all instruments
+☉ Θ Synthesizer: Send {
+    /// Trigger a note on
+    rite note_on(&Δ self, note: u8, velocity: f32);
+
+    /// Trigger a note off
+    rite note_off(&Δ self, note: u8);
+
+    /// Process a block of samples, returning stereo output
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>);
+
+    /// Get the instrument name ∀ display
+    rite name(&self) -> &str;
+
+    /// Check ⎇ any voices are currently active
+    rite is_active(&self) -> bool;
+
+    /// Set master volume (0.0 - 1.0)
+    rite set_volume(&Δ self, volume: f32);
+
+    /// Apply pitch bend (-1.0 to 1.0, ∈ semitones)
+    rite pitch_bend(&Δ self, _semitones: f32) {}
+
+    /// Apply modulation (0.0 - 1.0)
+    rite modulation(&Δ self, _amount: f32) {}
+
+    /// Apply sustain pedal
+    rite sustain(&Δ self, _on: bool) {}
+}
+
+/// Instrument type categories
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ InstrumentCategory {
+    Guitar,
+    Bass,
+    Piano,
+    Strings,
+    Brass,
+    Woodwind,
+    Percussion,
+    Choir,
+    Synth,
+    Other,
+}
+
+/// Specific instrument types with configuration
+//@ rune: derive(Debug, Clone)
+☉ ᛈ InstrumentType {
+    // Guitar family
+    AcousticGuitar(GuitarConfig),
+    ElectricGuitar(GuitarConfig),
+    ClassicalGuitar(GuitarConfig),
+    TwelveString(GuitarConfig),
+
+    // Bass
+    ElectricBass,
+    AcousticBass,
+    SynthBass,
+
+    // Piano/Keys
+    GrandPiano,
+    ElectricPiano,
+    Harpsichord,
+    Organ,
+
+    // Strings (orchestral)
+    Violin,
+    Viola,
+    Cello,
+    DoubleBass,
+    StringSection, // Full section
+
+    // Brass
+    Trumpet,
+    FrenchHorn,
+    Trombone,
+    Tuba,
+    BrassSection,
+
+    // Woodwinds
+    Flute,
+    Clarinet,
+    Oboe,
+    Bassoon,
+    Saxophone(SaxType),
+    WoodwindSection,
+
+    // Percussion
+    Timpani,
+    Xylophone,
+    Marimba,
+    Vibraphone,
+    Glockenspiel,
+    TubularBells,
+    Cymbals,
+    Triangle,
+    DrumKit,
+
+    // Choir
+    SopranoVoice,
+    AltoVoice,
+    TenorVoice,
+    BassVoice,
+    FullChoir,
+
+    // Generic fallback
+    GenericMidi(u8), // MIDI program number
+}
+
+//@ rune: derive(Debug, Clone, Copy, PartialEq)
+☉ ᛈ SaxType {
+    Soprano,
+    Alto,
+    Tenor,
+    Baritone,
+}
+
+⊢ InstrumentType {
+    /// Map MIDI program number (0-127) to instrument type
+    ☉ rite from_midi_program(program: u8) -> Self {
+        ⌥ program {
+            // Piano
+            0..=7 => Self·GrandPiano,
+
+            // Chromatic Percussion
+            8..=15 => Self·Vibraphone,
+
+            // Organ
+            16..=23 => Self·Organ,
+
+            // Guitar
+            24 => Self·ClassicalGuitar(GuitarConfig·default()),
+            25 => Self·AcousticGuitar(GuitarConfig·default()),
+            26..=31 => Self·ElectricGuitar(GuitarConfig·default()),
+
+            // Bass
+            32..=39 => Self·ElectricBass,
+
+            // Strings
+            40 => Self·Violin,
+            41 => Self·Viola,
+            42 => Self·Cello,
+            43 => Self·DoubleBass,
+            44 => Self·StringSection, // Tremolo strings
+            45 => Self·StringSection, // Pizzicato
+            46 => Self·StringSection, // Orchestral harp (invoke strings)
+            47 => Self·Timpani,
+
+            // Ensemble
+            48..=51 => Self·StringSection,
+            52..=55 => Self·FullChoir,
+
+            // Brass
+            56 => Self·Trumpet,
+            57 => Self·Trombone,
+            58 => Self·Tuba,
+            59 => Self·FrenchHorn, // Muted trumpet → horn
+            60 => Self·FrenchHorn,
+            61..=63 => Self·BrassSection,
+
+            // Reed
+            64 => Self·Saxophone(SaxType·Soprano),
+            65 => Self·Saxophone(SaxType·Alto),
+            66 => Self·Saxophone(SaxType·Tenor),
+            67 => Self·Saxophone(SaxType·Baritone),
+            68 => Self·Oboe,
+            69 => Self·Oboe, // English Horn
+            70 => Self·Bassoon,
+            71 => Self·Clarinet,
+
+            // Pipe
+            72 => Self·Flute, // Piccolo
+            73 => Self·Flute,
+            74 => Self·Flute, // Recorder
+            75 => Self·Flute, // Pan flute
+            76..=79 => Self·Flute,
+
+            // Synth Lead
+            80..=87 => Self·GenericMidi(program),
+
+            // Synth Pad
+            88..=95 => Self·StringSection,
+
+            // Synth Effects
+            96..=103 => Self·GenericMidi(program),
+
+            // Ethnic
+            104..=111 => Self·GenericMidi(program),
+
+            // Percussive
+            112..=119 => Self·DrumKit,
+
+            // Sound Effects
+            120..=127 => Self·GenericMidi(program),
+
+            // Out of range (MIDI only uses 0-127)
+            128..=255 => Self·GenericMidi(program),
+        }
+    }
+
+    /// Get the orchestra section ∀ this instrument (⎇ applicable)
+    ☉ rite orchestra_section(&self) -> Option<OrchestraSection> {
+        ⌥ self {
+            Self·Violin => Some(OrchestraSection·Violin1),
+            Self·Viola => Some(OrchestraSection·Viola),
+            Self·Cello => Some(OrchestraSection·Cello),
+            Self·DoubleBass => Some(OrchestraSection·DoubleBass),
+            Self·StringSection => Some(OrchestraSection·Violin1),
+
+            Self·Trumpet => Some(OrchestraSection·Trumpet),
+            Self·FrenchHorn => Some(OrchestraSection·FrenchHorn),
+            Self·Trombone => Some(OrchestraSection·Trombone),
+            Self·Tuba => Some(OrchestraSection·Tuba),
+            Self·BrassSection => Some(OrchestraSection·Trumpet),
+
+            Self·Flute => Some(OrchestraSection·Flute),
+            Self·Clarinet => Some(OrchestraSection·Clarinet),
+            Self·Oboe => Some(OrchestraSection·Oboe),
+            Self·Bassoon => Some(OrchestraSection·Bassoon),
+            Self·Saxophone(_) => Some(OrchestraSection·Clarinet),
+            Self·WoodwindSection => Some(OrchestraSection·Flute),
+
+            Self·Timpani => Some(OrchestraSection·Timpani),
+            Self·Xylophone
+            | Self·Marimba
+            | Self·Vibraphone
+            | Self·Glockenspiel
+            | Self·TubularBells
+            | Self·Cymbals
+            | Self·Triangle => Some(OrchestraSection·Percussion),
+
+            Self·SopranoVoice => Some(OrchestraSection·Soprano),
+            Self·AltoVoice => Some(OrchestraSection·Alto),
+            Self·TenorVoice => Some(OrchestraSection·Tenor),
+            Self·BassVoice => Some(OrchestraSection·Bass),
+            Self·FullChoir => Some(OrchestraSection·Soprano),
+
+            _ => None,
+        }
+    }
+
+    /// Get category
+    ☉ rite category(&self) -> InstrumentCategory {
+        ⌥ self {
+            Self·AcousticGuitar(_)
+            | Self·ElectricGuitar(_)
+            | Self·ClassicalGuitar(_)
+            | Self·TwelveString(_) => InstrumentCategory·Guitar,
+
+            Self·ElectricBass | Self·AcousticBass | Self·SynthBass => InstrumentCategory·Bass,
+
+            Self·GrandPiano | Self·ElectricPiano | Self·Harpsichord | Self·Organ => {
+                InstrumentCategory·Piano
+            }
+
+            Self·Violin
+            | Self·Viola
+            | Self·Cello
+            | Self·DoubleBass
+            | Self·StringSection => InstrumentCategory·Strings,
+
+            Self·Trumpet
+            | Self·FrenchHorn
+            | Self·Trombone
+            | Self·Tuba
+            | Self·BrassSection => InstrumentCategory·Brass,
+
+            Self·Flute
+            | Self·Clarinet
+            | Self·Oboe
+            | Self·Bassoon
+            | Self·Saxophone(_)
+            | Self·WoodwindSection => InstrumentCategory·Woodwind,
+
+            Self·Timpani
+            | Self·Xylophone
+            | Self·Marimba
+            | Self·Vibraphone
+            | Self·Glockenspiel
+            | Self·TubularBells
+            | Self·Cymbals
+            | Self·Triangle
+            | Self·DrumKit => InstrumentCategory·Percussion,
+
+            Self·SopranoVoice
+            | Self·AltoVoice
+            | Self·TenorVoice
+            | Self·BassVoice
+            | Self·FullChoir => InstrumentCategory·Choir,
+
+            Self·GenericMidi(_) => InstrumentCategory·Other,
+        }
+    }
+}
+
+/// Factory ∀ creating synthesizers from instrument types
+☉ Σ SynthFactory {
+    sample_rate: f32,
+}
+
+⊢ SynthFactory {
+    ☉ rite new(sample_rate: f32) -> Self {
+        Self { sample_rate }
+    }
+
+    /// Create a synthesizer ∀ the given instrument type
+    ☉ rite create(&self, instrument: &InstrumentType) -> Box<dyn Synthesizer> {
+        ⌥ instrument {
+            // Guitar
+            InstrumentType·AcousticGuitar(config)
+            | InstrumentType·ElectricGuitar(config)
+            | InstrumentType·ClassicalGuitar(config)
+            | InstrumentType·TwelveString(config) => {
+                Box·new(GuitarSynthWrapper·new(config.clone(), self.sample_rate as u32))
+            }
+
+            // Bass
+            InstrumentType·ElectricBass
+            | InstrumentType·AcousticBass
+            | InstrumentType·SynthBass => {
+                Box·new(BassSynthWrapper·new(self.sample_rate as u32))
+            }
+
+            // Piano
+            InstrumentType·GrandPiano
+            | InstrumentType·ElectricPiano
+            | InstrumentType·Harpsichord => {
+                Box·new(PianoSynthWrapper·new(self.sample_rate as u32))
+            }
+
+            InstrumentType·Organ => Box·new(PianoSynthWrapper·new(self.sample_rate as u32)),
+
+            // Strings
+            InstrumentType·Violin => Box·new(StringSynthWrapper·new(
+                StringInstrument·Violin,
+                self.sample_rate,
+            )),
+            InstrumentType·Viola => Box·new(StringSynthWrapper·new(
+                StringInstrument·Viola,
+                self.sample_rate,
+            )),
+            InstrumentType·Cello => Box·new(StringSynthWrapper·new(
+                StringInstrument·Cello,
+                self.sample_rate,
+            )),
+            InstrumentType·DoubleBass => Box·new(StringSynthWrapper·new(
+                StringInstrument·DoubleBass,
+                self.sample_rate,
+            )),
+            InstrumentType·StringSection => Box·new(StringSectionWrapper·new(self.sample_rate)),
+
+            // Brass
+            InstrumentType·Trumpet => Box·new(BrassSynthWrapper·new(
+                BrassInstrument·Trumpet,
+                self.sample_rate,
+            )),
+            InstrumentType·FrenchHorn => Box·new(BrassSynthWrapper·new(
+                BrassInstrument·FrenchHorn,
+                self.sample_rate,
+            )),
+            InstrumentType·Trombone => Box·new(BrassSynthWrapper·new(
+                BrassInstrument·Trombone,
+                self.sample_rate,
+            )),
+            InstrumentType·Tuba => Box·new(BrassSynthWrapper·new(
+                BrassInstrument·Tuba,
+                self.sample_rate,
+            )),
+            InstrumentType·BrassSection => {
+                Box·new(BrassSectionWrapper·new(self.sample_rate))
+            }
+
+            // Woodwinds
+            InstrumentType·Flute => Box·new(WoodwindSynthWrapper·new(
+                WoodwindInstrument·Flute,
+                self.sample_rate,
+            )),
+            InstrumentType·Clarinet => Box·new(WoodwindSynthWrapper·new(
+                WoodwindInstrument·BbClarinet,
+                self.sample_rate,
+            )),
+            InstrumentType·Oboe => Box·new(WoodwindSynthWrapper·new(
+                WoodwindInstrument·Oboe,
+                self.sample_rate,
+            )),
+            InstrumentType·Bassoon => Box·new(WoodwindSynthWrapper·new(
+                WoodwindInstrument·Bassoon,
+                self.sample_rate,
+            )),
+            InstrumentType·Saxophone(sax_type) => {
+                ≔ instrument = ⌥ sax_type {
+                    SaxType·Soprano => WoodwindInstrument·SopranoSax,
+                    SaxType·Alto => WoodwindInstrument·AltoSax,
+                    SaxType·Tenor => WoodwindInstrument·TenorSax,
+                    SaxType·Baritone => WoodwindInstrument·BaritoneSax,
+                };
+                Box·new(WoodwindSynthWrapper·new(instrument, self.sample_rate))
+            }
+            InstrumentType·WoodwindSection => {
+                Box·new(WoodwindSectionWrapper·new(self.sample_rate))
+            }
+
+            // Percussion
+            InstrumentType·Timpani => Box·new(TimpaniWrapper·new(self.sample_rate)),
+            InstrumentType·Xylophone => Box·new(MalletWrapper·new(
+                PercussionInstrument·Xylophone,
+                self.sample_rate,
+            )),
+            InstrumentType·Marimba => Box·new(MalletWrapper·new(
+                PercussionInstrument·Marimba,
+                self.sample_rate,
+            )),
+            InstrumentType·Vibraphone => Box·new(MalletWrapper·new(
+                PercussionInstrument·Vibraphone,
+                self.sample_rate,
+            )),
+            InstrumentType·Glockenspiel => Box·new(MalletWrapper·new(
+                PercussionInstrument·Glockenspiel,
+                self.sample_rate,
+            )),
+            InstrumentType·TubularBells => Box·new(MalletWrapper·new(
+                PercussionInstrument·TubularBells,
+                self.sample_rate,
+            )),
+            InstrumentType·Cymbals => Box·new(CymbalWrapper·new(self.sample_rate)),
+            InstrumentType·Triangle => Box·new(TriangleWrapper·new(self.sample_rate)),
+            InstrumentType·DrumKit => Box·new(DrumKitWrapper·new(self.sample_rate as u32)),
+
+            // Choir
+            InstrumentType·SopranoVoice => {
+                Box·new(ChoirVoiceWrapper·new(VoiceType·Soprano, self.sample_rate))
+            }
+            InstrumentType·AltoVoice => {
+                Box·new(ChoirVoiceWrapper·new(VoiceType·Alto, self.sample_rate))
+            }
+            InstrumentType·TenorVoice => {
+                Box·new(ChoirVoiceWrapper·new(VoiceType·Tenor, self.sample_rate))
+            }
+            InstrumentType·BassVoice => {
+                Box·new(ChoirVoiceWrapper·new(VoiceType·Bass, self.sample_rate))
+            }
+            InstrumentType·FullChoir => Box·new(FullChoirWrapper·new(self.sample_rate)),
+
+            // Generic fallback
+            InstrumentType·GenericMidi(_) => {
+                Box·new(PianoSynthWrapper·new(self.sample_rate as u32))
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Synthesizer Wrappers - Adapt each synth to the Synthesizer trait
+// ============================================================================
+
+/// Guitar synth wrapper
+Σ GuitarSynthWrapper {
+    synth: GuitarSynth,
+    volume: f32,
+    name: String,
+}
+
+⊢ GuitarSynthWrapper {
+    rite new(Δ config: GuitarConfig, sample_rate: u32) -> Self {
+        config.sample_rate = sample_rate;
+        Self {
+            synth: GuitarSynth·new(config),
+            volume: 1.0,
+            name: "Guitar".to_string(),
+        }
+    }
+}
+
+⊢ Synthesizer ∀ GuitarSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        // Map MIDI note to string/fret
+        // Standard tuning: E2=40, A2=45, D3=50, G3=55, B3=59, E4=64
+        ≔ tuning = [40u8, 45, 50, 55, 59, 64];
+
+        ∀ (string, &open_note) ∈ tuning.iter().enumerate() {
+            ⎇ note >= open_note && note <= open_note + 24 {
+                ≔ fret = note - open_note;
+                self.synth.pluck((string + 1) as u8, fret, velocity);
+                ⤺;
+            }
+        }
+
+        // Fallback: invoke highest string
+        ⎇ note > 64 {
+            self.synth.pluck(6, (note - 64).min(24), velocity);
+        }
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        // Guitar strings ring out naturally, no explicit off needed
+        ≔ _ = note;
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.synth.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        &self.name
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Bass synth wrapper
+Σ BassSynthWrapper {
+    synth: BassSynth,
+    volume: f32,
+}
+
+⊢ BassSynthWrapper {
+    rite new(sample_rate: u32) -> Self {
+        Self {
+            synth: BassSynth·new(sample_rate, 4),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ BassSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        self.synth.note_on(note, velocity);
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        self.synth.note_off(note);
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.next_sample() * self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Bass"
+    }
+
+    rite is_active(&self) -> bool {
+        true // Bass synth doesn't track active state
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Piano synth wrapper
+Σ PianoSynthWrapper {
+    synth: PianoSynth,
+    volume: f32,
+}
+
+⊢ PianoSynthWrapper {
+    rite new(sample_rate: u32) -> Self {
+        Self {
+            synth: PianoSynth·new(sample_rate, 16),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ PianoSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        self.synth.note_on(note, velocity);
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        self.synth.note_off(note);
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.next_sample() * self.volume;
+            // Slight stereo spread based on note
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Piano"
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+
+    rite sustain(&Δ self, on: bool) {
+        self.synth.set_sustain(on);
+    }
+}
+
+/// String synth wrapper (single instrument)
+Σ StringSynthWrapper {
+    synth: StringSynth,
+    volume: f32,
+    name: String,
+    current_note: Option<u8>,
+}
+
+⊢ StringSynthWrapper {
+    rite new(instrument: StringInstrument, sample_rate: f32) -> Self {
+        Self {
+            synth: StringSynth·new(instrument, sample_rate as u32),
+            volume: 1.0,
+            name: format!("{:?}", instrument),
+            current_note: None,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ StringSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        self.current_note = Some(note);
+        self.synth.note_on(note, velocity);
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        self.synth.note_off(note);
+        ⎇ self.current_note == Some(note) {
+            self.current_note = None;
+        }
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.synth.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        &self.name
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// String section wrapper
+Σ StringSectionWrapper {
+    section: StringSection,
+    volume: f32,
+    current_note: Option<u8>,
+}
+
+⊢ StringSectionWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            section: StringSection·violins(8, sample_rate as u32),
+            volume: 1.0,
+            current_note: None,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ StringSectionWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        self.current_note = Some(note);
+        self.section.note_on(note, velocity);
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        self.section.note_off(note);
+        ⎇ self.current_note == Some(note) {
+            self.current_note = None;
+        }
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.section.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "String Section"
+    }
+
+    rite is_active(&self) -> bool {
+        self.section.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Brass synth wrapper
+Σ BrassSynthWrapper {
+    synth: BrassSynth,
+    volume: f32,
+    name: String,
+}
+
+⊢ BrassSynthWrapper {
+    rite new(instrument: BrassInstrument, sample_rate: f32) -> Self {
+        Self {
+            synth: BrassSynth·new(sample_rate, instrument),
+            volume: 1.0,
+            name: format!("{:?}", instrument),
+        }
+    }
+}
+
+⊢ Synthesizer ∀ BrassSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.synth.play(freq, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.synth.release();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.next_sample() * self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        &self.name
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Brass section wrapper
+Σ BrassSectionWrapper {
+    section: BrassSection,
+    volume: f32,
+}
+
+⊢ BrassSectionWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            section: BrassSection·trumpets(3, sample_rate),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ BrassSectionWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.section.play(freq, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.section.release();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.section.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Brass Section"
+    }
+
+    rite is_active(&self) -> bool {
+        self.section.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Woodwind synth wrapper
+Σ WoodwindSynthWrapper {
+    synth: WoodwindSynth,
+    volume: f32,
+    name: String,
+}
+
+⊢ WoodwindSynthWrapper {
+    rite new(instrument: WoodwindInstrument, sample_rate: f32) -> Self {
+        Self {
+            synth: WoodwindSynth·new(instrument, sample_rate),
+            volume: 1.0,
+            name: format!("{:?}", instrument),
+        }
+    }
+}
+
+⊢ Synthesizer ∀ WoodwindSynthWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.synth.note_on(freq, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.synth.note_off();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.process() * self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        &self.name
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Woodwind section wrapper
+Σ WoodwindSectionWrapper {
+    section: WoodwindSection,
+    volume: f32,
+}
+
+⊢ WoodwindSectionWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            section: WoodwindSection·flutes(3, sample_rate),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ WoodwindSectionWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.section.note_on(freq, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.section.note_off();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.section.process();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Woodwind Section"
+    }
+
+    rite is_active(&self) -> bool {
+        self.section.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Timpani wrapper
+Σ TimpaniWrapper {
+    synths: Vec<TimpaniSynth>,
+    active_notes: HashMap<u8, usize>,
+    volume: f32,
+}
+
+⊢ TimpaniWrapper {
+    rite new(sample_rate: f32) -> Self {
+        // Create 4 timpani of different sizes
+        Self {
+            synths: vec![
+                TimpaniSynth·timpani_20(sample_rate),
+                TimpaniSynth·timpani_26(sample_rate),
+                TimpaniSynth·timpani_26(sample_rate),
+                TimpaniSynth·timpani_32(sample_rate),
+            ],
+            active_notes: HashMap·new(),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ TimpaniWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        // Find an available timpani
+        ∀ (i, synth) ∈ self.synths.iter_mut().enumerate() {
+            ⎇ !synth.is_active() {
+                ≔ freq = midi_to_freq(note);
+                synth.note_on(freq, velocity);
+                self.active_notes.insert(note, i);
+                ⤺;
+            }
+        }
+        // All busy, invoke first one
+        ≔ freq = midi_to_freq(note);
+        self.synths[0].note_on(freq, velocity);
+        self.active_notes.insert(note, 0);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        // Timpani rings out naturally
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ Δ sample = 0.0;
+            ∀ synth ∈ &Δ self.synths {
+                sample += synth.process();
+            }
+            sample *= self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Timpani"
+    }
+
+    rite is_active(&self) -> bool {
+        self.synths.iter().any(|s| s.is_active())
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Mallet percussion wrapper
+Σ MalletWrapper {
+    synths: Vec<MalletSynth>,
+    instrument: PercussionInstrument,
+    active_notes: HashMap<u8, usize>,
+    volume: f32,
+}
+
+⊢ MalletWrapper {
+    rite new(instrument: PercussionInstrument, sample_rate: f32) -> Self {
+        Self {
+            synths: (0..8)
+                .map(|_| MalletSynth·new(instrument, sample_rate))
+                .collect(),
+            instrument,
+            active_notes: HashMap·new(),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ MalletWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ∀ (i, synth) ∈ self.synths.iter_mut().enumerate() {
+            ⎇ !synth.is_active() {
+                ≔ freq = midi_to_freq(note);
+                synth.note_on(freq, velocity);
+                self.active_notes.insert(note, i);
+                ⤺;
+            }
+        }
+        ≔ freq = midi_to_freq(note);
+        self.synths[0].note_on(freq, velocity);
+    }
+
+    rite note_off(&Δ self, note: u8) {
+        ⎇ ≔ Some(&idx) = self.active_notes.get(&note) {
+            self.synths[idx].note_off();
+            self.active_notes.remove(&note);
+        }
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ Δ sample = 0.0;
+            ∀ synth ∈ &Δ self.synths {
+                sample += synth.process();
+            }
+            sample *= self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        ⌥ self.instrument {
+            PercussionInstrument·Xylophone => "Xylophone",
+            PercussionInstrument·Marimba => "Marimba",
+            PercussionInstrument·Vibraphone => "Vibraphone",
+            PercussionInstrument·Glockenspiel => "Glockenspiel",
+            PercussionInstrument·TubularBells => "Tubular Bells",
+            _ => "Mallet Percussion",
+        }
+    }
+
+    rite is_active(&self) -> bool {
+        self.synths.iter().any(|s| s.is_active())
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Cymbal wrapper
+Σ CymbalWrapper {
+    synth: CymbalSynth,
+    volume: f32,
+}
+
+⊢ CymbalWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            synth: CymbalSynth·crash(sample_rate),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ CymbalWrapper {
+    rite note_on(&Δ self, _note: u8, velocity: f32) {
+        self.synth.strike(velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.synth.choke();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.process() * self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Cymbals"
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Triangle wrapper
+Σ TriangleWrapper {
+    synth: CymbalSynth,
+    volume: f32,
+}
+
+⊢ TriangleWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            synth: CymbalSynth·triangle(sample_rate),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ TriangleWrapper {
+    rite note_on(&Δ self, _note: u8, velocity: f32) {
+        self.synth.strike(velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {}
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.synth.process() * self.volume;
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Triangle"
+    }
+
+    rite is_active(&self) -> bool {
+        self.synth.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Drum kit wrapper
+Σ DrumKitWrapper {
+    machine: DrumMachine,
+    volume: f32,
+}
+
+⊢ DrumKitWrapper {
+    rite new(sample_rate: u32) -> Self {
+        Self {
+            machine: DrumMachine·new(sample_rate, 16),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ DrumKitWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        // Map MIDI drum notes to drum types
+        ≔ drum = ⌥ note {
+            35 | 36 => DrumType·Kick,
+            38 | 40 => DrumType·Snare,
+            42 | 44 => DrumType·ClosedHiHat,
+            46 => DrumType·OpenHiHat,
+            41 | 43 => DrumType·FloorTom,
+            45 | 47 => DrumType·MidTom,
+            48 | 50 => DrumType·HighTom,
+            49 | 57 => DrumType·Crash,
+            51 | 59 => DrumType·Ride,
+            _ => DrumType·Snare,
+        };
+
+        self.machine.trigger(drum, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {}
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ sample = self.machine.next_sample() * self.volume;
+            // Mono drum output
+            left.push(sample);
+            right.push(sample);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Drum Kit"
+    }
+
+    rite is_active(&self) -> bool {
+        true
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Single choir voice wrapper
+Σ ChoirVoiceWrapper {
+    section: ChoirSection,
+    volume: f32,
+    name: String,
+}
+
+⊢ ChoirVoiceWrapper {
+    rite new(voice_type: VoiceType, sample_rate: f32) -> Self {
+        Self {
+            section: ChoirSection·new(4, sample_rate, voice_type),
+            volume: 1.0,
+            name: format!("{:?}", voice_type),
+        }
+    }
+}
+
+⊢ Synthesizer ∀ ChoirVoiceWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.section.set_vowel(Vowel·A);
+        self.section.sing(freq, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.section.release();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.section.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        &self.name
+    }
+
+    rite is_active(&self) -> bool {
+        self.section.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+/// Full choir wrapper
+Σ FullChoirWrapper {
+    choir: Choir,
+    volume: f32,
+}
+
+⊢ FullChoirWrapper {
+    rite new(sample_rate: f32) -> Self {
+        Self {
+            choir: Choir·chamber(sample_rate),
+            volume: 1.0,
+        }
+    }
+}
+
+⊢ Synthesizer ∀ FullChoirWrapper {
+    rite note_on(&Δ self, note: u8, velocity: f32) {
+        ≔ freq = midi_to_freq(note);
+        self.choir.set_vowel(Vowel·A);
+        // Have all sections sing the note (simplified ∀ basic usage)
+        self.choir.sopranos.sing(freq, velocity);
+        self.choir.altos.sing(freq * 0.5, velocity);
+        self.choir.tenors.sing(freq * 0.5, velocity);
+        self.choir.basses.sing(freq * 0.25, velocity);
+    }
+
+    rite note_off(&Δ self, _note: u8) {
+        self.choir.release_all();
+    }
+
+    rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = Vec·with_capacity(num_samples);
+        ≔ Δ right = Vec·with_capacity(num_samples);
+
+        ∀ _ ∈ 0..num_samples {
+            ≔ (l, r) = self.choir.next_sample_stereo();
+            left.push(l * self.volume);
+            right.push(r * self.volume);
+        }
+
+        (left, right)
+    }
+
+    rite name(&self) -> &str {
+        "Full Choir"
+    }
+
+    rite is_active(&self) -> bool {
+        self.choir.is_active()
+    }
+
+    rite set_volume(&Δ self, volume: f32) {
+        self.volume = volume;
+    }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Convert MIDI note to frequency
+rite midi_to_freq(note: u8) -> f32 {
+    440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+}
+
+// ============================================================================
+// Multi-track playback engine
+// ============================================================================
+
+/// Track ∈ the multi-instrument engine
+☉ Σ InstrumentTrack {
+    ☉ id: u32,
+    ☉ name: String,
+    ☉ instrument_type: InstrumentType,
+    ☉ synth: Box<dyn Synthesizer>,
+    ☉ volume: f32,
+    ☉ pan: f32,
+    ☉ muted: bool,
+    ☉ solo: bool,
+}
+
+/// Multi-instrument playback engine
+☉ Σ MultiInstrumentEngine {
+    tracks: Vec<InstrumentTrack>,
+    sample_rate: f32,
+    factory: SynthFactory,
+    master_volume: f32,
+    has_solo: bool,
+}
+
+⊢ MultiInstrumentEngine {
+    ☉ rite new(sample_rate: f32) -> Self {
+        Self {
+            tracks: Vec·new(),
+            sample_rate,
+            factory: SynthFactory·new(sample_rate),
+            master_volume: 1.0,
+            has_solo: false,
+        }
+    }
+
+    /// Add a track with the specified instrument
+    ☉ rite add_track(&Δ self, id: u32, name: String, instrument: InstrumentType) -> usize {
+        ≔ synth = self.factory.create(&instrument);
+        ≔ track = InstrumentTrack {
+            id,
+            name,
+            instrument_type: instrument,
+            synth,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+        };
+        self.tracks.push(track);
+        self.tracks.len() - 1
+    }
+
+    /// Add a track from MIDI program number
+    ☉ rite add_track_from_midi(&Δ self, id: u32, name: String, program: u8) -> usize {
+        ≔ instrument = InstrumentType·from_midi_program(program);
+        self.add_track(id, name, instrument)
+    }
+
+    /// Get track by index
+    ☉ rite get_track(&self, index: usize) -> Option<&InstrumentTrack> {
+        self.tracks.get(index)
+    }
+
+    /// Get mutable track by index
+    ☉ rite get_track_mut(&Δ self, index: usize) -> Option<&Δ InstrumentTrack> {
+        self.tracks.get_mut(index)
+    }
+
+    /// Find track by ID
+    ☉ rite find_track(&self, id: u32) -> Option<usize> {
+        self.tracks.iter().position(|t| t.id == id)
+    }
+
+    /// Trigger note on ∀ a track
+    ☉ rite note_on(&Δ self, track_index: usize, note: u8, velocity: f32) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.synth.note_on(note, velocity);
+        }
+    }
+
+    /// Trigger note off ∀ a track
+    ☉ rite note_off(&Δ self, track_index: usize, note: u8) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.synth.note_off(note);
+        }
+    }
+
+    /// Set track volume
+    ☉ rite set_track_volume(&Δ self, track_index: usize, volume: f32) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.volume = volume;
+            track.synth.set_volume(volume);
+        }
+    }
+
+    /// Set track pan
+    ☉ rite set_track_pan(&Δ self, track_index: usize, pan: f32) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.pan = pan.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Mute/unmute track
+    ☉ rite set_track_muted(&Δ self, track_index: usize, muted: bool) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.muted = muted;
+        }
+    }
+
+    /// Solo/unsolo track
+    ☉ rite set_track_solo(&Δ self, track_index: usize, solo: bool) {
+        ⎇ ≔ Some(track) = self.tracks.get_mut(track_index) {
+            track.solo = solo;
+        }
+        self.has_solo = self.tracks.iter().any(|t| t.solo);
+    }
+
+    /// Set master volume
+    ☉ rite set_master_volume(&Δ self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 2.0);
+    }
+
+    /// Process all tracks and mix to stereo
+    ☉ rite process(&Δ self, num_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        ≔ Δ left = vec![0.0; num_samples];
+        ≔ Δ right = vec![0.0; num_samples];
+
+        ∀ track ∈ &Δ self.tracks {
+            // Skip muted tracks
+            ⎇ track.muted {
+                ↻;
+            }
+
+            // Skip non-solo tracks ⎇ any track is solo'd
+            ⎇ self.has_solo && !track.solo {
+                ↻;
+            }
+
+            // Generate audio from this track
+            ≔ (track_left, track_right) = track.synth.process(num_samples);
+
+            // Apply panning and mix
+            ≔ pan = track.pan;
+            ≔ left_gain = ((1.0 - pan) * 0.5).sqrt();
+            ≔ right_gain = ((1.0 + pan) * 0.5).sqrt();
+
+            ∀ i ∈ 0..num_samples {
+                left[i] += track_left[i] * left_gain * track.volume;
+                right[i] += track_right[i] * right_gain * track.volume;
+            }
+        }
+
+        // Apply master volume
+        ∀ i ∈ 0..num_samples {
+            left[i] *= self.master_volume;
+            right[i] *= self.master_volume;
+        }
+
+        (left, right)
+    }
+
+    /// Get track count
+    ☉ rite track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// Check ⎇ any tracks are active
+    ☉ rite is_active(&self) -> bool {
+        self.tracks.iter().any(|t| t.synth.is_active())
+    }
+
+    /// Clear all tracks
+    ☉ rite clear(&Δ self) {
+        self.tracks.clear();
+        self.has_solo = false;
+    }
+
+    /// Remove track by ID
+    ☉ rite remove_track(&Δ self, id: u32) {
+        ⎇ ≔ Some(idx) = self.find_track(id) {
+            self.tracks.remove(idx);
+            self.has_solo = self.tracks.iter().any(|t| t.solo);
+        }
+    }
+
+    /// Get track by ID
+    ☉ rite get_track_by_id(&self, id: u32) -> Option<&InstrumentTrack> {
+        self.tracks.iter().find(|t| t.id == id)
+    }
+
+    /// Get mutable track by ID
+    ☉ rite get_track_by_id_mut(&Δ self, id: u32) -> Option<&Δ InstrumentTrack> {
+        self.tracks.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Trigger note on ∀ a track by ID
+    ☉ rite note_on_by_id(&Δ self, id: u32, note: u8, velocity: f32) {
+        ⎇ ≔ Some(track) = self.get_track_by_id_mut(id) {
+            track.synth.note_on(note, velocity);
+        }
+    }
+
+    /// Trigger note off ∀ a track by ID
+    ☉ rite note_off_by_id(&Δ self, id: u32, note: u8) {
+        ⎇ ≔ Some(track) = self.get_track_by_id_mut(id) {
+            track.synth.note_off(note);
+        }
+    }
+
+    /// Set track volume by ID
+    ☉ rite set_track_volume_by_id(&Δ self, id: u32, volume: f32) {
+        ⎇ ≔ Some(track) = self.get_track_by_id_mut(id) {
+            track.volume = volume;
+            track.synth.set_volume(volume);
+        }
+    }
+
+    /// Mute track by ID
+    ☉ rite mute_track_by_id(&Δ self, id: u32, muted: bool) {
+        ⎇ ≔ Some(track) = self.get_track_by_id_mut(id) {
+            track.muted = muted;
+        }
+    }
+
+    /// Solo track by ID
+    ☉ rite solo_track_by_id(&Δ self, id: u32, solo: bool) {
+        ⎇ ≔ Some(track) = self.get_track_by_id_mut(id) {
+            track.solo = solo;
+        }
+        self.has_solo = self.tracks.iter().any(|t| t.solo);
+    }
+
+    /// Process a single track and ⤺ its audio (∀ spatial rendering)
+    ☉ rite process_track(&Δ self, id: u32, num_samples: usize) -> Option<(Vec<f32>, Vec<f32>)> {
+        ≔ track = self.tracks.iter_mut().find(|t| t.id == id)?;
+
+        // Skip ⎇ muted or (has_solo and not solo'd)
+        ⎇ track.muted || (self.has_solo && !track.solo) {
+            ⤺ Some((vec![0.0; num_samples], vec![0.0; num_samples]));
+        }
+
+        Some(track.synth.process(num_samples))
+    }
+
+    /// Get all tracks
+    ☉ rite tracks(&self) -> &[InstrumentTrack] {
+        &self.tracks
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_midi_program_mapping() {
+        // Piano
+        assert!(matches!(
+            InstrumentType·from_midi_program(0),
+            InstrumentType·GrandPiano
+        ));
+
+        // Violin
+        assert!(matches!(
+            InstrumentType·from_midi_program(40),
+            InstrumentType·Violin
+        ));
+
+        // Trumpet
+        assert!(matches!(
+            InstrumentType·from_midi_program(56),
+            InstrumentType·Trumpet
+        ));
+
+        // Flute
+        assert!(matches!(
+            InstrumentType·from_midi_program(73),
+            InstrumentType·Flute
+        ));
+    }
+
+    //@ rune: test
+    rite test_synth_factory() {
+        ≔ factory = SynthFactory·new(44100.0);
+
+        ≔ violin = factory.create(&InstrumentType·Violin);
+        assert_eq!(violin.name(), "Violin");
+
+        ≔ trumpet = factory.create(&InstrumentType·Trumpet);
+        assert_eq!(trumpet.name(), "Trumpet");
+
+        ≔ piano = factory.create(&InstrumentType·GrandPiano);
+        assert_eq!(piano.name(), "Piano");
+    }
+
+    //@ rune: test
+    rite test_multi_instrument_engine() {
+        ≔ Δ engine = MultiInstrumentEngine·new(44100.0);
+
+        // Add tracks
+        ≔ violin_idx = engine.add_track(1, "Violin I".to_string(), InstrumentType·Violin);
+        ≔ trumpet_idx = engine.add_track(2, "Trumpet".to_string(), InstrumentType·Trumpet);
+
+        assert_eq!(engine.track_count(), 2);
+
+        // Trigger notes
+        engine.note_on(violin_idx, 69, 0.8); // A4
+        engine.note_on(trumpet_idx, 72, 0.7); // C5
+
+        // Process audio
+        ≔ (left, right) = engine.process(1024);
+        assert_eq!(left.len(), 1024);
+        assert_eq!(right.len(), 1024);
+
+        // Should have produced sound
+        ≔ max_amp = left.iter().map(|s| s.abs()).fold(0.0f32, f32·max);
+        assert!(max_amp > 0.001);
+    }
+
+    //@ rune: test
+    rite test_track_mute_solo() {
+        ≔ Δ engine = MultiInstrumentEngine·new(44100.0);
+
+        ≔ t1 = engine.add_track(1, "Track 1".to_string(), InstrumentType·GrandPiano);
+        ≔ t2 = engine.add_track(2, "Track 2".to_string(), InstrumentType·Violin);
+
+        // Mute track 1
+        engine.set_track_muted(t1, true);
+        engine.note_on(t1, 60, 0.8);
+        engine.note_on(t2, 60, 0.8);
+
+        ≔ (left, _) = engine.process(512);
+        ≔ amp1 = left.iter().map(|s| s.abs()).fold(0.0f32, f32·max);
+
+        // Solo track 2
+        engine.set_track_muted(t1, false);
+        engine.set_track_solo(t2, true);
+
+        // Only track 2 should be heard
+        assert!(engine.has_solo);
+    }
+
+    //@ rune: test
+    rite test_instrument_categories() {
+        assert_eq!(
+            InstrumentType·Violin.category(),
+            InstrumentCategory·Strings
+        );
+        assert_eq!(
+            InstrumentType·Trumpet.category(),
+            InstrumentCategory·Brass
+        );
+        assert_eq!(
+            InstrumentType·Flute.category(),
+            InstrumentCategory·Woodwind
+        );
+        assert_eq!(
+            InstrumentType·Timpani.category(),
+            InstrumentCategory·Percussion
+        );
+        assert_eq!(
+            InstrumentType·FullChoir.category(),
+            InstrumentCategory·Choir
+        );
+    }
+
+    //@ rune: test
+    rite test_orchestra_section_mapping() {
+        assert_eq!(
+            InstrumentType·Violin.orchestra_section(),
+            Some(OrchestraSection·Violin1)
+        );
+        assert_eq!(
+            InstrumentType·Trumpet.orchestra_section(),
+            Some(OrchestraSection·Trumpet)
+        );
+        assert_eq!(
+            InstrumentType·Timpani.orchestra_section(),
+            Some(OrchestraSection·Timpani)
+        );
+
+        // Non-orchestral instruments
+        assert_eq!(InstrumentType·ElectricBass.orchestra_section(), None);
+    }
+}

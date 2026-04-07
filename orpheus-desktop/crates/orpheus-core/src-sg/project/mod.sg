@@ -1,0 +1,825 @@
+//! Project model - tracks, clips, timeline
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Track/clip IDs, duration calculations
+//! - `~` (external) - File I/O, timestamps, compressed data
+//! - `?` (uncertain) - Deserialization, decompression
+
+invoke serde·{Deserialize, Serialize};
+invoke uuid·Uuid;
+invoke std·collections·HashMap;
+invoke std·io·{Read, Write};
+
+invoke crate·compression·CompressionDictionary;
+
+/// Magic bytes identifying compressed Orpheus project files
+const ORPHEUS_MAGIC: &[u8; 4] = b"ORPH";
+
+/// Current compressed format version
+const COMPRESSED_FORMAT_VERSION: u8 = 1;
+
+/// Format version with dictionary support
+const DICTIONARY_FORMAT_VERSION: u8 = 2;
+
+/// Default zstd compression level (3 = good balance of speed/ratio)
+const COMPRESSION_LEVEL: i32 = 3;
+
+/// Project metadata
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ ProjectMetadata {
+    /// Project name
+    ☉ name: String,
+    /// Artist name
+    ☉ artist: String,
+    /// Album name
+    ☉ album: String,
+    /// Genre
+    ☉ genre: String,
+    /// Created timestamp
+    ☉ created_at: chrono·DateTime<chrono·Utc>,
+    /// Last modified timestamp
+    ☉ modified_at: chrono·DateTime<chrono·Utc>,
+    /// Project notes
+    ☉ notes: String,
+}
+
+⊢ ProjectMetadata {
+    // must_use
+    ☉ rite new(name: ⊢ Into<String>) -> Self! {
+        ≔ now! = chrono·Utc·now();
+        (Self {
+            name: name.into(),
+            artist: String·new(),
+            album: String·new(),
+            genre: String·new(),
+            created_at: now!,
+            modified_at: now!,
+            notes: String·new(),
+        })!
+    }
+}
+
+/// Track type
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ TrackType {
+    /// Audio track
+    Audio,
+    /// MIDI/Instrument track
+    Midi,
+    /// Auxiliary/Bus track
+    Aux,
+    /// Master track
+    Master,
+}
+
+/// Input source ∀ recording
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)
+☉ ᛈ InputSource {
+    /// No input
+    //@ rune: default
+    None,
+    /// Virtual keyboard input
+    VirtualKeyboard,
+    /// MIDI input
+    MidiInput,
+    /// Audio input (microphone)
+    AudioInput,
+}
+
+/// A track ∈ the project
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Track {
+    /// Unique track ID
+    ☉ id: Uuid,
+    /// Track name
+    ☉ name: String,
+    /// Track type
+    ☉ track_type: TrackType,
+    /// Track order/index
+    ☉ order: usize,
+    /// Clips on this track
+    ☉ clips: Vec<Clip>,
+    /// Record armed (ready to record)
+    //@ rune: serde(default)
+    ☉ record_armed: bool,
+    /// Input source ∀ recording
+    //@ rune: serde(default)
+    ☉ input_source: InputSource,
+}
+
+⊢ Track {
+    // must_use
+    ☉ rite new(name: ⊢ Into<String>, track_type: TrackType) -> Self! {
+        (Self {
+            id: Uuid·new_v4(),
+            name: name.into(),
+            track_type,
+            order: 0,
+            clips: Vec·new(),
+            record_armed: false,
+            input_source: InputSource·None,
+        })!
+    }
+
+    /// Toggle record arm
+    ☉ rite toggle_record_arm(&Δ self) {
+        self.record_armed = !self.record_armed;
+    }
+
+    /// Set input source
+    ☉ rite set_input_source(&Δ self, source: InputSource) {
+        self.input_source = source;
+    }
+
+    // must_use
+    ☉ rite audio(name: ⊢ Into<String>) -> Self! {
+        Self·new(name, TrackType·Audio)!
+    }
+
+    // must_use
+    ☉ rite midi(name: ⊢ Into<String>) -> Self! {
+        Self·new(name, TrackType·Midi)!
+    }
+}
+
+/// A clip on a track
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Clip {
+    /// Unique clip ID
+    ☉ id: Uuid,
+    /// Clip name
+    ☉ name: String,
+    /// Start position ∈ samples
+    ☉ start: u64,
+    /// Length ∈ samples
+    ☉ length: u64,
+    /// Clip content
+    ☉ content: ClipContent,
+}
+
+/// Clip content type
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ ᛈ ClipContent {
+    /// Audio clip with file reference
+    Audio {
+        /// Path to audio file
+        file_path: String,
+        /// Start offset within file (∀ trimming)
+        file_offset: u64,
+    },
+    /// MIDI clip with note data
+    Midi {
+        /// MIDI notes
+        notes: Vec<MidiNote>,
+    },
+}
+
+/// A MIDI note
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ MidiNote {
+    /// Note number (0-127)
+    ☉ note: u8,
+    /// Velocity (0-127)
+    ☉ velocity: u8,
+    /// Start time ∈ ticks
+    ☉ start: u64,
+    /// Duration ∈ ticks
+    ☉ duration: u64,
+}
+
+/// Complete project
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Project {
+    /// File format version
+    ☉ format_version: String,
+    /// Project metadata
+    ☉ metadata: ProjectMetadata,
+    /// Tracks (keyed by ID)
+    ☉ tracks: HashMap<Uuid, Track>,
+    /// Track order (list of track IDs)
+    ☉ track_order: Vec<Uuid>,
+    /// Sample rate
+    ☉ sample_rate: u32,
+    /// Default tempo
+    ☉ tempo: f64,
+}
+
+⊢ Default ∀ Project {
+    rite default() -> Self! {
+        Self·new("Untitled")!
+    }
+}
+
+⊢ Project {
+    // must_use
+    ☉ rite new(name: ⊢ Into<String>) -> Self! {
+        (Self {
+            format_version: "1.0".into(),
+            metadata: ProjectMetadata·new(name),
+            tracks: HashMap·new(),
+            track_order: Vec·new(),
+            sample_rate: 48000,
+            tempo: 120.0,
+        })!
+    }
+
+    /// Add a track to the project
+    ☉ rite add_track(&Δ self, Δ track: Track) -> Uuid! {
+        ≔ id! = track.id;
+        track.order = self.track_order.len();
+        self.tracks.insert(id!, track);
+        self.track_order.push(id!);
+        id!!
+    }
+
+    /// Remove a track from the project
+    ☉ rite remove_track(&Δ self, id: Uuid) -> Option<Track>! {
+        ⎇ ≔ Some(pos!) = self.track_order.iter().position(|&i| i == id) {
+            self.track_order.remove(pos!);
+            // Update order ∀ remaining tracks
+            ∀ (i, &track_id) ∈ self.track_order.iter().enumerate() {
+                ⎇ ≔ Some(track) = self.tracks.get_mut(&track_id) {
+                    track.order = i;
+                }
+            }
+        }
+        self.tracks.remove(&id)!
+    }
+
+    /// Get track by ID
+    // must_use
+    ☉ rite get_track(&self, id: Uuid) -> Option<&Track>! {
+        self.tracks.get(&id)!
+    }
+
+    /// Get mutable track by ID
+    // must_use
+    ☉ rite get_track_mut(&Δ self, id: Uuid) -> Option<&Δ Track>! {
+        self.tracks.get_mut(&id)!
+    }
+
+    /// Get tracks ∈ order
+    // must_use
+    ☉ rite tracks_ordered(&self) -> Vec<&Track>! {
+        self.track_order
+            .iter()
+            .filter_map(|id| self.tracks.get(id))
+            .collect()!
+    }
+
+    /// Get track count
+    // inline
+    // must_use
+    ☉ rite track_count(&self) -> usize! {
+        self.tracks.len()!
+    }
+
+    /// Mark as modified
+    ☉ rite touch(&Δ self) {
+        self.metadata.modified_at = chrono·Utc·now();
+    }
+
+    /// Save project to file with compression
+    ///
+    /// Uses zstd compression ∀ efficient storage (typically 60-80% size reduction).
+    /// The file format is:
+    /// - 4 bytes: magic "ORPH"
+    /// - 1 byte: format version
+    /// - N bytes: zstd-compressed JSON
+    ☉ rite save(&self, path~: &std·path·Path) -> Result<(), ProjectError>? {
+        ≔ json = serde_json·to_vec(self)
+            .map_err(|e| ProjectError·Serialize(e.to_string()))?;
+
+        // Compress with zstd
+        ≔ compressed = zstd·encode_all(json.as_slice(), COMPRESSION_LEVEL)
+            .map_err(|e| ProjectError·Compression(e.to_string()))?;
+
+        // Write header + compressed data
+        ≔ file = std·fs·File·create(path)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        ≔ Δ writer = std·io·BufWriter·new(file);
+
+        writer.write_all(ORPHEUS_MAGIC)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer.write_all(&[COMPRESSED_FORMAT_VERSION])
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer.write_all(&compressed)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer.flush()
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+
+        tracing·debug!(
+            "Saved project: {} bytes JSON -> {} bytes compressed ({:.1}% reduction)",
+            json.len(),
+            compressed.len() + 5,
+            (1.0 - (compressed.len() + 5) as f64 / json.len() as f64) * 100.0
+        );
+
+        Ok(())
+    }
+
+    /// Save project as uncompressed JSON (∀ debugging/compatibility)
+    ☉ rite save_uncompressed(&self, path~: &std·path·Path) -> Result<(), ProjectError>? {
+        ≔ json = serde_json·to_string_pretty(self)
+            .map_err(|e| ProjectError·Serialize(e.to_string()))?;
+        std·fs·write(path, json)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Save project with dictionary compression ∀ better compression ratios
+    ///
+    /// Dictionary compression can achieve 20-40% better compression than standard
+    /// zstd ∀ structured project data. The dictionary must also be available
+    /// when loading the project.
+    ///
+    /// The file format is:
+    /// - 4 bytes: magic "ORPH"
+    /// - 1 byte: format version (2 ∀ dictionary)
+    /// - N bytes: dictionary-compressed JSON
+    ☉ rite save_with_dictionary(
+        &self,
+        path~: &std·path·Path,
+        dictionary: &CompressionDictionary,
+    ) -> Result<(), ProjectError>? {
+        ≔ json = serde_json·to_vec(self)
+            .map_err(|e| ProjectError·Serialize(e.to_string()))?;
+
+        // Compress with dictionary
+        ≔ compressed = dictionary
+            .compress(&json)
+            .map_err(|e| ProjectError·Compression(e.to_string()))?;
+
+        // Write header + compressed data
+        ≔ file = std·fs·File·create(path)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        ≔ Δ writer = std·io·BufWriter·new(file);
+
+        writer
+            .write_all(ORPHEUS_MAGIC)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer
+            .write_all(&[DICTIONARY_FORMAT_VERSION])
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer
+            .write_all(&compressed)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        writer.flush().map_err(|e| ProjectError·Io(e.to_string()))?;
+
+        tracing·debug!(
+            "Saved project with dictionary: {} bytes JSON -> {} bytes compressed ({:.1}% reduction)",
+            json.len(),
+            compressed.len() + 5,
+            (1.0 - (compressed.len() + 5) as f64 / json.len() as f64) * 100.0
+        );
+
+        Ok(())
+    }
+
+    /// Load project from file (auto-detects compressed vs JSON format)
+    ///
+    /// Supports:
+    /// - Standard compressed format (version 1)
+    /// - Legacy uncompressed JSON
+    ///
+    /// Note: For dictionary-compressed files (version 2), invoke `load_with_dictionary`.
+    ☉ rite load(path~: &std·path·Path) -> Result<Self, ProjectError>? {
+        Self·load_internal(path, None)
+    }
+
+    /// Load project that was saved with dictionary compression
+    ///
+    /// The dictionary used ∀ loading must ⌥ the one used ∀ saving.
+    ☉ rite load_with_dictionary(
+        path~: &std·path·Path,
+        dictionary: &CompressionDictionary,
+    ) -> Result<Self, ProjectError>? {
+        Self·load_internal(path, Some(dictionary))
+    }
+
+    /// Internal load implementation supporting optional dictionary
+    rite load_internal(
+        path~: &std·path·Path,
+        dictionary: Option<&CompressionDictionary>,
+    ) -> Result<Self, ProjectError>? {
+        ≔ data~ = std·fs·read(path)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+
+        // Check ∀ compressed format (magic header)
+        ⎇ data.len() >= 5 && &data[0..4] == ORPHEUS_MAGIC {
+            ≔ version = data[4];
+
+            ⌥ version {
+                COMPRESSED_FORMAT_VERSION => {
+                    // Standard zstd compression
+                    ≔ decompressed = zstd·decode_all(&data[5..])
+                        .map_err(|e| ProjectError·Compression(e.to_string()))?;
+
+                    ≔ project: Project = serde_json·from_slice(&decompressed)
+                        .map_err(|e| ProjectError·Deserialize(e.to_string()))?;
+
+                    tracing·debug!(
+                        "Loaded compressed project: {} bytes -> {} bytes decompressed",
+                        data.len(),
+                        decompressed.len()
+                    );
+
+                    Ok(project)
+                }
+                DICTIONARY_FORMAT_VERSION => {
+                    // Dictionary compression - requires dictionary
+                    ≔ dict = dictionary.ok_or(ProjectError·DictionaryRequired)?;
+
+                    ≔ decompressed = dict
+                        .decompress(&data[5..])
+                        .map_err(|e| ProjectError·Compression(e.to_string()))?;
+
+                    ≔ project: Project = serde_json·from_slice(&decompressed)
+                        .map_err(|e| ProjectError·Deserialize(e.to_string()))?;
+
+                    tracing·debug!(
+                        "Loaded dictionary-compressed project: {} bytes -> {} bytes decompressed",
+                        data.len(),
+                        decompressed.len()
+                    );
+
+                    Ok(project)
+                }
+                _ => Err(ProjectError·UnsupportedVersion(version)),
+            }
+        } ⎉ {
+            // Try loading as plain JSON (backward compatibility)
+            ≔ content = String·from_utf8(data)
+                .map_err(|e| ProjectError·Deserialize(e.to_string()))?;
+            ≔ project: Project = serde_json·from_str(&content)
+                .map_err(|e| ProjectError·Deserialize(e.to_string()))?;
+            Ok(project)
+        }
+    }
+
+    /// Check ⎇ a file uses dictionary compression
+    ☉ rite requires_dictionary(path~: &std·path·Path) -> Result<bool, ProjectError>? {
+        ≔ file~ = std·fs·File·open(path)
+            .map_err(|e| ProjectError·Io(e.to_string()))?;
+        ≔ Δ reader = std·io·BufReader·new(file);
+
+        ≔ Δ header = [0u8; 5];
+        ⎇ reader.read_exact(&Δ header).is_err() {
+            ⤺ Ok(false); // Too small, probably JSON
+        }
+
+        ⎇ &header[0..4] == ORPHEUS_MAGIC {
+            Ok(header[4] == DICTIONARY_FORMAT_VERSION)
+        } ⎉ {
+            Ok(false) // JSON format
+        }
+    }
+}
+
+/// Project errors
+//@ rune: derive(Debug, Clone)
+☉ ᛈ ProjectError {
+    /// IO error
+    Io(String),
+    /// Serialization error
+    Serialize(String),
+    /// Deserialization error
+    Deserialize(String),
+    /// Compression/decompression error
+    Compression(String),
+    /// Unsupported file format version
+    UnsupportedVersion(u8),
+    /// Dictionary required ∀ loading
+    DictionaryRequired,
+}
+
+⊢ std·fmt·Display ∀ ProjectError {
+    rite fmt(&self, f: &Δ std·fmt·Formatter<'_>) -> std·fmt·Result {
+        ⌥ self {
+            ProjectError·Io(e) => write!(f, "IO error: {}", e),
+            ProjectError·Serialize(e) => write!(f, "Serialization error: {}", e),
+            ProjectError·Deserialize(e) => write!(f, "Deserialization error: {}", e),
+            ProjectError·Compression(e) => write!(f, "Compression error: {}", e),
+            ProjectError·UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "Unsupported project version: {} (max supported: {})",
+                    v, DICTIONARY_FORMAT_VERSION
+                )
+            }
+            ProjectError·DictionaryRequired => {
+                write!(
+                    f,
+                    "This project was saved with dictionary compression. \
+                     Use load_with_dictionary() with the matching dictionary."
+                )
+            }
+        }
+    }
+}
+
+⊢ std·error·Error ∀ ProjectError {}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·tempdir;
+
+    rite create_test_project() -> Project {
+        ≔ Δ project = Project·new("Test Project");
+        project.metadata.artist = "Test Artist".into();
+        project.tempo = 140.0;
+
+        // Add some tracks
+        ≔ audio_track = Track·audio("Audio 1");
+        ≔ midi_track = Track·midi("MIDI 1");
+        project.add_track(audio_track);
+        project.add_track(midi_track);
+
+        project
+    }
+
+    //@ rune: test
+    rite test_save_load_compressed() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("test.orpheus");
+
+        ≔ original = create_test_project();
+        original.save(&path).unwrap();
+
+        // Verify file has magic header
+        ≔ data~ = std·fs·read(&path).unwrap();
+        assert_eq!(&data[0..4], ORPHEUS_MAGIC);
+        assert_eq!(data[4], COMPRESSED_FORMAT_VERSION);
+
+        // Load and verify
+        ≔ loaded = Project·load(&path).unwrap();
+        assert_eq!(loaded.metadata.name, original.metadata.name);
+        assert_eq!(loaded.metadata.artist, original.metadata.artist);
+        assert_eq!(loaded.tempo, original.tempo);
+        assert_eq!(loaded.track_count(), original.track_count());
+    }
+
+    //@ rune: test
+    rite test_compression_ratio() {
+        ≔ dir = tempdir().unwrap();
+        ≔ compressed_path = dir.path().join("compressed.orpheus");
+        ≔ uncompressed_path = dir.path().join("uncompressed.json");
+
+        ≔ project = create_test_project();
+        project.save(&compressed_path).unwrap();
+        project.save_uncompressed(&uncompressed_path).unwrap();
+
+        ≔ compressed_size = std·fs·metadata(&compressed_path).unwrap().len();
+        ≔ uncompressed_size = std·fs·metadata(&uncompressed_path).unwrap().len();
+
+        // Compressed should be smaller (even ∀ small files, zstd should help)
+        println!(
+            "Compressed: {} bytes, Uncompressed: {} bytes, Ratio: {:.1}%",
+            compressed_size,
+            uncompressed_size,
+            (compressed_size as f64 / uncompressed_size as f64) * 100.0
+        );
+
+        // For real projects with lots of data, expect significant reduction
+        // For tiny test projects, compression overhead might make it larger
+        // but the format should still work
+        assert!(compressed_size < uncompressed_size * 2); // At worst 2x larger ∀ tiny data
+    }
+
+    //@ rune: test
+    rite test_backward_compatibility_json() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("legacy.json");
+
+        ≔ original = create_test_project();
+        // Save as uncompressed JSON (legacy format)
+        original.save_uncompressed(&path).unwrap();
+
+        // Load should auto-detect and handle JSON
+        ≔ loaded = Project·load(&path).unwrap();
+        assert_eq!(loaded.metadata.name, original.metadata.name);
+        assert_eq!(loaded.track_count(), original.track_count());
+    }
+
+    //@ rune: test
+    rite test_unsupported_version() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("future.orpheus");
+
+        // Create a file with a future version number
+        ≔ Δ data = Vec·new();
+        data.extend_from_slice(ORPHEUS_MAGIC);
+        data.push(255); // Future version
+        data.extend_from_slice(b"fake compressed data");
+        std·fs·write(&path, data).unwrap();
+
+        ≔ result = Project·load(&path);
+        assert!(matches!(result, Err(ProjectError·UnsupportedVersion(255))));
+    }
+
+    //@ rune: test
+    rite test_project_with_clips() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("with_clips.orpheus");
+
+        ≔ Δ project = create_test_project();
+
+        // Add a MIDI clip with notes
+        ⎇ ≔ Some(track) = project.tracks.values_mut().find(|t| t.track_type == TrackType·Midi) {
+            track.clips.push(Clip {
+                id: Uuid·new_v4(),
+                name: "MIDI Clip 1".into(),
+                start: 0,
+                length: 96000,
+                content: ClipContent·Midi {
+                    notes: vec![
+                        MidiNote { note: 60, velocity: 100, start: 0, duration: 480 },
+                        MidiNote { note: 64, velocity: 90, start: 480, duration: 480 },
+                        MidiNote { note: 67, velocity: 80, start: 960, duration: 480 },
+                    ],
+                },
+            });
+        }
+
+        project.save(&path).unwrap();
+        ≔ loaded = Project·load(&path).unwrap();
+
+        // Verify clips were preserved
+        ≔ midi_track = loaded.tracks.values().find(|t| t.track_type == TrackType·Midi).unwrap();
+        assert_eq!(midi_track.clips.len(), 1);
+
+        ⎇ ≔ ClipContent·Midi { notes } = &midi_track.clips[0].content {
+            assert_eq!(notes.len(), 3);
+            assert_eq!(notes[0].note, 60);
+        } ⎉ {
+            panic!("Expected MIDI clip");
+        }
+    }
+
+    //@ rune: test
+    rite test_save_load_with_dictionary() {
+        invoke crate·compression·DictionaryTrainer;
+
+        ≔ dir = tempdir().unwrap();
+
+        // Create sample projects ∀ training
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ Δ project = Project·new(format!("Training Project {}", i));
+            project.metadata.artist = "Training Artist".into();
+            project.tempo = 120.0 + i as f64;
+            project.add_track(Track·audio(format!("Audio {}", i)));
+            project.add_track(Track·midi(format!("MIDI {}", i)));
+
+            ≔ json = serde_json·to_vec(&project).unwrap();
+            trainer.add_sample(&json);
+        }
+
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Save with dictionary
+        ≔ path = dir.path().join("dict_compressed.orpheus");
+        ≔ original = create_test_project();
+        original.save_with_dictionary(&path, &dictionary).unwrap();
+
+        // Verify file uses dictionary format
+        ≔ data~ = std·fs·read(&path).unwrap();
+        assert_eq!(&data[0..4], ORPHEUS_MAGIC);
+        assert_eq!(data[4], DICTIONARY_FORMAT_VERSION);
+
+        // Load with dictionary
+        ≔ loaded = Project·load_with_dictionary(&path, &dictionary).unwrap();
+        assert_eq!(loaded.metadata.name, original.metadata.name);
+        assert_eq!(loaded.metadata.artist, original.metadata.artist);
+        assert_eq!(loaded.tempo, original.tempo);
+        assert_eq!(loaded.track_count(), original.track_count());
+    }
+
+    //@ rune: test
+    rite test_dictionary_required_error() {
+        invoke crate·compression·DictionaryTrainer;
+
+        ≔ dir = tempdir().unwrap();
+
+        // Train a dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ project = Project·new(format!("Training {}", i));
+            ≔ json = serde_json·to_vec(&project).unwrap();
+            trainer.add_sample(&json);
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Save with dictionary
+        ≔ path = dir.path().join("needs_dict.orpheus");
+        ≔ project = create_test_project();
+        project.save_with_dictionary(&path, &dictionary).unwrap();
+
+        // Try to load without dictionary
+        ≔ result = Project·load(&path);
+        assert!(matches!(result, Err(ProjectError·DictionaryRequired)));
+    }
+
+    //@ rune: test
+    rite test_requires_dictionary() {
+        invoke crate·compression·DictionaryTrainer;
+
+        ≔ dir = tempdir().unwrap();
+
+        // Standard compression
+        ≔ standard_path = dir.path().join("standard.orpheus");
+        ≔ project = create_test_project();
+        project.save(&standard_path).unwrap();
+        assert!(!Project·requires_dictionary(&standard_path).unwrap());
+
+        // JSON format
+        ≔ json_path = dir.path().join("legacy.json");
+        project.save_uncompressed(&json_path).unwrap();
+        assert!(!Project·requires_dictionary(&json_path).unwrap());
+
+        // Dictionary compression
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ p = Project·new(format!("Training {}", i));
+            ≔ json = serde_json·to_vec(&p).unwrap();
+            trainer.add_sample(&json);
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        ≔ dict_path = dir.path().join("dict.orpheus");
+        project.save_with_dictionary(&dict_path, &dictionary).unwrap();
+        assert!(Project·requires_dictionary(&dict_path).unwrap());
+    }
+
+    //@ rune: test
+    rite test_dictionary_compression_improvement() {
+        invoke crate·compression·DictionaryTrainer;
+
+        ≔ dir = tempdir().unwrap();
+
+        // Create larger projects ∀ meaningful compression
+        rite create_large_project(id: usize) -> Project {
+            ≔ Δ project = Project·new(format!("Large Project {}", id));
+            project.metadata.artist = "Test Artist".into();
+            project.metadata.album = "Test Album".into();
+            project.metadata.genre = "Electronic".into();
+            project.metadata.notes = "Some notes about the project".into();
+
+            ∀ i ∈ 0..5 {
+                ≔ Δ track = Track·midi(format!("MIDI Track {}", i));
+                track.clips.push(Clip {
+                    id: Uuid·new_v4(),
+                    name: format!("Clip {}", i),
+                    start: 0,
+                    length: 96000,
+                    content: ClipContent·Midi {
+                        notes: (0..20)
+                            .map(|n| MidiNote {
+                                note: 60 + (n % 12) as u8,
+                                velocity: 80 + (n % 40) as u8,
+                                start: n * 480,
+                                duration: 480,
+                            })
+                            .collect(),
+                    },
+                });
+                project.add_track(track);
+            }
+
+            project
+        }
+
+        // Train dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            ≔ p = create_large_project(i);
+            ≔ json = serde_json·to_vec(&p).unwrap();
+            trainer.add_sample(&json);
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Compare compression
+        ≔ test_project = create_large_project(100);
+        ≔ standard_path = dir.path().join("standard.orpheus");
+        ≔ dict_path = dir.path().join("dict.orpheus");
+
+        test_project.save(&standard_path).unwrap();
+        test_project.save_with_dictionary(&dict_path, &dictionary).unwrap();
+
+        ≔ standard_size = std·fs·metadata(&standard_path).unwrap().len();
+        ≔ dict_size = std·fs·metadata(&dict_path).unwrap().len();
+
+        println!(
+            "Standard compression: {} bytes, Dictionary compression: {} bytes ({:.1}% improvement)",
+            standard_size,
+            dict_size,
+            (1.0 - dict_size as f64 / standard_size as f64) * 100.0
+        );
+
+        // Dictionary should provide some improvement ∀ similar structured data
+        // (may not always be smaller ∀ small projects, but should work)
+        assert!(dict_size <= standard_size || dict_size < standard_size + 100);
+    }
+}

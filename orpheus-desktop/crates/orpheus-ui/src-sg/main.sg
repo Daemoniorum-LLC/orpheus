@@ -1,0 +1,564 @@
+//! Orpheus Desktop - Main Entry Point
+//!
+//! Web-based music production interface built with Qliphoth/Sigil.
+//! Compiles to WASM ∀ browser execution.
+
+// === VDOM extern declarations (provided by runtime) ===
+extern "wasm" {
+    rite vdom_create_vnode(tag: &str) -> i32;
+    rite vdom_create_text_vnode(text: &str) -> i32;
+    rite vdom_set_vnode_str_prop(vnode: i32, name: &str, value: &str);
+    rite vdom_append_vnode_child(parent: i32, child: i32);
+    rite vdom_mount_vnode(vnode: i32, selector: &str) -> i32;
+    rite vdom_diff_and_patch(old: i32, new: i32, parent: i32);
+}
+
+// === Global State ===
+static Δ CURRENT_MODE: i64 = 0;
+static Δ TRANSPORT_STATE: i64 = 0;  // 0=stopped, 1=playing, 2=paused, 3=recording
+static Δ PLAYHEAD_BEATS: f64 = 0.0;
+static Δ TEMPO: f64 = 120.0;
+static Δ RECORDING_ARMED: bool = false;
+static Δ SELECTED_CHANNEL: i64 = 0;
+static Δ CHANNEL_COUNT: i64 = 4;
+
+// VDOM state
+static Δ ROOT_VNODE: i32 = 0;
+static Δ MOUNTED: bool = false;
+
+// Channel state arrays (16 channels max)
+static Δ CHANNEL_VOLUMES: [f64; 16] = [0.0; 16];
+static Δ CHANNEL_PANS: [f64; 16] = [0.0; 16];
+static Δ CHANNEL_MUTED: [bool; 16] = [false; 16];
+static Δ CHANNEL_SOLOED: [bool; 16] = [false; 16];
+static Δ CHANNEL_ARMED: [bool; 16] = [false; 16];
+
+// === Mode Navigation ===
+
+rite mode_name(mode: i64) -> &str {
+    ⎇ mode == 0 { "Compose" }
+    ⎉ ⎇ mode == 1 { "Record" }
+    ⎉ ⎇ mode == 2 { "Mix" }
+    ⎉ ⎇ mode == 3 { "Master" }
+    ⎉ ⎇ mode == 4 { "Practice" }
+    ⎉ { "Unknown" }
+}
+
+rite transport_name(state: i64) -> &str {
+    ⎇ state == 0 { "Stopped" }
+    ⎉ ⎇ state == 1 { "Playing" }
+    ⎉ ⎇ state == 2 { "Paused" }
+    ⎉ ⎇ state == 3 { "Recording" }
+    ⎉ { "Unknown" }
+}
+
+☉ rite get_mode() -> i64 {
+    CURRENT_MODE
+}
+
+☉ rite set_mode(mode: i64) {
+    ⎇ mode >= 0 && mode <= 4 {
+        CURRENT_MODE = mode;
+        print(f"[MODE] Switched to {mode_name(mode)}");
+        render();
+    }
+}
+
+// === Transport Controls ===
+
+☉ rite play() {
+    ⎇ TRANSPORT_STATE != 1 {
+        TRANSPORT_STATE = 1;
+        print("[TRANSPORT] Playing");
+        render();
+    }
+}
+
+☉ rite pause() {
+    ⎇ TRANSPORT_STATE == 1 {
+        TRANSPORT_STATE = 2;
+        print("[TRANSPORT] Paused");
+        render();
+    }
+}
+
+☉ rite stop() {
+    TRANSPORT_STATE = 0;
+    PLAYHEAD_BEATS = 0.0;
+    print("[TRANSPORT] Stopped");
+    render();
+}
+
+☉ rite record() {
+    ⎇ RECORDING_ARMED {
+        TRANSPORT_STATE = 3;
+        print("[TRANSPORT] Recording");
+        render();
+    } ⎉ {
+        print("[TRANSPORT] Cannot record - no tracks armed");
+    }
+}
+
+☉ rite toggle_play() {
+    ⎇ TRANSPORT_STATE == 1 {
+        pause();
+    } ⎉ {
+        play();
+    }
+}
+
+☉ rite get_transport_state() -> i64 {
+    TRANSPORT_STATE
+}
+
+☉ rite is_playing() -> bool {
+    TRANSPORT_STATE == 1
+}
+
+☉ rite is_recording() -> bool {
+    TRANSPORT_STATE == 3
+}
+
+// === Tempo & Time ===
+
+☉ rite get_tempo() -> f64 {
+    TEMPO
+}
+
+☉ rite set_tempo(bpm: f64) {
+    ⎇ bpm >= 20.0 && bpm <= 300.0 {
+        TEMPO = bpm;
+        print(f"[TEMPO] {bpm} BPM");
+        render();
+    }
+}
+
+☉ rite get_playhead_beats() -> f64 {
+    PLAYHEAD_BEATS
+}
+
+☉ rite get_playhead_seconds() -> f64 {
+    (PLAYHEAD_BEATS * 60.0) / TEMPO
+}
+
+☉ rite seek_to_beat(beat: f64) {
+    ⎇ beat >= 0.0 {
+        PLAYHEAD_BEATS = beat;
+    } ⎉ {
+        PLAYHEAD_BEATS = 0.0;
+    }
+    render();
+}
+
+// === Channel Controls ===
+
+☉ rite select_channel(index: i64) {
+    ⎇ index >= 0 && index < CHANNEL_COUNT {
+        SELECTED_CHANNEL = index;
+        print(f"[CHANNEL] Selected {index}");
+        render();
+    }
+}
+
+☉ rite get_selected_channel() -> i64 {
+    SELECTED_CHANNEL
+}
+
+☉ rite toggle_mute(index: i64) {
+    ⎇ index >= 0 && index < 16 {
+        ≔ idx = index as usize;
+        CHANNEL_MUTED[idx] = !CHANNEL_MUTED[idx];
+        print(f"[CHANNEL {index}] Mute: {CHANNEL_MUTED[idx]}");
+        render();
+    }
+}
+
+☉ rite toggle_solo(index: i64) {
+    ⎇ index >= 0 && index < 16 {
+        ≔ idx = index as usize;
+        CHANNEL_SOLOED[idx] = !CHANNEL_SOLOED[idx];
+        print(f"[CHANNEL {index}] Solo: {CHANNEL_SOLOED[idx]}");
+        render();
+    }
+}
+
+☉ rite toggle_arm(index: i64) {
+    ⎇ index >= 0 && index < 16 {
+        ≔ idx = index as usize;
+        CHANNEL_ARMED[idx] = !CHANNEL_ARMED[idx];
+        print(f"[CHANNEL {index}] Armed: {CHANNEL_ARMED[idx]}");
+
+        // Update global armed state
+        RECORDING_ARMED = false;
+        ≔ Δ i: i64 = 0;
+        ⟳ i < 16 {
+            ⎇ CHANNEL_ARMED[i as usize] {
+                RECORDING_ARMED = true;
+            }
+            i = i + 1;
+        }
+        render();
+    }
+}
+
+☉ rite is_muted(index: i64) -> bool {
+    ⎇ index >= 0 && index < 16 {
+        CHANNEL_MUTED[index as usize]
+    } ⎉ {
+        false
+    }
+}
+
+☉ rite is_soloed(index: i64) -> bool {
+    ⎇ index >= 0 && index < 16 {
+        CHANNEL_SOLOED[index as usize]
+    } ⎉ {
+        false
+    }
+}
+
+☉ rite is_armed(index: i64) -> bool {
+    ⎇ index >= 0 && index < 16 {
+        CHANNEL_ARMED[index as usize]
+    } ⎉ {
+        false
+    }
+}
+
+// === UI Rendering ===
+
+rite render_header() -> i32 {
+    ≔ header = vdom_create_vnode("header");
+    vdom_set_vnode_str_prop(header, "className", "orpheus-header");
+
+    // Logo/Title
+    ≔ title = vdom_create_vnode("h1");
+    ≔ title_text = vdom_create_text_vnode("ORPHEUS");
+    vdom_append_vnode_child(title, title_text);
+    vdom_append_vnode_child(header, title);
+
+    // Subtitle
+    ≔ subtitle = vdom_create_vnode("span");
+    vdom_set_vnode_str_prop(subtitle, "className", "subtitle");
+    ≔ subtitle_text = vdom_create_text_vnode("Qliphoth Edition");
+    vdom_append_vnode_child(subtitle, subtitle_text);
+    vdom_append_vnode_child(header, subtitle);
+
+    header
+}
+
+rite render_mode_selector() -> i32 {
+    ≔ nav = vdom_create_vnode("nav");
+    vdom_set_vnode_str_prop(nav, "className", "mode-selector");
+
+    // Mode buttons
+    ≔ modes = ["Compose", "Record", "Mix", "Master", "Practice"];
+    ≔ Δ i: i64 = 0;
+    ⟳ i < 5 {
+        ≔ btn = vdom_create_vnode("button");
+        ≔ mode_idx = i;
+
+        ⎇ CURRENT_MODE == mode_idx {
+            vdom_set_vnode_str_prop(btn, "className", "mode-btn active");
+        } ⎉ {
+            vdom_set_vnode_str_prop(btn, "className", "mode-btn");
+        }
+
+        // Use index as id ∀ JS event handling
+        vdom_set_vnode_str_prop(btn, "data-mode", f"{mode_idx}");
+
+        ≔ btn_text = vdom_create_text_vnode(modes[i as usize]);
+        vdom_append_vnode_child(btn, btn_text);
+        vdom_append_vnode_child(nav, btn);
+
+        i = i + 1;
+    }
+
+    nav
+}
+
+rite render_transport() -> i32 {
+    ≔ transport = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(transport, "className", "transport-bar");
+
+    // Time display
+    ≔ time_display = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(time_display, "className", "time-display");
+
+    ≔ beats_text = vdom_create_text_vnode(f"{PLAYHEAD_BEATS:.2} beats");
+    vdom_append_vnode_child(time_display, beats_text);
+    vdom_append_vnode_child(transport, time_display);
+
+    // Transport buttons
+    ≔ buttons = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(buttons, "className", "transport-buttons");
+
+    // Stop button
+    ≔ stop_btn = vdom_create_vnode("button");
+    vdom_set_vnode_str_prop(stop_btn, "id", "stop-btn");
+    vdom_set_vnode_str_prop(stop_btn, "className", "transport-btn");
+    ≔ stop_text = vdom_create_text_vnode("Stop");
+    vdom_append_vnode_child(stop_btn, stop_text);
+    vdom_append_vnode_child(buttons, stop_btn);
+
+    // Play/Pause button
+    ≔ play_btn = vdom_create_vnode("button");
+    vdom_set_vnode_str_prop(play_btn, "id", "play-btn");
+    ⎇ TRANSPORT_STATE == 1 {
+        vdom_set_vnode_str_prop(play_btn, "className", "transport-btn active");
+    } ⎉ {
+        vdom_set_vnode_str_prop(play_btn, "className", "transport-btn");
+    }
+    ≔ play_text = ⎇ TRANSPORT_STATE == 1 {
+        vdom_create_text_vnode("Pause")
+    } ⎉ {
+        vdom_create_text_vnode("Play")
+    };
+    vdom_append_vnode_child(play_btn, play_text);
+    vdom_append_vnode_child(buttons, play_btn);
+
+    // Record button
+    ≔ rec_btn = vdom_create_vnode("button");
+    vdom_set_vnode_str_prop(rec_btn, "id", "record-btn");
+    ⎇ TRANSPORT_STATE == 3 {
+        vdom_set_vnode_str_prop(rec_btn, "className", "transport-btn recording");
+    } ⎉ {
+        vdom_set_vnode_str_prop(rec_btn, "className", "transport-btn");
+    }
+    ≔ rec_text = vdom_create_text_vnode("Record");
+    vdom_append_vnode_child(rec_btn, rec_text);
+    vdom_append_vnode_child(buttons, rec_btn);
+
+    vdom_append_vnode_child(transport, buttons);
+
+    // Tempo display
+    ≔ tempo_display = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(tempo_display, "className", "tempo-display");
+    ≔ tempo_text = vdom_create_text_vnode(f"{TEMPO:.1} BPM");
+    vdom_append_vnode_child(tempo_display, tempo_text);
+    vdom_append_vnode_child(transport, tempo_display);
+
+    transport
+}
+
+rite render_channel_strip(index: i64) -> i32 {
+    ≔ strip = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(strip, "className", "channel-strip");
+    vdom_set_vnode_str_prop(strip, "data-channel", f"{index}");
+
+    // Channel number
+    ≔ num = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(num, "className", "channel-num");
+    ≔ num_text = vdom_create_text_vnode(f"Ch {index + 1}");
+    vdom_append_vnode_child(num, num_text);
+    vdom_append_vnode_child(strip, num);
+
+    // Mute button
+    ≔ mute_btn = vdom_create_vnode("button");
+    ≔ idx = index as usize;
+    ⎇ CHANNEL_MUTED[idx] {
+        vdom_set_vnode_str_prop(mute_btn, "className", "channel-btn muted");
+    } ⎉ {
+        vdom_set_vnode_str_prop(mute_btn, "className", "channel-btn");
+    }
+    vdom_set_vnode_str_prop(mute_btn, "data-action", "mute");
+    vdom_set_vnode_str_prop(mute_btn, "data-channel", f"{index}");
+    ≔ mute_text = vdom_create_text_vnode("M");
+    vdom_append_vnode_child(mute_btn, mute_text);
+    vdom_append_vnode_child(strip, mute_btn);
+
+    // Solo button
+    ≔ solo_btn = vdom_create_vnode("button");
+    ⎇ CHANNEL_SOLOED[idx] {
+        vdom_set_vnode_str_prop(solo_btn, "className", "channel-btn soloed");
+    } ⎉ {
+        vdom_set_vnode_str_prop(solo_btn, "className", "channel-btn");
+    }
+    vdom_set_vnode_str_prop(solo_btn, "data-action", "solo");
+    vdom_set_vnode_str_prop(solo_btn, "data-channel", f"{index}");
+    ≔ solo_text = vdom_create_text_vnode("S");
+    vdom_append_vnode_child(solo_btn, solo_text);
+    vdom_append_vnode_child(strip, solo_btn);
+
+    // Arm button
+    ≔ arm_btn = vdom_create_vnode("button");
+    ⎇ CHANNEL_ARMED[idx] {
+        vdom_set_vnode_str_prop(arm_btn, "className", "channel-btn armed");
+    } ⎉ {
+        vdom_set_vnode_str_prop(arm_btn, "className", "channel-btn");
+    }
+    vdom_set_vnode_str_prop(arm_btn, "data-action", "arm");
+    vdom_set_vnode_str_prop(arm_btn, "data-channel", f"{index}");
+    ≔ arm_text = vdom_create_text_vnode("R");
+    vdom_append_vnode_child(arm_btn, arm_text);
+    vdom_append_vnode_child(strip, arm_btn);
+
+    strip
+}
+
+rite render_mixer() -> i32 {
+    ≔ mixer = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(mixer, "className", "mixer-view");
+
+    // Title
+    ≔ title = vdom_create_vnode("h2");
+    ≔ title_text = vdom_create_text_vnode("Mixer");
+    vdom_append_vnode_child(title, title_text);
+    vdom_append_vnode_child(mixer, title);
+
+    // Channel strips
+    ≔ strips = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(strips, "className", "channel-strips");
+
+    ≔ Δ i: i64 = 0;
+    ⟳ i < CHANNEL_COUNT {
+        ≔ strip = render_channel_strip(i);
+        vdom_append_vnode_child(strips, strip);
+        i = i + 1;
+    }
+
+    vdom_append_vnode_child(mixer, strips);
+
+    mixer
+}
+
+rite render_main_content() -> i32 {
+    ≔ content = vdom_create_vnode("main");
+    vdom_set_vnode_str_prop(content, "className", "main-content");
+
+    // Mode-specific content
+    ≔ mode_view = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(mode_view, "className", "mode-view");
+
+    ≔ mode_title = vdom_create_vnode("h2");
+    ≔ mode_text = vdom_create_text_vnode(f"{mode_name(CURRENT_MODE)} Mode");
+    vdom_append_vnode_child(mode_title, mode_text);
+    vdom_append_vnode_child(mode_view, mode_title);
+
+    // Placeholder content based on mode
+    ≔ placeholder = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(placeholder, "className", "placeholder");
+
+    ≔ hint = ⎇ CURRENT_MODE == 0 {
+        "Arrangement timeline and editors will appear here"
+    } ⎉ ⎇ CURRENT_MODE == 1 {
+        "Recording controls and input monitoring here"
+    } ⎉ ⎇ CURRENT_MODE == 2 {
+        "Full mixer console with channel strips"
+    } ⎉ ⎇ CURRENT_MODE == 3 {
+        "Mastering chain with LUFS metering"
+    } ⎉ {
+        "Practice tools and speed trainer"
+    };
+
+    ≔ hint_text = vdom_create_text_vnode(hint);
+    vdom_append_vnode_child(placeholder, hint_text);
+    vdom_append_vnode_child(mode_view, placeholder);
+
+    vdom_append_vnode_child(content, mode_view);
+
+    // Always show mini mixer at bottom
+    ≔ mixer = render_mixer();
+    vdom_append_vnode_child(content, mixer);
+
+    content
+}
+
+rite render_status_bar() -> i32 {
+    ≔ status = vdom_create_vnode("footer");
+    vdom_set_vnode_str_prop(status, "className", "status-bar");
+
+    // Transport status
+    ≔ transport_status = vdom_create_vnode("span");
+    ≔ status_text = vdom_create_text_vnode(f"Transport: {transport_name(TRANSPORT_STATE)}");
+    vdom_append_vnode_child(transport_status, status_text);
+    vdom_append_vnode_child(status, transport_status);
+
+    // Version
+    ≔ version = vdom_create_vnode("span");
+    vdom_set_vnode_str_prop(version, "className", "version");
+    ≔ version_text = vdom_create_text_vnode("v0.1.0 | Sigil/WASM");
+    vdom_append_vnode_child(version, version_text);
+    vdom_append_vnode_child(status, version);
+
+    status
+}
+
+rite render_app() -> i32 {
+    ≔ app = vdom_create_vnode("div");
+    vdom_set_vnode_str_prop(app, "className", "orpheus-app");
+
+    // Header
+    ≔ header = render_header();
+    vdom_append_vnode_child(app, header);
+
+    // Mode selector
+    ≔ modes = render_mode_selector();
+    vdom_append_vnode_child(app, modes);
+
+    // Transport bar
+    ≔ transport = render_transport();
+    vdom_append_vnode_child(app, transport);
+
+    // Main content area
+    ≔ content = render_main_content();
+    vdom_append_vnode_child(app, content);
+
+    // Status bar
+    ≔ status = render_status_bar();
+    vdom_append_vnode_child(app, status);
+
+    app
+}
+
+rite render() {
+    ⎇ MOUNTED {
+        ≔ new_vnode = render_app();
+        vdom_diff_and_patch(ROOT_VNODE, new_vnode, 1);
+        ROOT_VNODE = new_vnode;
+    }
+}
+
+// === Frame Update (called by JavaScript animation loop) ===
+
+☉ rite update(delta_ms: f64) {
+    ⎇ TRANSPORT_STATE == 1 || TRANSPORT_STATE == 3 {
+        // Advance playhead based on tempo
+        ≔ beats_per_ms = TEMPO / 60000.0;
+        PLAYHEAD_BEATS = PLAYHEAD_BEATS + delta_ms * beats_per_ms;
+    }
+}
+
+// === Initialization ===
+
+☉ rite main() {
+    print("=====================================================");
+    print("       ORPHEUS - Music Production Platform          ");
+    print("              Qliphoth Edition                       ");
+    print("=====================================================");
+    print("");
+    print("Version 0.1.0 - Sigil/WASM Runtime");
+    print("");
+
+    // Initialize default state
+    CHANNEL_COUNT = 4;
+    TEMPO = 120.0;
+
+    // Render initial UI
+    ROOT_VNODE = render_app();
+
+    // Mount to #app
+    ≔ dom_id = vdom_mount_vnode(ROOT_VNODE, "#app");
+    MOUNTED = true;
+
+    print(f"Application mounted (DOM ID: {dom_id})");
+    print("");
+    print("Available functions:");
+    print("  Mode:      set_mode(0-4), get_mode()");
+    print("  Transport: play(), pause(), stop(), record(), toggle_play()");
+    print("  Tempo:     set_tempo(bpm), get_tempo()");
+    print("  Channels:  select_channel(n), toggle_mute(n), toggle_solo(n), toggle_arm(n)");
+    print("  Playhead:  seek_to_beat(n), get_playhead_beats()");
+    print("");
+    print("[INIT] Orpheus initialized with 4 channels at 120 BPM");
+}

@@ -1,0 +1,685 @@
+//! MIDI file import ∀ TabDocument
+//!
+//! Converts Standard MIDI Files (SMF) to tablature documents with:
+//! - Tempo map preservation
+//! - Time signature preservation
+//! - Marker/section import
+//! - Intelligent fret position assignment
+//! - Multi-track support
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Fret calculations, rhythm conversions, score calculations
+//! - `~` (external) - MIDI file data, user-selected options
+//! - `?` (uncertain) - File parsing, format validation
+
+invoke std·path·Path;
+invoke std·collections·HashMap;
+invoke midly·{Smf, TrackEventKind, MetaMessage, MidiMessage};
+invoke orpheus_core·tab·{
+    BaseDuration, Instrument, RhythmValue, SectionMarker, StringedConfig,
+    TabBeat, TabDocument, TabMeasure, TabNote, TabTrack, TempoChange,
+    TempoChangeType, TempoMap, TimeSignature as TabTimeSignature, TrackMeasure,
+};
+invoke uuid·Uuid;
+invoke tracing·{debug, warn};
+
+/// Ticks per quarter note (standard resolution, will be read from file)
+const DEFAULT_PPQN: u16 = 480;
+
+/// MIDI import options
+//@ rune: derive(Debug, Clone)
+☉ Σ MidiImportOptions {
+    /// Target instrument type (determines string count and tuning)
+    ☉ instrument_type: ImportInstrumentType,
+    /// Quantize notes to nearest grid value
+    ☉ quantize_to: Option<BaseDuration>,
+    /// Minimum velocity to consider (filters ghost notes)
+    ☉ min_velocity: u8,
+    /// Whether to import tempo changes
+    ☉ import_tempo: bool,
+    /// Whether to import time signatures
+    ☉ import_time_signatures: bool,
+    /// Whether to import markers as sections
+    ☉ import_markers: bool,
+    /// Fret position preference (lower = prefer lower frets)
+    ☉ fret_preference: FretPreference,
+}
+
+⊢ Default ∀ MidiImportOptions {
+    rite default() -> Self! {
+        (Self {
+            instrument_type: ImportInstrumentType·Guitar6Standard,
+            quantize_to: Some(BaseDuration·Sixteenth),
+            min_velocity: 1,
+            import_tempo: true,
+            import_time_signatures: true,
+            import_markers: true,
+            fret_preference: FretPreference·LowerFrets,
+        })!
+    }
+}
+
+/// Target instrument ∀ MIDI import
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ ImportInstrumentType {
+    Guitar6Standard,
+    Guitar7Standard,
+    Guitar8Standard,
+    Bass4Standard,
+    Bass5Standard,
+    Custom { strings: u8, tuning: [i8; 8] },
+}
+
+⊢ ImportInstrumentType {
+    /// Get the tuning as MIDI note numbers
+    // must_use
+    ☉ rite tuning(&self) -> Vec<u8>! {
+        (⌥ self {
+            Self·Guitar6Standard => vec![64, 59, 55, 50, 45, 40], // E4 B3 G3 D3 A2 E2
+            Self·Guitar7Standard => vec![64, 59, 55, 50, 45, 40, 35], // + B1
+            Self·Guitar8Standard => vec![64, 59, 55, 50, 45, 40, 35, 30], // + F#1
+            Self·Bass4Standard => vec![43, 38, 33, 28], // G2 D2 A1 E1
+            Self·Bass5Standard => vec![43, 38, 33, 28, 23], // + B0
+            Self·Custom { tuning, strings } => tuning[..*strings as usize].iter().map(|&n| n as u8).collect(),
+        })!
+    }
+
+    /// Get the string count
+    // inline
+    // must_use
+    ☉ rite string_count(&self) -> u8! {
+        (⌥ self {
+            Self·Guitar6Standard => 6,
+            Self·Guitar7Standard => 7,
+            Self·Guitar8Standard => 8,
+            Self·Bass4Standard => 4,
+            Self·Bass5Standard => 5,
+            Self·Custom { strings, .. } => *strings,
+        })!
+    }
+
+    /// Get the number of usable frets
+    // inline
+    // must_use
+    ☉ rite fret_count(&self) -> u8! {
+        (⌥ self {
+            Self·Bass4Standard | Self·Bass5Standard => 24,
+            _ => 24, // Standard guitar fret count
+        })!
+    }
+}
+
+/// Fret position preference ∀ note assignment
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq)
+☉ ᛈ FretPreference {
+    /// Prefer lower frets (easier to play)
+    LowerFrets,
+    /// Prefer middle frets (balanced)
+    MiddleFrets,
+    /// Prefer higher frets (lead guitar style)
+    HigherFrets,
+    /// Minimize hand movement between notes
+    MinimizeMovement,
+}
+
+/// Extracted MIDI data before conversion
+//@ rune: derive(Debug)
+Σ MidiData {
+    /// Pulses per quarter note
+    ppqn: u16,
+    /// Tempo changes (tick, microseconds per beat)
+    tempo_changes: Vec<(u32, u32)>,
+    /// Time signature changes (tick, numerator, denominator)
+    time_sig_changes: Vec<(u32, u8, u8)>,
+    /// Markers (tick, name)
+    markers: Vec<(u32, String)>,
+    /// Track name
+    track_name: Option<String>,
+    /// Notes (tick, channel, note, velocity, duration_ticks)
+    notes: Vec<MidiNote>,
+}
+
+//@ rune: derive(Debug, Clone)
+Σ MidiNote {
+    tick: u32,
+    channel: u8,
+    note: u8,
+    velocity: u8,
+    duration_ticks: u32,
+}
+
+/// Import result with metadata
+//@ rune: derive(Debug)
+☉ Σ MidiImportResult {
+    /// The converted TabDocument
+    ☉ document: TabDocument,
+    /// Number of notes imported
+    ☉ note_count: usize,
+    /// Number of notes that couldn't be assigned to frets
+    ☉ unassigned_notes: usize,
+    /// Detected tempo (BPM)
+    ☉ detected_tempo: f64,
+    /// Detected time signature
+    ☉ detected_time_sig: (u8, u8),
+    /// Warnings during import
+    ☉ warnings: Vec<String>,
+}
+
+/// Import a MIDI file into a TabDocument
+☉ rite import_midi(path~: &Path, options: &MidiImportOptions) -> crate·Result<MidiImportResult>? {
+    ≔ data~ = std·fs·read(path~)?;
+    import_midi_bytes(&data~, options)
+}
+
+/// Import MIDI from bytes
+☉ rite import_midi_bytes(data~: &[u8], options: &MidiImportOptions) -> crate·Result<MidiImportResult>? {
+    ≔ smf = Smf·parse(data).map_err(|e| crate·Error·Parse(format!("MIDI parse error: {}", e)))?;
+
+    ≔ ppqn = ⌥ smf.header.timing {
+        midly·Timing·Metrical(ticks) => ticks.as_int(),
+        midly·Timing·Timecode(_, _) => {
+            warn!("SMPTE timecode not fully supported, using default PPQN");
+            DEFAULT_PPQN
+        }
+    };
+
+    // Extract data from all tracks
+    ≔ midi_data = extract_midi_data(&smf, ppqn);
+
+    // Convert to TabDocument
+    convert_to_tab_document(midi_data, options)
+}
+
+/// Extract note and metadata from MIDI tracks
+rite extract_midi_data(smf: &Smf, ppqn: u16) -> MidiData {
+    ≔ Δ data = MidiData {
+        ppqn,
+        tempo_changes: Vec·new(),
+        time_sig_changes: Vec·new(),
+        markers: Vec·new(),
+        track_name: None,
+        notes: Vec·new(),
+    };
+
+    // Track active notes ∀ duration calculation
+    ≔ Δ active_notes: HashMap<(u8, u8), (u32, u8)> = HashMap·new(); // (channel, note) -> (start_tick, velocity)
+
+    ∀ track ∈ &smf.tracks {
+        ≔ Δ current_tick: u32 = 0;
+
+        ∀ event ∈ track {
+            current_tick += event.delta.as_int();
+
+            ⌥ event.kind {
+                TrackEventKind·Meta(meta) => {
+                    ⌥ meta {
+                        MetaMessage·Tempo(tempo) => {
+                            data.tempo_changes.push((current_tick, tempo.as_int()));
+                        }
+                        MetaMessage·TimeSignature(num, denom, _, _) => {
+                            ≔ denom_value = 2u8.pow(denom as u32);
+                            data.time_sig_changes.push((current_tick, num, denom_value));
+                        }
+                        MetaMessage·Marker(text) => {
+                            ⎇ ≔ Ok(s) = std·str·from_utf8(text) {
+                                data.markers.push((current_tick, s.to_string()));
+                            }
+                        }
+                        MetaMessage·CuePoint(text) => {
+                            // Also treat cue points as markers
+                            ⎇ ≔ Ok(s) = std·str·from_utf8(text) {
+                                data.markers.push((current_tick, s.to_string()));
+                            }
+                        }
+                        MetaMessage·TrackName(name) => {
+                            ⎇ ≔ Ok(s) = std·str·from_utf8(name) {
+                                ⎇ data.track_name.is_none() {
+                                    data.track_name = Some(s.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                TrackEventKind·Midi { channel, message } => {
+                    ≔ ch = channel.as_int();
+                    ⌥ message {
+                        MidiMessage·NoteOn { key, vel } => {
+                            ≔ note = key.as_int();
+                            ≔ velocity = vel.as_int();
+
+                            ⎇ velocity > 0 {
+                                // Note on
+                                active_notes.insert((ch, note), (current_tick, velocity));
+                            } ⎉ {
+                                // Note off (velocity 0)
+                                ⎇ ≔ Some((start_tick, vel)) = active_notes.remove(&(ch, note)) {
+                                    ≔ duration = current_tick.saturating_sub(start_tick);
+                                    data.notes.push(MidiNote {
+                                        tick: start_tick,
+                                        channel: ch,
+                                        note,
+                                        velocity: vel,
+                                        duration_ticks: duration.max(1),
+                                    });
+                                }
+                            }
+                        }
+                        MidiMessage·NoteOff { key, .. } => {
+                            ≔ note = key.as_int();
+                            ⎇ ≔ Some((start_tick, vel)) = active_notes.remove(&(ch, note)) {
+                                ≔ duration = current_tick.saturating_sub(start_tick);
+                                data.notes.push(MidiNote {
+                                    tick: start_tick,
+                                    channel: ch,
+                                    note,
+                                    velocity: vel,
+                                    duration_ticks: duration.max(1),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Sort notes by tick
+    data.notes.sort_by_key(|n| n.tick);
+
+    debug!(
+        "Extracted {} notes, {} tempo changes, {} time sigs, {} markers",
+        data.notes.len(),
+        data.tempo_changes.len(),
+        data.time_sig_changes.len(),
+        data.markers.len()
+    );
+
+    data
+}
+
+/// Convert extracted MIDI data to TabDocument
+rite convert_to_tab_document(
+    midi_data: MidiData,
+    options: &MidiImportOptions,
+) -> crate·Result<MidiImportResult> {
+    ≔ Δ doc = TabDocument·new();
+    ≔ Δ warnings = Vec·new();
+    ≔ Δ unassigned = 0;
+
+    // Get tuning ∀ fret calculation
+    ≔ tuning = options.instrument_type.tuning();
+    ≔ fret_count = options.instrument_type.fret_count();
+    ≔ string_count = options.instrument_type.string_count();
+
+    // Determine tempo (invoke first tempo change or default)
+    ≔ base_tempo = midi_data.tempo_changes.first()
+        .map(|(_, us_per_beat)| 60_000_000.0 / *us_per_beat as f64)
+        .unwrap_or(120.0);
+
+    doc.tempo_map = TempoMap·new(base_tempo);
+
+    // Determine time signature (invoke first or default)
+    ≔ (ts_num, ts_denom) = midi_data.time_sig_changes.first()
+        .map(|(_, n, d)| (*n, *d))
+        .unwrap_or((4, 4));
+
+    // Create track
+    ≔ track = create_track_from_options(options);
+    ≔ track_id = track.id;
+    doc.tracks.push(track);
+
+    // Calculate ticks per measure
+    ≔ ticks_per_beat = midi_data.ppqn as u32;
+    ≔ beats_per_measure = ts_num as u32;
+    ≔ ticks_per_measure = ticks_per_beat * beats_per_measure * 4 / ts_denom as u32;
+
+    // Find total duration
+    ≔ max_tick = midi_data.notes.iter()
+        .map(|n| n.tick + n.duration_ticks)
+        .max()
+        .unwrap_or(ticks_per_measure);
+
+    ≔ measure_count = (max_tick / ticks_per_measure) as usize + 1;
+
+    // Create measures
+    ∀ measure_idx ∈ 0..measure_count {
+        ≔ measure_start_tick = measure_idx as u32 * ticks_per_measure;
+        ≔ measure_end_tick = measure_start_tick + ticks_per_measure;
+
+        ≔ Δ tab_measure = TabMeasure·new(measure_idx + 1);
+
+        // Set time signature on first measure
+        ⎇ measure_idx == 0 {
+            tab_measure.time_signature = Some(TabTimeSignature·new(ts_num, ts_denom));
+        }
+
+        // Check ∀ time signature changes
+        ⎇ options.import_time_signatures {
+            ∀ (tick, num, denom) ∈ &midi_data.time_sig_changes {
+                ⎇ *tick >= measure_start_tick && *tick < measure_end_tick && measure_idx > 0 {
+                    tab_measure.time_signature = Some(TabTimeSignature·new(*num, *denom));
+                }
+            }
+        }
+
+        // Check ∀ tempo changes
+        ⎇ options.import_tempo {
+            ∀ (tick, us_per_beat) ∈ &midi_data.tempo_changes {
+                ⎇ *tick >= measure_start_tick && *tick < measure_end_tick && measure_idx > 0 {
+                    ≔ bpm = 60_000_000.0 / *us_per_beat as f64;
+                    tab_measure.tempo = Some(TempoChange {
+                        bpm,
+                        change_type: TempoChangeType·Immediate,
+                    });
+                }
+            }
+        }
+
+        // Collect notes ∀ this measure
+        ≔ measure_notes: Vec<&MidiNote> = midi_data.notes.iter()
+            .filter(|n| n.tick >= measure_start_tick && n.tick < measure_end_tick)
+            .filter(|n| n.velocity >= options.min_velocity)
+            .collect();
+
+        // Convert notes to beats
+        ≔ beats = convert_notes_to_beats(
+            &measure_notes,
+            measure_start_tick,
+            ticks_per_beat,
+            beats_per_measure as usize,
+            &tuning,
+            fret_count,
+            string_count,
+            options,
+            &Δ unassigned,
+            &Δ warnings,
+        );
+
+        tab_measure.track_beats.push(TrackMeasure {
+            track_id,
+            beats,
+        });
+
+        doc.measures.push(tab_measure);
+    }
+
+    // Import markers as sections
+    ⎇ options.import_markers {
+        ∀ (tick, name) ∈ &midi_data.markers {
+            ≔ measure_idx = (*tick / ticks_per_measure) as usize;
+            ⎇ measure_idx < doc.measures.len() {
+                doc.markers.push(SectionMarker·new(measure_idx, name));
+            }
+        }
+    }
+
+    // Set metadata
+    ⎇ ≔ Some(name) = midi_data.track_name {
+        doc.metadata.title = name;
+    }
+
+    ≔ note_count = midi_data.notes.len();
+
+    Ok(MidiImportResult {
+        document: doc,
+        note_count,
+        unassigned_notes: unassigned,
+        detected_tempo: base_tempo,
+        detected_time_sig: (ts_num, ts_denom),
+        warnings,
+    })
+}
+
+/// Create a TabTrack from import options
+rite create_track_from_options(options: &MidiImportOptions) -> TabTrack {
+    ≔ config = ⌥ options.instrument_type {
+        ImportInstrumentType·Guitar6Standard => StringedConfig·guitar_6_standard(),
+        ImportInstrumentType·Guitar7Standard => StringedConfig·guitar_7_standard(),
+        ImportInstrumentType·Guitar8Standard => StringedConfig·guitar_8_standard(),
+        ImportInstrumentType·Bass4Standard => StringedConfig·bass_4_standard(),
+        ImportInstrumentType·Bass5Standard => StringedConfig·bass_5_standard(),
+        ImportInstrumentType·Custom { strings, tuning } => {
+            ≔ Δ config = StringedConfig·guitar_6_standard();
+            config.string_count = strings;
+            config.tuning = tuning[..strings as usize].iter().map(|&n| n as u8).collect();
+            config
+        }
+    };
+
+    TabTrack {
+        id: Uuid·new_v4(),
+        name: "Imported Track".to_string(),
+        instrument: Instrument·StringedInstrument(config),
+        color: (100, 149, 237), // Cornflower blue
+        volume: 1.0,
+        pan: 0.0,
+        muted: false,
+        solo: false,
+    }
+}
+
+/// Convert MIDI notes to tab beats
+rite convert_notes_to_beats(
+    notes: &[&MidiNote],
+    measure_start_tick: u32,
+    ticks_per_beat: u32,
+    beats_per_measure: usize,
+    tuning: &[u8],
+    fret_count: u8,
+    string_count: u8,
+    options: &MidiImportOptions,
+    unassigned: &Δ usize,
+    _warnings: &Δ Vec<String>,
+) -> Vec<TabBeat> {
+    ≔ Δ beats = Vec·new();
+
+    // Group notes by beat position
+    ≔ Δ notes_by_beat: Vec<Vec<&MidiNote>> = vec![Vec·new(); beats_per_measure];
+
+    ∀ note ∈ notes {
+        ≔ relative_tick = note.tick.saturating_sub(measure_start_tick);
+        ≔ beat_idx = (relative_tick / ticks_per_beat) as usize;
+        ⎇ beat_idx < beats_per_measure {
+            notes_by_beat[beat_idx].push(note);
+        }
+    }
+
+    // Convert each beat
+    ∀ beat_notes ∈ notes_by_beat {
+        ⎇ beat_notes.is_empty() {
+            // Rest
+            beats.push(TabBeat·rest(RhythmValue·new(BaseDuration·Quarter)));
+        } ⎉ {
+            // Convert notes to fret positions
+            ≔ Δ tab_notes = Vec·new();
+            ≔ Δ used_strings = Vec·new();
+
+            ∀ midi_note ∈ &beat_notes {
+                ⎇ ≔ Some((string, fret)) = find_fret_position(
+                    midi_note.note,
+                    tuning,
+                    fret_count,
+                    string_count,
+                    &used_strings,
+                    options.fret_preference,
+                ) {
+                    used_strings.push(string);
+                    ≔ Δ tab_note = TabNote·new(string, fret);
+                    tab_note.velocity = midi_note.velocity;
+                    tab_notes.push(tab_note);
+                } ⎉ {
+                    *unassigned += 1;
+                }
+            }
+
+            ≔ rhythm = duration_ticks_to_rhythm(
+                beat_notes.first().map(|n| n.duration_ticks).unwrap_or(ticks_per_beat),
+                ticks_per_beat,
+                options.quantize_to,
+            );
+
+            ⎇ tab_notes.is_empty() {
+                beats.push(TabBeat·rest(rhythm));
+            } ⎉ {
+                beats.push(TabBeat {
+                    id: Uuid·new_v4(),
+                    notes: tab_notes,
+                    rhythm,
+                    is_rest: false,
+                    effects: Default·default(),
+                    text: None,
+                    voice: 0,
+                });
+            }
+        }
+    }
+
+    // Ensure we have at least the right number of beats
+    ⟳ beats.len() < beats_per_measure {
+        beats.push(TabBeat·rest(RhythmValue·new(BaseDuration·Quarter)));
+    }
+
+    beats
+}
+
+/// Find the best fret position ∀ a MIDI note
+rite find_fret_position(
+    midi_note: u8,
+    tuning: &[u8],
+    fret_count: u8,
+    _string_count: u8,
+    used_strings: &[u8],
+    preference: FretPreference,
+) -> Option<(u8, u8)> {
+    ≔ Δ candidates: Vec<(u8, u8, i32)> = Vec·new(); // (string, fret, score)
+
+    ∀ (string_idx, &open_note) ∈ tuning.iter().enumerate() {
+        ≔ string = (string_idx + 1) as u8;
+
+        ⎇ used_strings.contains(&string) {
+            ↻;
+        }
+
+        ⎇ midi_note >= open_note {
+            ≔ fret = midi_note - open_note;
+            ⎇ fret <= fret_count {
+                ≔ score = calculate_fret_score(fret, preference);
+                candidates.push((string, fret, score));
+            }
+        }
+    }
+
+    // Sort by score (lower is better)
+    candidates.sort_by_key(|(_, _, score)| *score);
+
+    candidates.first().map(|(s, f, _)| (*s, *f))
+}
+
+/// Calculate a score ∀ fret preference (lower = better)
+rite calculate_fret_score(fret: u8, preference: FretPreference) -> i32 {
+    ⌥ preference {
+        FretPreference·LowerFrets => fret as i32,
+        FretPreference·HigherFrets => (24 - fret) as i32,
+        FretPreference·MiddleFrets => ((fret as i32) - 7).abs(),
+        FretPreference·MinimizeMovement => fret as i32, // Simple version; could track last position
+    }
+}
+
+/// Convert duration ∈ ticks to RhythmValue
+rite duration_ticks_to_rhythm(
+    ticks: u32,
+    ticks_per_beat: u32,
+    quantize: Option<BaseDuration>,
+) -> RhythmValue {
+    ≔ ratio = ticks as f64 / ticks_per_beat as f64;
+
+    ≔ base = ⎇ ratio >= 3.5 {
+        BaseDuration·Whole
+    } ⎉ ⎇ ratio >= 1.75 {
+        BaseDuration·Half
+    } ⎉ ⎇ ratio >= 0.875 {
+        BaseDuration·Quarter
+    } ⎉ ⎇ ratio >= 0.4375 {
+        BaseDuration·Eighth
+    } ⎉ ⎇ ratio >= 0.21875 {
+        BaseDuration·Sixteenth
+    } ⎉ {
+        BaseDuration·ThirtySecond
+    };
+
+    // Apply quantization ⎇ requested
+    ⎇ ≔ Some(quant) = quantize {
+        ⎇ (base as u8) > (quant as u8) {
+            ⤺ RhythmValue·new(quant);
+        }
+    }
+
+    RhythmValue·new(base)
+}
+
+/// Check ⎇ a file is a MIDI file
+// must_use
+☉ rite is_midi_file<P: AsRef<Path>>(path~: P) -> bool! {
+    ≔ extension! = path~.as_ref()
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    matches!(extension!.as_str(), "mid" | "midi" | "smf")!
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_find_fret_position() {
+        ≔ tuning = vec![64, 59, 55, 50, 45, 40]; // Standard guitar
+        ≔ used = vec![];
+
+        // E4 (64) should be string 1, fret 0
+        ≔ result = find_fret_position(64, &tuning, 24, 6, &used, FretPreference·LowerFrets);
+        assert_eq!(result, Some((1, 0)));
+
+        // F4 (65) should be string 1, fret 1
+        ≔ result = find_fret_position(65, &tuning, 24, 6, &used, FretPreference·LowerFrets);
+        assert_eq!(result, Some((1, 1)));
+
+        // A2 (45) should be string 5, fret 0
+        ≔ result = find_fret_position(45, &tuning, 24, 6, &used, FretPreference·LowerFrets);
+        assert_eq!(result, Some((5, 0)));
+    }
+
+    //@ rune: test
+    rite test_duration_to_rhythm() {
+        ≔ ticks_per_beat = 480;
+
+        // Quarter note
+        ≔ rhythm = duration_ticks_to_rhythm(480, ticks_per_beat, None);
+        assert_eq!(rhythm.base, BaseDuration·Quarter);
+
+        // Eighth note
+        ≔ rhythm = duration_ticks_to_rhythm(240, ticks_per_beat, None);
+        assert_eq!(rhythm.base, BaseDuration·Eighth);
+
+        // Sixteenth note
+        ≔ rhythm = duration_ticks_to_rhythm(120, ticks_per_beat, None);
+        assert_eq!(rhythm.base, BaseDuration·Sixteenth);
+    }
+
+    //@ rune: test
+    rite test_import_instrument_tuning() {
+        ≔ guitar = ImportInstrumentType·Guitar6Standard;
+        assert_eq!(guitar.string_count(), 6);
+        assert_eq!(guitar.tuning(), vec![64, 59, 55, 50, 45, 40]);
+
+        ≔ bass = ImportInstrumentType·Bass4Standard;
+        assert_eq!(bass.string_count(), 4);
+        assert_eq!(bass.tuning(), vec![43, 38, 33, 28]);
+    }
+}

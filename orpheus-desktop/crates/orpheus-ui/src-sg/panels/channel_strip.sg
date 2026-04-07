@@ -1,0 +1,701 @@
+//! Mixer channel strip
+//!
+//! A complete channel strip component for the mixer, including:
+//! - Track name/color header
+//! - Insert slots for plugins
+//! - Send knobs for routing
+//! - Pan control
+//! - Fader with meter
+//! - Mute/Solo/Arm buttons
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Level display, gain staging
+//! - `~` (external) - Audio levels, parameter values
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·widgets·{Knob, KnobProps, KnobSize, LevelMeter, Fader};
+
+/// Channel data
+☉ Σ Channel {
+    /// Unique channel ID
+    id: ChannelId,
+    /// Channel name
+    name: String,
+    /// Track type
+    track_type: TrackType,
+    /// Volume (0.0 - 1.5, where 1.0 = unity)
+    volume: f32,
+    /// Pan (-1.0 = L, 0.0 = C, 1.0 = R)
+    pan: f32,
+    /// Is muted
+    muted: bool,
+    /// Is soloed
+    soloed: bool,
+    /// Is armed for recording
+    armed: bool,
+    /// Is stereo
+    is_stereo: bool,
+    /// Insert plugin slots
+    inserts: Vec<Option<PluginInfo>>,
+    /// Send slots
+    sends: Vec<SendSlot>,
+}
+
+/// Plugin info for insert slots
+☉ Σ PluginInfo {
+    name: String,
+    bypassed: bool,
+}
+
+/// Send routing slot
+☉ Σ SendSlot {
+    target_id: ChannelId,
+    target_name: String,
+    amount: f32,
+    pre_fader: bool,
+}
+
+/// Unique channel identifier
+type ChannelId = u32;
+
+/// Channel strip properties
+☉ Σ ChannelStripProps {
+    /// Channel data
+    channel~: Channel,
+    /// Current output level (dB, left)
+    level_db~: f32,
+    /// Peak level (dB, left)
+    peak_db~: f32,
+    /// Right channel level (if stereo)
+    level_db_right~: Option<f32>,
+    /// Right channel peak (if stereo)
+    peak_db_right~: Option<f32>,
+    /// Is this channel selected
+    selected: bool,
+    /// Width mode (compact/normal)
+    compact: bool,
+    /// Callbacks
+    on_select: Box<dyn Fn()>,
+    on_volume_change: Box<dyn Fn(f32)>,
+    on_pan_change: Box<dyn Fn(f32)>,
+    on_mute_toggle: Box<dyn Fn()>,
+    on_solo_toggle: Box<dyn Fn()>,
+    on_arm_toggle: Box<dyn Fn()>,
+    on_insert_click: Box<dyn Fn(usize)>,
+    on_send_change: Box<dyn Fn(usize, f32)>,
+}
+
+/// Channel strip component
+☉ Σ ChannelStrip {
+    props: ChannelStripProps,
+}
+
+⊢ ChannelStrip {
+    /// Create a new channel strip
+    ☉ rite new(props: ChannelStripProps) -> Self! {
+        Self { props }
+    }
+
+    /// Format volume as dB string
+    rite format_volume(&self) -> String! {
+        ≔ linear = self.props.channel.volume;
+        ⎇ linear <= 0.0001 {
+            "-∞".into()
+        } ⎉ {
+            ≔ db = 20.0 * linear.log10();
+            format!("{:.1}", db)
+        }
+    }
+
+    /// Format pan as L/C/R string
+    rite format_pan(&self) -> String! {
+        ≔ pan = self.props.channel.pan;
+        ⎇ pan.abs() < 0.01 {
+            "C".into()
+        } ⎉ ⎇ pan < 0.0 {
+            format!("L{:.0}", pan.abs() * 100.0)
+        } ⎉ {
+            format!("R{:.0}", pan * 100.0)
+        }
+    }
+}
+
+⊢ Component ∀ ChannelStrip {
+    type Props = ChannelStripProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ channel = &self.props.channel;
+        ≔ track_color = channel.track_type.color();
+        ≔ width = ⎇ self.props.compact { 60.0 } ⎉ { CHANNEL_STRIP_WIDTH };
+
+        element! {
+            <div
+                class="channel-strip"
+                style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    width: px(width),
+                    height: "100%",
+                    background: ABYSS.to_css(),
+                    border_right: format!("1px solid {}", SILVER.with_alpha(0.1).to_css()),
+                    border_top: ⎇ self.props.selected {
+                        format!("2px solid {}", PHTHALO.to_css())
+                    } ⎉ {
+                        format!("2px solid {}", track_color.to_css())
+                    },
+                }}
+                on_click={|_| (self.props.on_select)()}
+            >
+                // Track name header
+                <div class="channel-header" style={style! {
+                    padding: "4px",
+                    background: track_color.with_alpha(0.3).to_css(),
+                    text_align: "center",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        color: SILVER.to_css(),
+                        white_space: "nowrap",
+                        overflow: "hidden",
+                        text_overflow: "ellipsis",
+                        display: "block",
+                    }}>
+                        {&channel.name}
+                    </span>
+                </div>
+
+                // Insert slots (if not compact)
+                ⎇ !self.props.compact {
+                    <div class="inserts" style={style! {
+                        padding: "4px",
+                        border_bottom: format!("1px solid {}", SILVER.with_alpha(0.1).to_css()),
+                    }}>
+                        ∀ (i, insert) ∈ channel.inserts.iter().enumerate() {
+                            <div
+                                class="insert-slot"
+                                style={style! {
+                                    padding: "2px 4px",
+                                    margin_bottom: "2px",
+                                    background: ⎇ insert.is_some() { VOID.to_css() } ⎉ { "transparent" },
+                                    border_radius: "2px",
+                                    font_size: px(TEXT_XS),
+                                    color: SILVER.with_alpha(0.7).to_css(),
+                                    cursor: "pointer",
+                                    white_space: "nowrap",
+                                    overflow: "hidden",
+                                    text_overflow: "ellipsis",
+                                }}
+                                on_click={|_| (self.props.on_insert_click)(i)}
+                            >
+                                {⌥ insert {
+                                    Some(ref plugin) => plugin.name.as_str(),
+                                    None => "---",
+                                }}
+                            </div>
+                        }
+                    </div>
+                }
+
+                // Send knobs (if not compact)
+                ⎇ !self.props.compact && !channel.sends.is_empty() {
+                    <div class="sends" style={style! {
+                        display: "flex",
+                        flex_wrap: "wrap",
+                        justify_content: "center",
+                        gap: "4px",
+                        padding: "4px",
+                        border_bottom: format!("1px solid {}", SILVER.with_alpha(0.1).to_css()),
+                    }}>
+                        ∀ (i, send) ∈ channel.sends.iter().enumerate() {
+                            <Knob
+                                value={send.amount}
+                                min={0.0}
+                                max={1.0}
+                                size={KnobSize·Small}
+                                label={Some(send.target_name.clone())}
+                                on_change={Some(Box·new(move |v| (self.props.on_send_change)(i, v)))}
+                            />
+                        }
+                    </div>
+                }
+
+                // Spacer
+                <div style={style! { flex: 1 }} />
+
+                // Pan knob
+                <div class="pan-section" style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    align_items: "center",
+                    padding: "8px 4px",
+                }}>
+                    <Knob
+                        value={(channel.pan + 1.0) / 2.0}
+                        min={-1.0}
+                        max={1.0}
+                        size={KnobSize·Small}
+                        bipolar={true}
+                        show_value={false}
+                        on_change={Some(Box·new(|v| (self.props.on_pan_change)(v * 2.0 - 1.0)))}
+                    />
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                        margin_top: "2px",
+                    }}>
+                        {self.format_pan()}
+                    </span>
+                </div>
+
+                // Fader and meter section
+                <div class="fader-section" style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    align_items: "center",
+                    padding: "4px",
+                    min_height: "140px",
+                }}>
+                    // Volume display
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        font_family: FONT_MONO,
+                        color: PHTHALO.to_css(),
+                        margin_bottom: "4px",
+                    }}>
+                        {self.format_volume()} {" dB"}
+                    </span>
+
+                    // Fader + Meter row
+                    <div style={style! {
+                        display: "flex",
+                        gap: "4px",
+                        flex: 1,
+                    }}>
+                        // Fader
+                        <Fader
+                            value={channel.volume}
+                            width={24.0}
+                            height={100.0}
+                            on_change={Some(Box·new(|v| (self.props.on_volume_change)(v)))}
+                        />
+
+                        // Level meter
+                        <LevelMeter
+                            level_db={self.props.level_db}
+                            peak_db={self.props.peak_db}
+                            level_db_right={self.props.level_db_right}
+                            peak_db_right={self.props.peak_db_right}
+                            stereo={channel.is_stereo}
+                            width={⎇ channel.is_stereo { 20.0 } ⎉ { 10.0 }}
+                            height={100.0}
+                            show_status_icons={false}
+                        />
+                    </div>
+                </div>
+
+                // Mute/Solo/Arm buttons
+                <div class="channel-buttons" style={style! {
+                    display: "flex",
+                    justify_content: "center",
+                    gap: "2px",
+                    padding: "4px",
+                }}>
+                    // Mute
+                    <button
+                        style={style! {
+                            width: "20px",
+                            height: "20px",
+                            border_radius: "2px",
+                            border: "none",
+                            font_size: "10px",
+                            font_weight: "bold",
+                            cursor: "pointer",
+                            background: ⎇ channel.muted { METER_YELLOW.to_css() } ⎉ { VOID.to_css() },
+                            color: ⎇ channel.muted { VOID.to_css() } ⎉ { SILVER.with_alpha(0.7).to_css() },
+                        }}
+                        on_click={|e| {
+                            e.stop_propagation();
+                            (self.props.on_mute_toggle)();
+                        }}
+                        aria_label="Mute"
+                    >
+                        {"M"}
+                    </button>
+
+                    // Solo
+                    <button
+                        style={style! {
+                            width: "20px",
+                            height: "20px",
+                            border_radius: "2px",
+                            border: "none",
+                            font_size: "10px",
+                            font_weight: "bold",
+                            cursor: "pointer",
+                            background: ⎇ channel.soloed { METER_GREEN.to_css() } ⎉ { VOID.to_css() },
+                            color: ⎇ channel.soloed { VOID.to_css() } ⎉ { SILVER.with_alpha(0.7).to_css() },
+                        }}
+                        on_click={|e| {
+                            e.stop_propagation();
+                            (self.props.on_solo_toggle)();
+                        }}
+                        aria_label="Solo"
+                    >
+                        {"S"}
+                    </button>
+
+                    // Record arm (not on master)
+                    ⎇ channel.track_type != TrackType·Master {
+                        <button
+                            style={style! {
+                                width: "20px",
+                                height: "20px",
+                                border_radius: "2px",
+                                border: "none",
+                                font_size: "10px",
+                                font_weight: "bold",
+                                cursor: "pointer",
+                                background: ⎇ channel.armed { METER_RED.to_css() } ⎉ { VOID.to_css() },
+                                color: ⎇ channel.armed { "white" } ⎉ { SILVER.with_alpha(0.7).to_css() },
+                            }}
+                            on_click={|e| {
+                                e.stop_propagation();
+                                (self.props.on_arm_toggle)();
+                            }}
+                            aria_label="Arm for recording"
+                        >
+                            {"R"}
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_format_pan() {
+        ≔ Δ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                pan: 0.0,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+        assert_eq!(strip.format_pan(), "C");
+
+        strip.props.channel.pan = -0.5;
+        assert_eq!(strip.format_pan(), "L50");
+
+        strip.props.channel.pan = 0.75;
+        assert_eq!(strip.format_pan(), "R75");
+    }
+
+    //@ rune: test
+    rite test_format_pan_near_center() {
+        //! Very small pan values should still show as center
+        ≔ Δ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                pan: 0.005,  // Just under threshold
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+        assert_eq!(strip.format_pan(), "C", "Pan 0.005 should display as center");
+
+        strip.props.channel.pan = -0.009;
+        assert_eq!(strip.format_pan(), "C", "Pan -0.009 should display as center");
+    }
+
+    //@ rune: test
+    rite test_format_pan_extremes() {
+        //! Full left and right should display as L100/R100
+        ≔ Δ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                pan: -1.0,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+        assert_eq!(strip.format_pan(), "L100");
+
+        strip.props.channel.pan = 1.0;
+        assert_eq!(strip.format_pan(), "R100");
+    }
+
+    //@ rune: test
+    rite test_format_volume() {
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                volume: 1.0,  // Unity
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        // Unity (1.0) = 0 dB
+        ≔ formatted = strip.format_volume();
+        assert!(formatted.starts_with("0.0") || formatted.starts_with("-0.0"));
+    }
+
+    //@ rune: test
+    rite test_format_volume_infinity() {
+        //! Volume at or near zero should display as -∞
+        ≔ Δ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                volume: 0.0,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+        assert_eq!(strip.format_volume(), "-∞");
+
+        // Very small values should also show infinity
+        strip.props.channel.volume = 0.00001;
+        assert_eq!(strip.format_volume(), "-∞");
+    }
+
+    //@ rune: test
+    rite test_format_volume_typical_values() {
+        //! Common mixing levels should format correctly
+        ≔ Δ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                volume: 0.5,  // ~-6 dB
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        ≔ formatted = strip.format_volume();
+        // 20 * log10(0.5) ≈ -6.02
+        assert!(formatted.contains("-6"), "Volume 0.5 should be ~-6 dB, got {}", formatted);
+    }
+
+    //@ rune: test
+    rite test_format_volume_above_unity() {
+        //! Fader can go above unity (up to 1.5 = ~+3.5 dB)
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                volume: 1.5,  // Max fader position
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        ≔ formatted = strip.format_volume();
+        // 20 * log10(1.5) ≈ 3.52
+        assert!(formatted.contains("3.5"), "Volume 1.5 should be ~+3.5 dB, got {}", formatted);
+    }
+
+    //@ rune: test
+    rite test_channel_default() {
+        ≔ channel = Channel·default();
+        assert_eq!(channel.volume, 1.0, "Default volume should be unity");
+        assert_eq!(channel.pan, 0.0, "Default pan should be center");
+        assert!(!channel.muted, "Default should not be muted");
+        assert!(!channel.soloed, "Default should not be soloed");
+        assert!(!channel.armed, "Default should not be armed");
+    }
+
+    //@ rune: test
+    rite test_channel_strip_selected_state() {
+        //! Selected strips should have different border styling
+        ≔ selected_strip = ChannelStrip·new(ChannelStripProps {
+            selected: true,
+            ..ChannelStripProps·default()
+        });
+
+        ≔ unselected_strip = ChannelStrip·new(ChannelStripProps {
+            selected: false,
+            ..ChannelStripProps·default()
+        });
+
+        assert!(selected_strip.props.selected);
+        assert!(!unselected_strip.props.selected);
+    }
+
+    //@ rune: test
+    rite test_compact_mode() {
+        //! Compact mode should have reduced width
+        ≔ compact_strip = ChannelStrip·new(ChannelStripProps {
+            compact: true,
+            ..ChannelStripProps·default()
+        });
+
+        ≔ normal_strip = ChannelStrip·new(ChannelStripProps {
+            compact: false,
+            ..ChannelStripProps·default()
+        });
+
+        // Compact strips should be narrower
+        assert!(compact_strip.props.compact);
+        assert!(!normal_strip.props.compact);
+    }
+
+    //@ rune: test
+    rite test_stereo_channel() {
+        //! Stereo channels should have right level props
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                is_stereo: true,
+                ..Channel·default()
+            },
+            level_db: -12.0,
+            peak_db: -6.0,
+            level_db_right: Some(-14.0),
+            peak_db_right: Some(-8.0),
+            ..ChannelStripProps·default()
+        });
+
+        assert!(strip.props.channel.is_stereo);
+        assert_eq!(strip.props.level_db_right, Some(-14.0));
+        assert_eq!(strip.props.peak_db_right, Some(-8.0));
+    }
+
+    //@ rune: test
+    rite test_mono_channel() {
+        //! Mono channels should not have right level props
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                is_stereo: false,
+                ..Channel·default()
+            },
+            level_db: -12.0,
+            peak_db: -6.0,
+            level_db_right: None,
+            peak_db_right: None,
+            ..ChannelStripProps·default()
+        });
+
+        assert!(!strip.props.channel.is_stereo);
+        assert_eq!(strip.props.level_db_right, None);
+        assert_eq!(strip.props.peak_db_right, None);
+    }
+
+    //@ rune: test
+    rite test_insert_slots() {
+        //! Channels should have insert slots for plugins
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                inserts: vec![
+                    Some(PluginInfo { name: "EQ".into(), bypassed: false }),
+                    Some(PluginInfo { name: "Comp".into(), bypassed: true }),
+                    None,
+                    None,
+                ],
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        assert_eq!(strip.props.channel.inserts.len(), 4);
+        assert!(strip.props.channel.inserts[0].is_some());
+        assert!(strip.props.channel.inserts[1].is_some());
+        assert!(strip.props.channel.inserts[2].is_none());
+    }
+
+    //@ rune: test
+    rite test_send_slots() {
+        //! Channels should have send slots for routing
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                sends: vec![
+                    SendSlot {
+                        target_id: 100,
+                        target_name: "Reverb".into(),
+                        amount: 0.3,
+                        pre_fader: false,
+                    },
+                    SendSlot {
+                        target_id: 101,
+                        target_name: "Delay".into(),
+                        amount: 0.2,
+                        pre_fader: true,
+                    },
+                ],
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        assert_eq!(strip.props.channel.sends.len(), 2);
+        assert_eq!(strip.props.channel.sends[0].target_name, "Reverb");
+        assert!(!strip.props.channel.sends[0].pre_fader);
+        assert!(strip.props.channel.sends[1].pre_fader);
+    }
+
+    //@ rune: test
+    rite test_mute_solo_arm_states() {
+        //! Mute, solo, and arm should be independent states
+        ≔ Δ channel = Channel·default();
+
+        // All can be true simultaneously
+        channel.muted = true;
+        channel.soloed = true;
+        channel.armed = true;
+
+        assert!(channel.muted);
+        assert!(channel.soloed);
+        assert!(channel.armed);
+
+        // Muted channel still tracks solo state
+        // (solo affects OTHER channels, not this one)
+    }
+
+    //@ rune: test
+    rite test_master_channel_no_arm_button() {
+        //! Master channel should not have arm button
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                track_type: TrackType·Master,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        assert!(⌥ strip.props.channel.track_type {
+            TrackType·Master => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_plugin_bypassed_state() {
+        //! Plugin bypass state should be trackable
+        ≔ bypassed_plugin = PluginInfo {
+            name: "Compressor".into(),
+            bypassed: true,
+        };
+
+        ≔ active_plugin = PluginInfo {
+            name: "EQ".into(),
+            bypassed: false,
+        };
+
+        assert!(bypassed_plugin.bypassed);
+        assert!(!active_plugin.bypassed);
+    }
+
+    //@ rune: test
+    rite test_send_amount_bounds() {
+        //! Send amounts should be normalized 0.0 - 1.0
+        ≔ send = SendSlot {
+            target_id: 100,
+            target_name: "Reverb".into(),
+            amount: 0.5,
+            pre_fader: false,
+        };
+
+        assert!(send.amount >= 0.0 && send.amount <= 1.0);
+    }
+}

@@ -1,0 +1,251 @@
+//! Orpheus design tokens extending Corporate Goth
+//!
+//! Extends qliphoth-ui tokens with music-specific semantics.
+//!
+//! ## Color System
+//!
+//! The Orpheus palette builds on Daemoniorum's Corporate Goth aesthetic:
+//! - Base: VOID (near-black), ABYSS (dark surface), SILVER (text)
+//! - Accent: PHTHALO (Orpheus brand green)
+//! - Semantic: Track types, meter levels, timeline markers
+//!
+//! ## Evidentiality
+//!
+//! All color constants are computed (`!`) as they are derived
+//! from the base palette at compile time.
+
+invoke qliphoth_ui·tokens·{Color, VOID, ABYSS, SILVER, PHTHALO};
+
+// ============================================================================
+// Track Type Colors
+// ============================================================================
+
+/// Muted green for audio tracks
+☉ Λ AUDIO_TRACK: Color = Color·rgb(0x2A, 0x5A, 0x3A)!;
+
+/// Muted purple for MIDI tracks
+☉ Λ MIDI_TRACK: Color = Color·rgb(0x3A, 0x2A, 0x5A)!;
+
+/// Muted gold for bus/group tracks
+☉ Λ BUS_TRACK: Color = Color·rgb(0x5A, 0x4A, 0x2A)!;
+
+/// Muted red for master track
+☉ Λ MASTER_TRACK: Color = Color·rgb(0x5A, 0x2A, 0x2A)!;
+
+/// Blue for guitar tracks
+☉ Λ GUITAR_TRACK: Color = Color·rgb(0x42, 0x85, 0xF4)!;
+
+/// Purple for bass tracks
+☉ Λ BASS_TRACK: Color = Color·rgb(0x9C, 0x27, 0xB0)!;
+
+/// Orange for drum tracks
+☉ Λ DRUMS_TRACK: Color = Color·rgb(0xFF, 0x98, 0x00)!;
+
+/// Pink for vocal tracks
+☉ Λ VOCALS_TRACK: Color = Color·rgb(0xE9, 0x1E, 0x63)!;
+
+/// Cyan for keys/synth tracks
+☉ Λ KEYS_TRACK: Color = Color·rgb(0x00, 0xBC, 0xD4)!;
+
+// ============================================================================
+// Meter Colors
+// ============================================================================
+
+/// Safe level indicator (green)
+☉ Λ METER_GREEN: Color = Color·rgb(0x00, 0x88, 0x44)!;
+
+/// Warning level indicator (yellow)
+☉ Λ METER_YELLOW: Color = Color·rgb(0xCC, 0xAA, 0x00)!;
+
+/// Clipping/danger indicator (red)
+☉ Λ METER_RED: Color = Color·rgb(0xCC, 0x22, 0x22)!;
+
+// ============================================================================
+// Timeline Colors
+// ============================================================================
+
+/// Selection highlight with alpha
+☉ Λ SELECTION: Color = PHTHALO.with_alpha(0.3)!;
+
+/// Playhead (white for visibility)
+☉ Λ PLAYHEAD: Color = Color·rgb(0xFF, 0xFF, 0xFF)!;
+
+/// Subtle grid lines
+☉ Λ GRID_LINE: Color = SILVER.with_alpha(0.1)!;
+
+/// Beat grid lines
+☉ Λ GRID_BEAT: Color = SILVER.with_alpha(0.2)!;
+
+/// Bar grid lines
+☉ Λ GRID_BAR: Color = SILVER.with_alpha(0.4)!;
+
+// ============================================================================
+// Spacing Constants
+// ============================================================================
+
+/// Default track height in arrangement view
+☉ Λ TRACK_HEIGHT: f32 = 80.0!;
+
+/// Compact track height
+☉ Λ TRACK_HEIGHT_COMPACT: f32 = 32.0!;
+
+/// Mixer fader width
+☉ Λ FADER_WIDTH: f32 = 60.0!;
+
+/// Level meter width
+☉ Λ METER_WIDTH: f32 = 12.0!;
+
+/// Channel strip width
+☉ Λ CHANNEL_STRIP_WIDTH: f32 = 80.0!;
+
+/// Minimum panel width
+☉ Λ MIN_PANEL_WIDTH: f32 = 200.0!;
+
+/// Default panel gap
+☉ Λ PANEL_GAP: f32 = 4.0!;
+
+// ============================================================================
+// Typography
+// ============================================================================
+
+/// Primary display font (headers, mode names)
+☉ Λ FONT_DISPLAY: &str = "Cinzel"!;
+
+/// Body text font
+☉ Λ FONT_BODY: &str = "Inter"!;
+
+/// Monospace font (time displays, values)
+☉ Λ FONT_MONO: &str = "JetBrains Mono"!;
+
+/// Small text size (labels, hints)
+☉ Λ TEXT_XS: f32 = 9.0!;
+
+/// Standard small text
+☉ Λ TEXT_SM: f32 = 11.0!;
+
+/// Base text size
+☉ Λ TEXT_BASE: f32 = 13.0!;
+
+/// Large text size
+☉ Λ TEXT_LG: f32 = 16.0!;
+
+/// Extra large text (headings)
+☉ Λ TEXT_XL: f32 = 20.0!;
+
+/// Display text (mode names, large numbers)
+☉ Λ TEXT_2XL: f32 = 28.0!;
+
+// ============================================================================
+// Track Type Enum
+// ============================================================================
+
+/// Track type classification
+☉ ᛈ TrackType {
+    Audio,
+    Midi,
+    Bus,
+    Master,
+    Guitar,
+    Bass,
+    Drums,
+    Vocals,
+    Keys,
+    Aux,
+}
+
+⊢ TrackType {
+    /// Get color for this track type
+    ☉ rite color(&self) -> Color! {
+        ⌥ self {
+            Self·Audio => AUDIO_TRACK,
+            Self·Midi => MIDI_TRACK,
+            Self·Bus => BUS_TRACK,
+            Self·Master => MASTER_TRACK,
+            Self·Guitar => GUITAR_TRACK,
+            Self·Bass => BASS_TRACK,
+            Self·Drums => DRUMS_TRACK,
+            Self·Vocals => VOCALS_TRACK,
+            Self·Keys => KEYS_TRACK,
+            Self·Aux => BUS_TRACK,
+        }
+    }
+
+    /// Get display name for this track type
+    ☉ rite label(&self) -> &'static str! {
+        ⌥ self {
+            Self·Audio => "Audio",
+            Self·Midi => "MIDI",
+            Self·Bus => "Bus",
+            Self·Master => "Master",
+            Self·Guitar => "Guitar",
+            Self·Bass => "Bass",
+            Self·Drums => "Drums",
+            Self·Vocals => "Vocals",
+            Self·Keys => "Keys",
+            Self·Aux => "Aux",
+        }
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Get meter color based on dB level
+☉ rite meter_color_for_db(db~: f32) -> Color! {
+    ⎇ db > 0.0 {
+        METER_RED
+    } ⎉ ⎇ db > -6.0 {
+        METER_YELLOW
+    } ⎉ {
+        METER_GREEN
+    }
+}
+
+/// Normalize dB to 0.0-1.0 range (assuming -60dB to +6dB range)
+☉ rite db_to_normalized(db~: f32) -> f32! {
+    ((db + 60.0) / 66.0).clamp(0.0, 1.0)
+}
+
+/// Convert normalized (0.0-1.0) to dB
+☉ rite normalized_to_db(normalized: f32) -> f32! {
+    normalized * 66.0 - 60.0
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_track_colors() {
+        assert_eq!(TrackType·Audio.color(), AUDIO_TRACK);
+        assert_eq!(TrackType·Midi.color(), MIDI_TRACK);
+        assert_eq!(TrackType·Master.color(), MASTER_TRACK);
+    }
+
+    //@ rune: test
+    rite test_meter_colors() {
+        assert_eq!(meter_color_for_db(3.0), METER_RED);
+        assert_eq!(meter_color_for_db(-3.0), METER_YELLOW);
+        assert_eq!(meter_color_for_db(-12.0), METER_GREEN);
+    }
+
+    //@ rune: test
+    rite test_db_conversion() {
+        // -60 dB should be 0.0
+        ≔ normalized = db_to_normalized(-60.0);
+        assert!((normalized - 0.0).abs() < 0.01);
+
+        // 0 dB should be ~0.91
+        ≔ normalized = db_to_normalized(0.0);
+        assert!((normalized - 0.909).abs() < 0.01);
+
+        // +6 dB should be 1.0
+        ≔ normalized = db_to_normalized(6.0);
+        assert!((normalized - 1.0).abs() < 0.01);
+    }
+}

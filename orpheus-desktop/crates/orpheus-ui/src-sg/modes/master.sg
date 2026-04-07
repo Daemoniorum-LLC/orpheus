@@ -1,0 +1,1177 @@
+//! Master mode - mastering suite with loudness analysis
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - Layout calculations, loudness formatting
+//! - `~` (external) - Audio analysis, metering data
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·*;
+invoke crate·panels·{LufsMeter, LufsMeterProps};
+invoke crate·widgets·{LevelMeter, Knob, TransportBar};
+
+/// Mastering mode properties
+☉ Σ MasterModeProps {
+    /// Transport state
+    transport~: MasterTransportState,
+    /// Loudness analysis
+    loudness~: LoudnessAnalysis,
+    /// Mastering chain state
+    chain~: MasteringChain,
+    /// Selected target standard
+    target_standard: TargetStandard,
+    /// A/B comparison enabled
+    ab_compare: bool,
+    /// Currently comparing B (processed)
+    comparing_b: bool,
+    /// Spectrum analysis data
+    spectrum~: Vec<f32>,
+    /// Waveform overview
+    waveform_overview~: Vec<f32>,
+    /// Callbacks
+    on_play: Box<dyn Fn()>,
+    on_stop: Box<dyn Fn()>,
+    on_seek: Box<dyn Fn(f64)>,
+    on_target_change: Box<dyn Fn(TargetStandard)>,
+    on_chain_change: Box<dyn Fn(MasteringChain)>,
+    on_ab_toggle: Box<dyn Fn()>,
+    on_compare_toggle: Box<dyn Fn()>,
+    on_export: Box<dyn Fn(ExportFormat)>,
+}
+
+/// Transport state for mastering
+☉ Σ MasterTransportState {
+    playing: bool,
+    position: f64,
+    duration: f64,
+    tempo: f64,
+}
+
+/// Loudness analysis data
+☉ Σ LoudnessAnalysis {
+    /// Momentary LUFS
+    momentary~: f32,
+    /// Short-term LUFS
+    short_term~: f32,
+    /// Integrated LUFS
+    integrated~: f32,
+    /// True peak (dBTP)
+    true_peak~: f32,
+    /// True peak right channel
+    true_peak_right~: f32,
+    /// Loudness range (LU)
+    loudness_range~: f32,
+    /// History data
+    history~: Vec<f32>,
+    /// Peak level left
+    peak_left~: f32,
+    /// Peak level right
+    peak_right~: f32,
+    /// RMS level left
+    rms_left~: f32,
+    /// RMS level right
+    rms_right~: f32,
+    /// Dynamic range
+    dynamic_range~: f32,
+    /// Crest factor
+    crest_factor~: f32,
+}
+
+/// Target loudness standards
+☉ ᛈ TargetStandard {
+    /// Spotify, YouTube, Apple Music
+    Streaming,
+    /// CD release
+    Cd,
+    /// EBU R128 broadcast
+    Broadcast,
+    /// Film/Cinema
+    Film,
+    /// Custom target
+    Custom { lufs: f32, true_peak: f32 },
+}
+
+⊢ TargetStandard {
+    rite lufs(&self) -> f32! {
+        ⌥ self {
+            Self·Streaming => -14.0,
+            Self·Cd => -9.0,
+            Self·Broadcast => -23.0,
+            Self·Film => -24.0,
+            Self·Custom { lufs, .. } => *lufs,
+        }
+    }
+
+    rite true_peak(&self) -> f32! {
+        ⌥ self {
+            Self·Streaming => -1.0,
+            Self·Cd => -0.3,
+            Self·Broadcast => -1.0,
+            Self·Film => -1.0,
+            Self·Custom { true_peak, .. } => *true_peak,
+        }
+    }
+
+    rite label(&self) -> &'static str! {
+        ⌥ self {
+            Self·Streaming => "Streaming (-14 LUFS)",
+            Self·Cd => "CD (-9 LUFS)",
+            Self·Broadcast => "Broadcast (-23 LUFS)",
+            Self·Film => "Film (-24 LUFS)",
+            Self·Custom { .. } => "Custom",
+        }
+    }
+}
+
+/// Mastering chain configuration
+☉ Σ MasteringChain {
+    /// EQ settings
+    eq: MasterEq,
+    /// Compressor settings
+    compressor: MasterCompressor,
+    /// Limiter settings
+    limiter: MasterLimiter,
+    /// Stereo imaging
+    stereo: StereoImaging,
+    /// Chain bypass
+    bypass: bool,
+}
+
+/// Master EQ settings
+☉ Σ MasterEq {
+    enabled: bool,
+    low_shelf: (f32, f32, f32),     // (freq, gain, q)
+    low_mid: (f32, f32, f32),
+    high_mid: (f32, f32, f32),
+    high_shelf: (f32, f32, f32),
+}
+
+/// Master compressor settings
+☉ Σ MasterCompressor {
+    enabled: bool,
+    threshold: f32,
+    ratio: f32,
+    attack: f32,
+    release: f32,
+    makeup: f32,
+    knee: f32,
+    gain_reduction~: f32,
+}
+
+/// Master limiter settings
+☉ Σ MasterLimiter {
+    enabled: bool,
+    ceiling: f32,
+    release: f32,
+    gain: f32,
+    gain_reduction~: f32,
+}
+
+/// Stereo imaging settings
+☉ Σ StereoImaging {
+    enabled: bool,
+    width: f32,
+    mid_side_balance: f32,
+    mono_bass_freq: f32,
+}
+
+/// Export format
+☉ ᛈ ExportFormat {
+    Wav16,
+    Wav24,
+    Wav32Float,
+    Flac16,
+    Flac24,
+    Mp3_320,
+    Aac256,
+}
+
+/// Master mode view
+☉ Σ MasterMode {
+    props: MasterModeProps,
+    show_spectrum: bool,
+    show_stereo_meter: bool,
+    expanded_section: Option<ChainSection>,
+}
+
+/// Chain sections
+☉ ᛈ ChainSection {
+    Eq,
+    Compressor,
+    Limiter,
+    Stereo,
+}
+
+⊢ MasterMode {
+    ☉ rite new(props: MasterModeProps) -> Self! {
+        Self {
+            props,
+            show_spectrum: true,
+            show_stereo_meter: true,
+            expanded_section: None,
+        }
+    }
+
+    /// Format time as MM:SS
+    rite format_time(&self, position: f64, duration: f64) -> (String, String)! {
+        ≔ pos_sec = position * 60.0 / self.props.transport.tempo;
+        ≔ dur_sec = duration * 60.0 / self.props.transport.tempo;
+
+        ≔ pos_str = format!(
+            "{:02}:{:02}",
+            (pos_sec / 60.0).floor() as u32,
+            (pos_sec % 60.0).floor() as u32
+        );
+        ≔ dur_str = format!(
+            "{:02}:{:02}",
+            (dur_sec / 60.0).floor() as u32,
+            (dur_sec % 60.0).floor() as u32
+        );
+
+        (pos_str, dur_str)
+    }
+
+    /// Render toolbar
+    rite render_toolbar(&self) -> Element! {
+        element! {
+            <div class="master-toolbar" style={style! {
+                display: "flex",
+                align_items: "center",
+                gap: "16px",
+                padding: "8px 16px",
+                background: ABYSS.to_css(),
+                border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+            }}>
+                // Target standard selector
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                    }}>
+                        {"Target:"}
+                    </span>
+                    <select style={style! {
+                        background: VOID.to_css(),
+                        border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                        border_radius: "4px",
+                        color: SILVER.to_css(),
+                        padding: "4px 8px",
+                        font_size: px(TEXT_SM),
+                    }}>
+                        ∀ standard ∈ [
+                            TargetStandard·Streaming,
+                            TargetStandard·Cd,
+                            TargetStandard·Broadcast,
+                            TargetStandard·Film,
+                        ] {
+                            ≔ is_selected = std·mem·discriminant(&self.props.target_standard)
+                                == std·mem·discriminant(&standard);
+                            <option value={standard.label()} selected={is_selected}>
+                                {standard.label()}
+                            </option>
+                        }
+                    </select>
+                </div>
+
+                // Separator
+                <div style={style! {
+                    width: "1px",
+                    height: "24px",
+                    background: SILVER.with_alpha(0.2).to_css(),
+                }} />
+
+                // A/B comparison
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                }}>
+                    <button style={style! {
+                        padding: "4px 12px",
+                        background: ⎇ self.props.ab_compare { PHTHALO.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                        border: format!("1px solid {}", ⎇ self.props.ab_compare { PHTHALO } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                        border_radius: "4px",
+                        color: ⎇ self.props.ab_compare { PHTHALO } ⎉ { SILVER }.to_css(),
+                        font_size: px(TEXT_SM),
+                        cursor: "pointer",
+                    }}
+                    on_click={|_| (self.props.on_ab_toggle)()}>
+                        {"A/B"}
+                    </button>
+
+                    ⎇ self.props.ab_compare {
+                        <div style={style! {
+                            display: "flex",
+                            border_radius: "4px",
+                            overflow: "hidden",
+                        }}>
+                            <button style={style! {
+                                padding: "4px 16px",
+                                background: ⎇ !self.props.comparing_b { PHTHALO } ⎉ { VOID }.to_css(),
+                                border: "none",
+                                color: ⎇ !self.props.comparing_b { VOID } ⎉ { SILVER }.to_css(),
+                                font_size: px(TEXT_SM),
+                                cursor: "pointer",
+                            }}
+                            on_click={|_| (self.props.on_compare_toggle)()}>
+                                {"A"}
+                            </button>
+                            <button style={style! {
+                                padding: "4px 16px",
+                                background: ⎇ self.props.comparing_b { PHTHALO } ⎉ { VOID }.to_css(),
+                                border: "none",
+                                color: ⎇ self.props.comparing_b { VOID } ⎉ { SILVER }.to_css(),
+                                font_size: px(TEXT_SM),
+                                cursor: "pointer",
+                            }}
+                            on_click={|_| (self.props.on_compare_toggle)()}>
+                                {"B"}
+                            </button>
+                        </div>
+                    }
+                </div>
+
+                // Spacer
+                <div style={style! { flex: 1 }} />
+
+                // Chain bypass
+                <button style={style! {
+                    padding: "4px 12px",
+                    background: ⎇ self.props.chain.bypass { METER_YELLOW.with_alpha(0.3) } ⎉ { "transparent" }.to_css(),
+                    border: format!("1px solid {}", ⎇ self.props.chain.bypass { METER_YELLOW } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                    border_radius: "4px",
+                    color: ⎇ self.props.chain.bypass { METER_YELLOW } ⎉ { SILVER }.to_css(),
+                    font_size: px(TEXT_SM),
+                    cursor: "pointer",
+                }}>
+                    {"Bypass"}
+                </button>
+
+                // Export button
+                <button style={style! {
+                    padding: "4px 16px",
+                    background: PHTHALO.to_css(),
+                    border: "none",
+                    border_radius: "4px",
+                    color: VOID.to_css(),
+                    font_size: px(TEXT_SM),
+                    font_weight: "600",
+                    cursor: "pointer",
+                }}>
+                    {"Export"}
+                </button>
+            </div>
+        }
+    }
+
+    /// Render metering panel
+    rite render_metering(&self) -> Element! {
+        ≔ loudness = &self.props.loudness;
+
+        element! {
+            <div class="metering-panel" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                width: "320px",
+                background: ABYSS.to_css(),
+                border_right: format!("1px solid {}", GRID_LINE.to_css()),
+                padding: "16px",
+                gap: "16px",
+            }}>
+                // LUFS meter
+                <LufsMeter
+                    momentary={loudness.momentary}
+                    short_term={loudness.short_term}
+                    integrated={loudness.integrated}
+                    true_peak={loudness.true_peak.max(loudness.true_peak_right)}
+                    loudness_range={loudness.loudness_range}
+                    target={self.props.target_standard.lufs()}
+                    show_history={true}
+                    history={loudness.history.clone()}
+                />
+
+                // Peak meters
+                <div style={style! {
+                    background: VOID.to_css(),
+                    border_radius: "8px",
+                    padding: "12px",
+                }}>
+                    <div style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                        margin_bottom: "8px",
+                    }}>
+                        {"Peak Levels"}
+                    </div>
+
+                    <div style={style! {
+                        display: "flex",
+                        gap: "16px",
+                    }}>
+                        // Left channel
+                        <div style={style! {
+                            flex: 1,
+                            display: "flex",
+                            flex_direction: "column",
+                            gap: "4px",
+                        }}>
+                            <div style={style! {
+                                display: "flex",
+                                justify_content: "space-between",
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.6).to_css(),
+                            }}>
+                                <span>{"L"}</span>
+                                <span style={style! {
+                                    font_family: FONT_MONO,
+                                    color: ⎇ loudness.peak_left > -1.0 { METER_RED } ⎉ { SILVER }.to_css(),
+                                }}>
+                                    {format!("{:.1}", loudness.peak_left)}
+                                </span>
+                            </div>
+                            <div style={style! {
+                                height: "6px",
+                                background: ABYSS.to_css(),
+                                border_radius: "3px",
+                                overflow: "hidden",
+                            }}>
+                                ≔ peak_pct = ((loudness.peak_left + 60.0) / 60.0 * 100.0).clamp(0.0, 100.0);
+                                <div style={style! {
+                                    width: pct(peak_pct),
+                                    height: "100%",
+                                    background: format!(
+                                        "linear-gradient(to right, {} 0%, {} 80%, {} 95%)",
+                                        METER_GREEN.to_css(),
+                                        METER_YELLOW.to_css(),
+                                        METER_RED.to_css()
+                                    ),
+                                }} />
+                            </div>
+                        </div>
+
+                        // Right channel
+                        <div style={style! {
+                            flex: 1,
+                            display: "flex",
+                            flex_direction: "column",
+                            gap: "4px",
+                        }}>
+                            <div style={style! {
+                                display: "flex",
+                                justify_content: "space-between",
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.6).to_css(),
+                            }}>
+                                <span>{"R"}</span>
+                                <span style={style! {
+                                    font_family: FONT_MONO,
+                                    color: ⎇ loudness.peak_right > -1.0 { METER_RED } ⎉ { SILVER }.to_css(),
+                                }}>
+                                    {format!("{:.1}", loudness.peak_right)}
+                                </span>
+                            </div>
+                            <div style={style! {
+                                height: "6px",
+                                background: ABYSS.to_css(),
+                                border_radius: "3px",
+                                overflow: "hidden",
+                            }}>
+                                ≔ peak_pct = ((loudness.peak_right + 60.0) / 60.0 * 100.0).clamp(0.0, 100.0);
+                                <div style={style! {
+                                    width: pct(peak_pct),
+                                    height: "100%",
+                                    background: format!(
+                                        "linear-gradient(to right, {} 0%, {} 80%, {} 95%)",
+                                        METER_GREEN.to_css(),
+                                        METER_YELLOW.to_css(),
+                                        METER_RED.to_css()
+                                    ),
+                                }} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                // Analysis stats
+                <div style={style! {
+                    background: VOID.to_css(),
+                    border_radius: "8px",
+                    padding: "12px",
+                }}>
+                    <div style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.7).to_css(),
+                        margin_bottom: "8px",
+                    }}>
+                        {"Analysis"}
+                    </div>
+
+                    <div style={style! {
+                        display: "grid",
+                        grid_template_columns: "1fr 1fr",
+                        gap: "8px",
+                    }}>
+                        ∀ (label, value) ∈ [
+                            ("Dynamic Range", format!("{:.1} dB", loudness.dynamic_range)),
+                            ("Crest Factor", format!("{:.1} dB", loudness.crest_factor)),
+                            ("RMS L", format!("{:.1} dB", loudness.rms_left)),
+                            ("RMS R", format!("{:.1} dB", loudness.rms_right)),
+                        ] {
+                            <div>
+                                <div style={style! {
+                                    font_size: "9px",
+                                    color: SILVER.with_alpha(0.5).to_css(),
+                                }}>
+                                    {label}
+                                </div>
+                                <div style={style! {
+                                    font_size: px(TEXT_SM),
+                                    font_family: FONT_MONO,
+                                    color: SILVER.to_css(),
+                                }}>
+                                    {value}
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                // Target compliance
+                {self.render_compliance()}
+            </div>
+        }
+    }
+
+    /// Render target compliance indicator
+    rite render_compliance(&self) -> Element! {
+        ≔ target = &self.props.target_standard;
+        ≔ loudness = &self.props.loudness;
+
+        ≔ lufs_diff = loudness.integrated - target.lufs();
+        ≔ lufs_ok = lufs_diff.abs() < 1.0;
+        ≔ peak_ok = loudness.true_peak.max(loudness.true_peak_right) <= target.true_peak();
+
+        element! {
+            <div style={style! {
+                background: VOID.to_css(),
+                border_radius: "8px",
+                padding: "12px",
+            }}>
+                <div style={style! {
+                    font_size: px(TEXT_XS),
+                    color: SILVER.with_alpha(0.7).to_css(),
+                    margin_bottom: "8px",
+                }}>
+                    {"Target Compliance"}
+                </div>
+
+                // LUFS compliance
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                    margin_bottom: "8px",
+                }}>
+                    <div style={style! {
+                        width: "8px",
+                        height: "8px",
+                        border_radius: "50%",
+                        background: ⎇ lufs_ok { METER_GREEN } ⎉ { METER_YELLOW }.to_css(),
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Loudness: "}
+                        {⎇ lufs_ok {
+                            "On target".to_string()
+                        } ⎉ {
+                            format!("{:+.1} LUFS", lufs_diff)
+                        }}
+                    </span>
+                </div>
+
+                // Peak compliance
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "8px",
+                }}>
+                    <div style={style! {
+                        width: "8px",
+                        height: "8px",
+                        border_radius: "50%",
+                        background: ⎇ peak_ok { METER_GREEN } ⎉ { METER_RED }.to_css(),
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        color: SILVER.to_css(),
+                    }}>
+                        {"True Peak: "}
+                        {⎇ peak_ok {
+                            "OK".to_string()
+                        } ⎉ {
+                            format!("Exceeds {:.1} dBTP", target.true_peak())
+                        }}
+                    </span>
+                </div>
+            </div>
+        }
+    }
+
+    /// Render mastering chain
+    rite render_chain(&self) -> Element! {
+        element! {
+            <div class="chain-panel" style={style! {
+                flex: 1,
+                display: "flex",
+                flex_direction: "column",
+                background: VOID.to_css(),
+                padding: "16px",
+                gap: "12px",
+                overflow_y: "auto",
+            }}>
+                // EQ Section
+                {self.render_eq_section()}
+
+                // Compressor Section
+                {self.render_compressor_section()}
+
+                // Limiter Section
+                {self.render_limiter_section()}
+
+                // Stereo Section
+                {self.render_stereo_section()}
+            </div>
+        }
+    }
+
+    /// Render EQ section
+    rite render_eq_section(&self) -> Element! {
+        ≔ eq = &self.props.chain.eq;
+
+        element! {
+            <div class="chain-section eq-section" style={style! {
+                background: ABYSS.to_css(),
+                border_radius: "8px",
+                overflow: "hidden",
+            }}>
+                // Header
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <input type="checkbox" checked={eq.enabled} style={style! {
+                        margin_right: "12px",
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: ⎇ eq.enabled { SILVER } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                    }}>
+                        {"Parametric EQ"}
+                    </span>
+                </div>
+
+                // EQ visualization
+                ⎇ eq.enabled {
+                    <div style={style! {
+                        height: "100px",
+                        background: VOID.to_css(),
+                        margin: "12px",
+                        border_radius: "4px",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                        color: SILVER.with_alpha(0.5).to_css(),
+                    }}>
+                        {"EQ Curve"}
+                    </div>
+
+                    // EQ bands
+                    <div style={style! {
+                        display: "flex",
+                        justify_content: "space-around",
+                        padding: "0 16px 16px",
+                    }}>
+                        ∀ (label, freq, (_, gain, _)) ∈ [
+                            ("Low", "80Hz", &eq.low_shelf),
+                            ("Low Mid", "400Hz", &eq.low_mid),
+                            ("High Mid", "2.5kHz", &eq.high_mid),
+                            ("High", "8kHz", &eq.high_shelf),
+                        ] {
+                            <div style={style! {
+                                display: "flex",
+                                flex_direction: "column",
+                                align_items: "center",
+                            }}>
+                                <Knob
+                                    value={(gain + 12.0) / 24.0}
+                                    min={-12.0}
+                                    max={12.0}
+                                    size={KnobSize·Small}
+                                    bipolar={true}
+                                    show_value={false}
+                                    on_change={Box·new(|_| {})}
+                                />
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    color: SILVER.to_css(),
+                                    margin_top: "4px",
+                                }}>
+                                    {label}
+                                </span>
+                                <span style={style! {
+                                    font_size: "9px",
+                                    color: SILVER.with_alpha(0.5).to_css(),
+                                }}>
+                                    {freq}
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    /// Render compressor section
+    rite render_compressor_section(&self) -> Element! {
+        ≔ comp = &self.props.chain.compressor;
+
+        element! {
+            <div class="chain-section compressor-section" style={style! {
+                background: ABYSS.to_css(),
+                border_radius: "8px",
+                overflow: "hidden",
+            }}>
+                // Header
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <input type="checkbox" checked={comp.enabled} style={style! {
+                        margin_right: "12px",
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: ⎇ comp.enabled { SILVER } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                    }}>
+                        {"Bus Compressor"}
+                    </span>
+                    <div style={style! { flex: 1 }} />
+                    // Gain reduction meter
+                    ⎇ comp.enabled {
+                        <div style={style! {
+                            display: "flex",
+                            align_items: "center",
+                            gap: "4px",
+                        }}>
+                            <span style={style! {
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.6).to_css(),
+                            }}>
+                                {"GR:"}
+                            </span>
+                            <span style={style! {
+                                font_family: FONT_MONO,
+                                font_size: px(TEXT_SM),
+                                color: PHTHALO.to_css(),
+                            }}>
+                                {format!("{:.1}", comp.gain_reduction)}
+                            </span>
+                        </div>
+                    }
+                </div>
+
+                // Compressor controls
+                ⎇ comp.enabled {
+                    <div style={style! {
+                        display: "flex",
+                        justify_content: "space-around",
+                        padding: "16px",
+                    }}>
+                        ∀ (label, value, unit) ∈ [
+                            ("Threshold", comp.threshold, "dB"),
+                            ("Ratio", comp.ratio, ":1"),
+                            ("Attack", comp.attack, "ms"),
+                            ("Release", comp.release, "ms"),
+                            ("Makeup", comp.makeup, "dB"),
+                        ] {
+                            <div style={style! {
+                                display: "flex",
+                                flex_direction: "column",
+                                align_items: "center",
+                            }}>
+                                <Knob
+                                    value={0.5}
+                                    min={0.0}
+                                    max={1.0}
+                                    size={KnobSize·Small}
+                                    show_value={false}
+                                    on_change={Box·new(|_| {})}
+                                />
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    color: SILVER.to_css(),
+                                    margin_top: "4px",
+                                }}>
+                                    {label}
+                                </span>
+                                <span style={style! {
+                                    font_size: "9px",
+                                    font_family: FONT_MONO,
+                                    color: PHTHALO.to_css(),
+                                }}>
+                                    {format!("{:.1}{}", value, unit)}
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    /// Render limiter section
+    rite render_limiter_section(&self) -> Element! {
+        ≔ lim = &self.props.chain.limiter;
+
+        element! {
+            <div class="chain-section limiter-section" style={style! {
+                background: ABYSS.to_css(),
+                border_radius: "8px",
+                overflow: "hidden",
+            }}>
+                // Header
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <input type="checkbox" checked={lim.enabled} style={style! {
+                        margin_right: "12px",
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: ⎇ lim.enabled { SILVER } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                    }}>
+                        {"Brickwall Limiter"}
+                    </span>
+                    <div style={style! { flex: 1 }} />
+                    // Gain reduction meter
+                    ⎇ lim.enabled {
+                        <div style={style! {
+                            display: "flex",
+                            align_items: "center",
+                            gap: "4px",
+                        }}>
+                            <span style={style! {
+                                font_size: px(TEXT_XS),
+                                color: SILVER.with_alpha(0.6).to_css(),
+                            }}>
+                                {"GR:"}
+                            </span>
+                            <span style={style! {
+                                font_family: FONT_MONO,
+                                font_size: px(TEXT_SM),
+                                color: ⎇ lim.gain_reduction < -6.0 { METER_RED } ⎉ { PHTHALO }.to_css(),
+                            }}>
+                                {format!("{:.1}", lim.gain_reduction)}
+                            </span>
+                        </div>
+                    }
+                </div>
+
+                // Limiter controls
+                ⎇ lim.enabled {
+                    <div style={style! {
+                        display: "flex",
+                        justify_content: "space-around",
+                        padding: "16px",
+                    }}>
+                        ∀ (label, value, unit) ∈ [
+                            ("Gain", lim.gain, "dB"),
+                            ("Ceiling", lim.ceiling, "dB"),
+                            ("Release", lim.release, "ms"),
+                        ] {
+                            <div style={style! {
+                                display: "flex",
+                                flex_direction: "column",
+                                align_items: "center",
+                            }}>
+                                <Knob
+                                    value={0.5}
+                                    min={0.0}
+                                    max={1.0}
+                                    size={KnobSize·Medium}
+                                    show_value={false}
+                                    on_change={Box·new(|_| {})}
+                                />
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    color: SILVER.to_css(),
+                                    margin_top: "4px",
+                                }}>
+                                    {label}
+                                </span>
+                                <span style={style! {
+                                    font_size: "9px",
+                                    font_family: FONT_MONO,
+                                    color: PHTHALO.to_css(),
+                                }}>
+                                    {format!("{:.1}{}", value, unit)}
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    /// Render stereo imaging section
+    rite render_stereo_section(&self) -> Element! {
+        ≔ stereo = &self.props.chain.stereo;
+
+        element! {
+            <div class="chain-section stereo-section" style={style! {
+                background: ABYSS.to_css(),
+                border_radius: "8px",
+                overflow: "hidden",
+            }}>
+                // Header
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    padding: "12px 16px",
+                    border_bottom: format!("1px solid {}", GRID_LINE.to_css()),
+                }}>
+                    <input type="checkbox" checked={stereo.enabled} style={style! {
+                        margin_right: "12px",
+                    }} />
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "600",
+                        color: ⎇ stereo.enabled { SILVER } ⎉ { SILVER.with_alpha(0.5) }.to_css(),
+                    }}>
+                        {"Stereo Imaging"}
+                    </span>
+                </div>
+
+                // Stereo controls
+                ⎇ stereo.enabled {
+                    <div style={style! {
+                        display: "flex",
+                        justify_content: "space-around",
+                        padding: "16px",
+                    }}>
+                        ∀ (label, value, unit) ∈ [
+                            ("Width", stereo.width * 100.0, "%"),
+                            ("M/S Balance", stereo.mid_side_balance * 100.0, "%"),
+                            ("Mono Bass", stereo.mono_bass_freq, "Hz"),
+                        ] {
+                            <div style={style! {
+                                display: "flex",
+                                flex_direction: "column",
+                                align_items: "center",
+                            }}>
+                                <Knob
+                                    value={0.5}
+                                    min={0.0}
+                                    max={1.0}
+                                    size={KnobSize·Small}
+                                    show_value={false}
+                                    on_change={Box·new(|_| {})}
+                                />
+                                <span style={style! {
+                                    font_size: px(TEXT_XS),
+                                    color: SILVER.to_css(),
+                                    margin_top: "4px",
+                                }}>
+                                    {label}
+                                </span>
+                                <span style={style! {
+                                    font_size: "9px",
+                                    font_family: FONT_MONO,
+                                    color: PHTHALO.to_css(),
+                                }}>
+                                    {format!("{:.0}{}", value, unit)}
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    /// Render waveform overview and transport
+    rite render_waveform_overview(&self) -> Element! {
+        ≔ (pos_str, dur_str) = self.format_time(
+            self.props.transport.position,
+            self.props.transport.duration
+        );
+        ≔ progress = (self.props.transport.position / self.props.transport.duration.max(1.0)) * 100.0;
+
+        element! {
+            <div class="waveform-overview" style={style! {
+                background: ABYSS.to_css(),
+                border_top: format!("1px solid {}", GRID_LINE.to_css()),
+                padding: "12px 16px",
+            }}>
+                // Waveform
+                <div style={style! {
+                    height: "60px",
+                    background: VOID.to_css(),
+                    border_radius: "4px",
+                    margin_bottom: "12px",
+                    position: "relative",
+                    overflow: "hidden",
+                }}>
+                    // Waveform display placeholder
+                    <div style={style! {
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        align_items: "center",
+                        justify_content: "center",
+                        color: SILVER.with_alpha(0.3).to_css(),
+                    }}>
+                        {"Waveform Overview"}
+                    </div>
+
+                    // Playhead
+                    <div style={style! {
+                        position: "absolute",
+                        left: pct(progress),
+                        top: 0,
+                        width: "2px",
+                        height: "100%",
+                        background: PLAYHEAD.to_css(),
+                        pointer_events: "none",
+                    }} />
+                </div>
+
+                // Transport controls
+                <div style={style! {
+                    display: "flex",
+                    align_items: "center",
+                    gap: "16px",
+                }}>
+                    // Position
+                    <span style={style! {
+                        font_family: FONT_MONO,
+                        font_size: px(TEXT_SM),
+                        color: PHTHALO.to_css(),
+                        min_width: "60px",
+                    }}>
+                        {pos_str}
+                    </span>
+
+                    // Progress bar
+                    <div style={style! {
+                        flex: 1,
+                        height: "4px",
+                        background: VOID.to_css(),
+                        border_radius: "2px",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                    }}>
+                        <div style={style! {
+                            width: pct(progress),
+                            height: "100%",
+                            background: PHTHALO.to_css(),
+                        }} />
+                    </div>
+
+                    // Duration
+                    <span style={style! {
+                        font_family: FONT_MONO,
+                        font_size: px(TEXT_SM),
+                        color: SILVER.with_alpha(0.6).to_css(),
+                        min_width: "60px",
+                    }}>
+                        {dur_str}
+                    </span>
+
+                    // Play/Stop
+                    <div style={style! {
+                        display: "flex",
+                        gap: "4px",
+                    }}>
+                        <button style={style! {
+                            padding: "8px 16px",
+                            background: ⎇ self.props.transport.playing { METER_GREEN.with_alpha(0.3) } ⎉ { VOID }.to_css(),
+                            border: format!("1px solid {}", ⎇ self.props.transport.playing { METER_GREEN } ⎉ { SILVER.with_alpha(0.3) }.to_css()),
+                            border_radius: "4px",
+                            color: ⎇ self.props.transport.playing { METER_GREEN } ⎉ { SILVER }.to_css(),
+                            font_size: "16px",
+                            cursor: "pointer",
+                        }}
+                        on_click={|_| (self.props.on_play)()}>
+                            {⎇ self.props.transport.playing { "⏸" } ⎉ { "▶" }}
+                        </button>
+                        <button style={style! {
+                            padding: "8px 16px",
+                            background: VOID.to_css(),
+                            border: format!("1px solid {}", SILVER.with_alpha(0.3).to_css()),
+                            border_radius: "4px",
+                            color: SILVER.to_css(),
+                            font_size: "16px",
+                            cursor: "pointer",
+                        }}
+                        on_click={|_| (self.props.on_stop)()}>
+                            {"⏹"}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ MasterMode {
+    type Props = MasterModeProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="master-mode" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                height: "100%",
+                background: VOID.to_css(),
+            }}>
+                // Toolbar
+                {self.render_toolbar()}
+
+                // Main content
+                <div style={style! {
+                    flex: 1,
+                    display: "flex",
+                    overflow: "hidden",
+                }}>
+                    // Left - Metering
+                    {self.render_metering()}
+
+                    // Center - Mastering chain
+                    {self.render_chain()}
+                </div>
+
+                // Bottom - Waveform overview
+                {self.render_waveform_overview()}
+            </div>
+        }
+    }
+}

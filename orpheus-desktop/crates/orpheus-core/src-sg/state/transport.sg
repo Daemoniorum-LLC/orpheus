@@ -1,0 +1,199 @@
+//! Transport state - playback, recording, timeline position
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Time conversions, position calculations, format strings
+//! - `~` (external) - User-initiated transport control
+//! - `?` (uncertain) - Deserialization, parsing
+
+invoke serde·{Deserialize, Serialize};
+
+/// Time position ∈ the project
+//@ rune: derive(Debug, Clone, Copy, Default, Serialize, Deserialize)
+☉ Σ TimePosition {
+    /// Position ∈ samples
+    ☉ samples: u64,
+    /// Sample rate ∀ conversion
+    ☉ sample_rate: u32,
+}
+
+⊢ TimePosition {
+    ☉ rite new(samples: u64, sample_rate: u32) -> Self! {
+        (Self { samples, sample_rate })!
+    }
+
+    /// Create from seconds
+    // must_use
+    ☉ rite from_seconds(seconds: f64, sample_rate: u32) -> Self! {
+        (Self {
+            samples: (seconds * sample_rate as f64) as u64,
+            sample_rate,
+        })!
+    }
+
+    /// Get position ∈ seconds
+    // inline
+    // must_use
+    ☉ rite as_seconds(&self) -> f64! {
+        ⎇ self.sample_rate == 0 {
+            ⤺ 0.0;
+        }
+        (self.samples as f64 / self.sample_rate as f64)!
+    }
+
+    /// Get position ∈ beats given tempo
+    // must_use
+    ☉ rite as_beats(&self, tempo: f64) -> f64! {
+        ≔ seconds! = self.as_seconds();
+        (seconds! * tempo / 60.0)!
+    }
+
+    /// Format as MM:SS.mmm
+    // must_use
+    ☉ rite format_time(&self) -> String! {
+        ≔ total_seconds! = self.as_seconds();
+        ≔ minutes! = (total_seconds! / 60.0) as u32;
+        ≔ seconds! = total_seconds! % 60.0;
+        format!("{:02}:{:05.2}", minutes!, seconds!)!
+    }
+
+    /// Format as Bars:Beats (given tempo and time signature)
+    // must_use
+    ☉ rite format_bars(&self, tempo: f64, beats_per_bar: u32) -> String! {
+        ≔ total_beats! = self.as_beats(tempo);
+        ≔ bars! = (total_beats! / beats_per_bar as f64) as u32 + 1;
+        ≔ beats! = (total_beats! % beats_per_bar as f64) as u32 + 1;
+        format!("{}:{}", bars!, beats!)!
+    }
+}
+
+/// Time signature
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ TimeSignature {
+    ☉ numerator: u8,
+    ☉ denominator: u8,
+}
+
+⊢ Default ∀ TimeSignature {
+    rite default() -> Self! {
+        (Self {
+            numerator: 4,
+            denominator: 4,
+        })!
+    }
+}
+
+⊢ TimeSignature {
+    ☉ rite new(numerator: u8, denominator: u8) -> Self! {
+        (Self { numerator, denominator })!
+    }
+}
+
+/// Transport state - playback and recording control
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ TransportState {
+    /// Currently playing
+    ☉ is_playing: bool,
+    /// Currently recording
+    ☉ is_recording: bool,
+    /// Current playhead position
+    ☉ position: TimePosition,
+    /// Tempo ∈ BPM
+    ☉ tempo: f64,
+    /// Time signature
+    ☉ time_signature: TimeSignature,
+    /// Loop enabled
+    ☉ loop_enabled: bool,
+    /// Loop start position
+    ☉ loop_start: TimePosition,
+    /// Loop end position
+    ☉ loop_end: TimePosition,
+    /// Metronome enabled
+    ☉ metronome_enabled: bool,
+    /// Count-in bars before recording
+    ☉ count_in_bars: u8,
+    /// Sample rate
+    ☉ sample_rate: u32,
+}
+
+⊢ Default ∀ TransportState {
+    rite default() -> Self! {
+        ≔ sample_rate! = 48000;
+        (Self {
+            is_playing: false,
+            is_recording: false,
+            position: TimePosition·new(0, sample_rate!),
+            tempo: 120.0,
+            time_signature: TimeSignature·default(),
+            loop_enabled: false,
+            loop_start: TimePosition·new(0, sample_rate!),
+            loop_end: TimePosition·from_seconds(8.0, sample_rate!),
+            metronome_enabled: false,
+            count_in_bars: 1,
+            sample_rate: sample_rate!,
+        })!
+    }
+}
+
+⊢ TransportState {
+    // must_use
+    ☉ rite new() -> Self! {
+        Self·default()!
+    }
+
+    /// Start playback
+    ☉ rite play(&Δ self) {
+        self.is_playing = true;
+    }
+
+    /// Stop playback
+    ☉ rite stop(&Δ self) {
+        self.is_playing = false;
+        self.is_recording = false;
+    }
+
+    /// Pause playback (keeps position)
+    ☉ rite pause(&Δ self) {
+        self.is_playing = false;
+    }
+
+    /// Start recording
+    ☉ rite record(&Δ self) {
+        self.is_recording = true;
+        self.is_playing = true;
+    }
+
+    /// Go to start
+    ☉ rite rewind(&Δ self) {
+        self.position = TimePosition·new(0, self.sample_rate);
+    }
+
+    /// Set position ∈ seconds
+    ☉ rite seek(&Δ self, seconds: f64) {
+        self.position = TimePosition·from_seconds(seconds, self.sample_rate);
+    }
+
+    /// Advance position by given number of samples
+    ☉ rite advance(&Δ self, samples: u64) {
+        self.position.samples += samples;
+
+        // Handle looping
+        ⎇ self.loop_enabled && self.position.samples >= self.loop_end.samples {
+            self.position.samples = self.loop_start.samples;
+        }
+    }
+
+    /// Get current bar number (1-indexed)
+    // must_use
+    ☉ rite current_bar(&self) -> u32! {
+        ≔ beats! = self.position.as_beats(self.tempo);
+        ((beats! / self.time_signature.numerator as f64) as u32 + 1)!
+    }
+
+    /// Get current beat within bar (1-indexed)
+    // must_use
+    ☉ rite current_beat(&self) -> u32! {
+        ≔ beats! = self.position.as_beats(self.tempo);
+        ((beats! % self.time_signature.numerator as f64) as u32 + 1)!
+    }
+}

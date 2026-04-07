@@ -1,0 +1,24 @@
+//! DAW operating modes
+//!
+//! This module provides the mode views for different workflows:
+//!
+//! - `Compose` - Arrangement and composition
+//! - `Record` - Audio/MIDI recording
+//! - `Mix` - Mixing console
+//! - `Master` - Mastering and loudness
+//! - `Practice` - Learning and practice tools (TODO)
+//! - `Release` - Export and rendering (TODO)
+//! - `Distribute` - Publishing and distribution (TODO)
+
+☉ scroll mode_selector;
+☉ scroll compose;
+☉ scroll record;
+☉ scroll mix;
+☉ scroll master;
+
+// Re-exports
+☉ invoke crate·modes·mode_selector·{OrpheusMode, ModeSelector, ModeSelectorProps};
+☉ invoke crate·modes·compose·{ComposeMode, ComposeModeProps, ActiveEditor, ProjectState, TransportState, MixerState};
+☉ invoke crate·modes·record·{RecordMode, RecordModeProps, RecordTransportState, InputChannel, ArmedTrack, RecordingSession};
+☉ invoke crate·modes·mix·{MixMode, MixModeProps, MixViewMode};
+☉ invoke crate·modes·master·{MasterMode, MasterModeProps, LoudnessAnalysis, TargetStandard, MasteringChain, ExportFormat};

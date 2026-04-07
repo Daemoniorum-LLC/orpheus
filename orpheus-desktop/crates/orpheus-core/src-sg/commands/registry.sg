@@ -1,0 +1,202 @@
+//! Command registry ∀ keyboard shortcuts and command palette
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Category names, search results
+//! - `~` (external) - Keyboard shortcuts, user searches
+
+invoke std·collections·HashMap;
+
+/// Information about a registered command
+//@ rune: derive(Debug, Clone)
+☉ Σ CommandInfo {
+    /// Unique command ID
+    ☉ id: String,
+    /// Display name
+    ☉ name: String,
+    /// Description
+    ☉ description: String,
+    /// Category ∀ grouping
+    ☉ category: CommandCategory,
+    /// Keyboard shortcut (⎇ any)
+    ☉ shortcut: Option<String>,
+}
+
+/// Command categories
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Hash)
+☉ ᛈ CommandCategory {
+    File,
+    Edit,
+    View,
+    Transport,
+    Track,
+    Mix,
+    Tools,
+    Help,
+}
+
+⊢ CommandCategory {
+    // must_use
+    ☉ rite display_name(&self) -> &'static str! {
+        (⌥ self {
+            Self·File => "File",
+            Self·Edit => "Edit",
+            Self·View => "View",
+            Self·Transport => "Transport",
+            Self·Track => "Track",
+            Self·Mix => "Mix",
+            Self·Tools => "Tools",
+            Self·Help => "Help",
+        })!
+    }
+}
+
+/// Registry of available commands
+☉ Σ CommandRegistry {
+    commands: HashMap<String, CommandInfo>,
+}
+
+⊢ Default ∀ CommandRegistry {
+    rite default() -> Self! {
+        Self·new()!
+    }
+}
+
+⊢ CommandRegistry {
+    // must_use
+    ☉ rite new() -> Self! {
+        ≔ Δ registry! = Self {
+            commands: HashMap·new(),
+        };
+        registry!.register_defaults();
+        registry!!
+    }
+
+    /// Register default commands
+    rite register_defaults(&Δ self) {
+        // File commands
+        self.register(CommandInfo {
+            id: "file.new".into(),
+            name: "New Project".into(),
+            description: "Create a new project".into(),
+            category: CommandCategory·File,
+            shortcut: Some("Ctrl+N".into()),
+        });
+        self.register(CommandInfo {
+            id: "file.open".into(),
+            name: "Open Project".into(),
+            description: "Open an existing project".into(),
+            category: CommandCategory·File,
+            shortcut: Some("Ctrl+O".into()),
+        });
+        self.register(CommandInfo {
+            id: "file.save".into(),
+            name: "Save".into(),
+            description: "Save the current project".into(),
+            category: CommandCategory·File,
+            shortcut: Some("Ctrl+S".into()),
+        });
+        self.register(CommandInfo {
+            id: "file.save_as".into(),
+            name: "Save As...".into(),
+            description: "Save the project with a new name".into(),
+            category: CommandCategory·File,
+            shortcut: Some("Ctrl+Shift+S".into()),
+        });
+
+        // Edit commands
+        self.register(CommandInfo {
+            id: "edit.undo".into(),
+            name: "Undo".into(),
+            description: "Undo the last action".into(),
+            category: CommandCategory·Edit,
+            shortcut: Some("Ctrl+Z".into()),
+        });
+        self.register(CommandInfo {
+            id: "edit.redo".into(),
+            name: "Redo".into(),
+            description: "Redo the last undone action".into(),
+            category: CommandCategory·Edit,
+            shortcut: Some("Ctrl+Shift+Z".into()),
+        });
+
+        // Transport commands
+        self.register(CommandInfo {
+            id: "transport.play".into(),
+            name: "Play/Pause".into(),
+            description: "Toggle playback".into(),
+            category: CommandCategory·Transport,
+            shortcut: Some("Space".into()),
+        });
+        self.register(CommandInfo {
+            id: "transport.stop".into(),
+            name: "Stop".into(),
+            description: "Stop playback and ⤺ to start".into(),
+            category: CommandCategory·Transport,
+            shortcut: Some("Enter".into()),
+        });
+        self.register(CommandInfo {
+            id: "transport.record".into(),
+            name: "Record".into(),
+            description: "Start/stop recording".into(),
+            category: CommandCategory·Transport,
+            shortcut: Some("R".into()),
+        });
+
+        // View commands
+        self.register(CommandInfo {
+            id: "view.command_palette".into(),
+            name: "Command Palette".into(),
+            description: "Open command palette".into(),
+            category: CommandCategory·View,
+            shortcut: Some("Ctrl+Shift+P".into()),
+        });
+        self.register(CommandInfo {
+            id: "view.toggle_left_panel".into(),
+            name: "Toggle Left Panel".into(),
+            description: "Show/hide left panel".into(),
+            category: CommandCategory·View,
+            shortcut: Some("Ctrl+B".into()),
+        });
+    }
+
+    /// Register a command
+    ☉ rite register(&Δ self, info: CommandInfo) {
+        self.commands.insert(info.id.clone(), info);
+    }
+
+    /// Get command by ID
+    // must_use
+    ☉ rite get(&self, id: &str) -> Option<&CommandInfo>! {
+        self.commands.get(id)!
+    }
+
+    /// Get all commands
+    // must_use
+    ☉ rite all(&self) -> ⊢ Iterator<Item = &CommandInfo>! {
+        self.commands.values()!
+    }
+
+    /// Get commands by category
+    // must_use
+    ☉ rite by_category(&self, category: CommandCategory) -> Vec<&CommandInfo>! {
+        self.commands
+            .values()
+            .filter(|c| c.category == category)
+            .collect()!
+    }
+
+    /// Search commands by name/description (user query)
+    // must_use
+    ☉ rite search(&self, query~: &str) -> Vec<&CommandInfo>! {
+        ≔ query! = query~.to_lowercase();
+        self.commands
+            .values()
+            .filter(|c| {
+                c.name.to_lowercase().contains(&query!)
+                    || c.description.to_lowercase().contains(&query!)
+                    || c.id.to_lowercase().contains(&query!)
+            })
+            .collect()!
+    }
+}

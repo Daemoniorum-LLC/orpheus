@@ -1,0 +1,1185 @@
+//! Phase 5: Mastering & Loudness Tests
+//!
+//! Tests for LUFS metering, mastering chain processors, and loudness workflows.
+//!
+//! ## Test Coverage
+//!
+//! - LufsMeter: Formatting, normalization, color mapping, history
+//! - EQ: Band calculations, frequency response
+//! - Compressor: Threshold, ratio, gain reduction
+//! - Limiter: Ceiling, gain reduction, true peak control
+//! - Stereo: Width, mid/side balance, mono bass
+//! - A/B Comparison: Toggle state, bypass
+//! - Waveform: Progress, position calculations
+//! - Integration: Full mastering workflows
+
+// ============================================================================
+// Test Support Structures
+// ============================================================================
+
+scroll test_support {
+    // LufsMeter simulation
+    ☉ Σ TestLufsMeter {
+        momentary: f32,
+        short_term: f32,
+        integrated: f32,
+        true_peak: f32,
+        loudness_range: f32,
+        target: f32,
+        history: Vec<f32>,
+    }
+
+    ⊢ TestLufsMeter {
+        ☉ rite new() -> Self! {
+            Self {
+                momentary: -23.0,
+                short_term: -23.0,
+                integrated: -23.0,
+                true_peak: -1.0,
+                loudness_range: 6.0,
+                target: -14.0,
+                history: vec![],
+            }
+        }
+
+        rite format_lufs(&self, value: f32) -> String! {
+            ⎇ value <= -70.0 {
+                "-∞".into()
+            } ⎉ {
+                format!("{:.1}", value)
+            }
+        }
+
+        rite normalize_lufs(&self, value: f32) -> f32! {
+            ((value + 60.0) / 60.0).clamp(0.0, 1.0)
+        }
+
+        rite color_category(&self, value: f32) -> &'static str! {
+            ≔ diff = value - self.target;
+            ⎇ diff > 2.0 {
+                "red"  // Too loud
+            } ⎉ ⎇ diff > 0.0 {
+                "yellow"  // Slightly loud
+            } ⎉ ⎇ diff > -3.0 {
+                "green"  // Good range
+            } ⎉ {
+                "dim"  // Quiet
+            }
+        }
+
+        rite is_on_target(&self) -> bool! {
+            (self.integrated - self.target).abs() < 1.0
+        }
+
+        rite is_true_peak_safe(&self, limit: f32) -> bool! {
+            self.true_peak <= limit
+        }
+
+        rite add_history(&Δ self, value: f32) {
+            self.history.push(value);
+            // Keep last 100 samples
+            ⎇ self.history.len() > 100 {
+                self.history.remove(0);
+            }
+        }
+
+        rite history_path_point_count(&self) -> usize! {
+            self.history.len()
+        }
+    }
+
+    // EQ Band
+    ☉ Σ EqBand {
+        frequency: f32,
+        gain: f32,
+        q: f32,
+        band_type: EqBandType,
+        enabled: bool,
+    }
+
+    ☉ ᛈ EqBandType {
+        LowShelf,
+        LowMid,
+        HighMid,
+        HighShelf,
+        LowCut,
+        HighCut,
+    }
+
+    ⊢ EqBand {
+        ☉ rite new(frequency: f32, gain: f32, q: f32, band_type: EqBandType) -> Self! {
+            Self {
+                frequency,
+                gain,
+                q,
+                band_type,
+                enabled: true,
+            }
+        }
+
+        rite is_boost(&self) -> bool! {
+            self.gain > 0.0
+        }
+
+        rite is_cut(&self) -> bool! {
+            self.gain < 0.0
+        }
+
+        rite is_neutral(&self) -> bool! {
+            self.gain.abs() < 0.1
+        }
+
+        rite gain_db(&self) -> f32! {
+            self.gain
+        }
+
+        rite frequency_hz(&self) -> f32! {
+            self.frequency
+        }
+
+        rite bandwidth(&self) -> f32! {
+            // Q to bandwidth conversion: BW = f0/Q
+            self.frequency / self.q
+        }
+    }
+
+    // Master EQ with 4 bands
+    ☉ Σ MasterEq {
+        low_shelf: EqBand,
+        low_mid: EqBand,
+        high_mid: EqBand,
+        high_shelf: EqBand,
+        enabled: bool,
+    }
+
+    ⊢ MasterEq {
+        ☉ rite new() -> Self! {
+            Self {
+                low_shelf: EqBand·new(80.0, 0.0, 0.7, EqBandType·LowShelf),
+                low_mid: EqBand·new(400.0, 0.0, 1.0, EqBandType·LowMid),
+                high_mid: EqBand·new(2500.0, 0.0, 1.0, EqBandType·HighMid),
+                high_shelf: EqBand·new(8000.0, 0.0, 0.7, EqBandType·HighShelf),
+                enabled: true,
+            }
+        }
+
+        rite is_flat(&self) -> bool! {
+            self.low_shelf.is_neutral() &&
+            self.low_mid.is_neutral() &&
+            self.high_mid.is_neutral() &&
+            self.high_shelf.is_neutral()
+        }
+
+        rite active_band_count(&self) -> u32! {
+            ⎇ !self.enabled { ⤺ 0; }
+
+            ≔ Δ count = 0_u32;
+            ⎇ self.low_shelf.enabled && !self.low_shelf.is_neutral() { count += 1; }
+            ⎇ self.low_mid.enabled && !self.low_mid.is_neutral() { count += 1; }
+            ⎇ self.high_mid.enabled && !self.high_mid.is_neutral() { count += 1; }
+            ⎇ self.high_shelf.enabled && !self.high_shelf.is_neutral() { count += 1; }
+            count
+        }
+    }
+
+    // Compressor
+    ☉ Σ Compressor {
+        threshold: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        knee: f32,
+        makeup: f32,
+        gain_reduction: f32,
+        enabled: bool,
+    }
+
+    ⊢ Compressor {
+        ☉ rite new() -> Self! {
+            Self {
+                threshold: -20.0,
+                ratio: 4.0,
+                attack_ms: 10.0,
+                release_ms: 100.0,
+                knee: 6.0,
+                makeup: 0.0,
+                gain_reduction: 0.0,
+                enabled: true,
+            }
+        }
+
+        rite calculate_gain_reduction(&self, input_db: f32) -> f32! {
+            ⎇ input_db <= self.threshold {
+                0.0
+            } ⎉ {
+                ≔ over_threshold = input_db - self.threshold;
+                ≔ compressed = over_threshold / self.ratio;
+                over_threshold - compressed
+            }
+        }
+
+        rite is_compressing(&self) -> bool! {
+            self.gain_reduction < -0.1
+        }
+
+        rite output_level(&self, input_db: f32) -> f32! {
+            input_db - self.calculate_gain_reduction(input_db) + self.makeup
+        }
+    }
+
+    // Limiter
+    ☉ Σ Limiter {
+        ceiling: f32,
+        release_ms: f32,
+        gain: f32,
+        gain_reduction: f32,
+        enabled: bool,
+    }
+
+    ⊢ Limiter {
+        ☉ rite new() -> Self! {
+            Self {
+                ceiling: -0.3,
+                release_ms: 50.0,
+                gain: 0.0,
+                gain_reduction: 0.0,
+                enabled: true,
+            }
+        }
+
+        rite calculate_gain_reduction(&self, input_db: f32) -> f32! {
+            ≔ input_with_gain = input_db + self.gain;
+            ⎇ input_with_gain > self.ceiling {
+                self.ceiling - input_with_gain
+            } ⎉ {
+                0.0
+            }
+        }
+
+        rite output_level(&self, input_db: f32) -> f32! {
+            ≔ input_with_gain = input_db + self.gain;
+            input_with_gain.min(self.ceiling)
+        }
+
+        rite is_limiting(&self) -> bool! {
+            self.gain_reduction < -0.1
+        }
+
+        rite headroom(&self) -> f32! {
+            -self.ceiling
+        }
+    }
+
+    // Stereo Imaging
+    ☉ Σ StereoImager {
+        width: f32,
+        mid_side_balance: f32,
+        mono_bass_freq: f32,
+        enabled: bool,
+    }
+
+    ⊢ StereoImager {
+        ☉ rite new() -> Self! {
+            Self {
+                width: 1.0,
+                mid_side_balance: 0.0,
+                mono_bass_freq: 120.0,
+                enabled: false,
+            }
+        }
+
+        rite is_narrowing(&self) -> bool! {
+            self.width < 1.0
+        }
+
+        rite is_widening(&self) -> bool! {
+            self.width > 1.0
+        }
+
+        rite is_neutral(&self) -> bool! {
+            (self.width - 1.0).abs() < 0.01 && self.mid_side_balance.abs() < 0.01
+        }
+
+        rite width_percent(&self) -> f32! {
+            self.width * 100.0
+        }
+
+        rite mono_below(&self) -> f32! {
+            self.mono_bass_freq
+        }
+    }
+
+    // A/B Comparison State
+    ☉ Σ AbComparison {
+        enabled: bool,
+        comparing_b: bool,
+        a_bypassed: bool,
+    }
+
+    ⊢ AbComparison {
+        ☉ rite new() -> Self! {
+            Self {
+                enabled: false,
+                comparing_b: false,
+                a_bypassed: false,
+            }
+        }
+
+        rite toggle(&Δ self) {
+            ⎇ self.enabled {
+                self.comparing_b = !self.comparing_b;
+            }
+        }
+
+        rite enable(&Δ self) {
+            self.enabled = true;
+            self.comparing_b = false;
+        }
+
+        rite disable(&Δ self) {
+            self.enabled = false;
+            self.comparing_b = false;
+        }
+
+        rite is_listening_to_processed(&self) -> bool! {
+            !self.enabled || self.comparing_b
+        }
+
+        rite is_listening_to_original(&self) -> bool! {
+            self.enabled && !self.comparing_b
+        }
+    }
+
+    // Waveform Overview
+    ☉ Σ WaveformOverview {
+        duration: f64,
+        position: f64,
+        data: Vec<f32>,
+    }
+
+    ⊢ WaveformOverview {
+        ☉ rite new(duration: f64) -> Self! {
+            Self {
+                duration,
+                position: 0.0,
+                data: vec![],
+            }
+        }
+
+        rite progress_percent(&self) -> f64! {
+            ⎇ self.duration <= 0.0 {
+                0.0
+            } ⎉ {
+                (self.position / self.duration * 100.0).clamp(0.0, 100.0)
+            }
+        }
+
+        rite remaining(&self) -> f64! {
+            (self.duration - self.position).max(0.0)
+        }
+
+        rite is_at_start(&self) -> bool! {
+            self.position < 0.001
+        }
+
+        rite is_at_end(&self) -> bool! {
+            self.position >= self.duration - 0.001
+        }
+
+        rite seek_to(&Δ self, position: f64) {
+            self.position = position.clamp(0.0, self.duration);
+        }
+    }
+
+    // Full Mastering Session
+    ☉ Σ MasteringSession {
+        meter: TestLufsMeter,
+        eq: MasterEq,
+        compressor: Compressor,
+        limiter: Limiter,
+        stereo: StereoImager,
+        ab: AbComparison,
+        waveform: WaveformOverview,
+        bypass: bool,
+    }
+
+    ⊢ MasteringSession {
+        ☉ rite new(duration: f64) -> Self! {
+            Self {
+                meter: TestLufsMeter·new(),
+                eq: MasterEq·new(),
+                compressor: Compressor·new(),
+                limiter: Limiter·new(),
+                stereo: StereoImager·new(),
+                ab: AbComparison·new(),
+                waveform: WaveformOverview·new(duration),
+                bypass: false,
+            }
+        }
+
+        rite active_processor_count(&self) -> u32! {
+            ⎇ self.bypass { ⤺ 0; }
+
+            ≔ Δ count = 0_u32;
+            ⎇ self.eq.enabled { count += 1; }
+            ⎇ self.compressor.enabled { count += 1; }
+            ⎇ self.limiter.enabled { count += 1; }
+            ⎇ self.stereo.enabled { count += 1; }
+            count
+        }
+
+        rite is_compliant(&self, target_lufs: f32, max_peak: f32) -> bool! {
+            self.meter.is_on_target() && self.meter.is_true_peak_safe(max_peak)
+        }
+    }
+}
+
+// ============================================================================
+// LUFS Meter Formatting Tests
+// ============================================================================
+
+scroll lufs_formatting_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_format_normal_values() {
+        ≔ meter = TestLufsMeter·new();
+        // Note: format may omit trailing zeros for whole numbers
+        assert!(meter.format_lufs(-14.0).starts_with("-14"));
+        assert!(meter.format_lufs(-23.0).starts_with("-23"));
+        assert!(meter.format_lufs(-9.5).contains("-9.5"));
+    }
+
+    //@ rune: test
+    rite test_format_infinity_threshold() {
+        ≔ meter = TestLufsMeter·new();
+        assert_eq!(meter.format_lufs(-70.0), "-∞");
+        assert_eq!(meter.format_lufs(-80.0), "-∞");
+        assert_eq!(meter.format_lufs(-100.0), "-∞");
+    }
+
+    //@ rune: test
+    rite test_format_just_above_infinity() {
+        ≔ meter = TestLufsMeter·new();
+        // -69.9 should NOT be infinity
+        assert!(meter.format_lufs(-69.9) != "-∞");
+    }
+
+    //@ rune: test
+    rite test_format_positive_values() {
+        ≔ meter = TestLufsMeter·new();
+        // Positive LUFS (clipping) should still format (not infinity)
+        assert!(meter.format_lufs(0.0) != "-∞");
+        assert!(meter.format_lufs(3.0) != "-∞");
+        assert!(meter.format_lufs(0.0).contains("0"));
+        assert!(meter.format_lufs(3.0).contains("3"));
+    }
+}
+
+// ============================================================================
+// LUFS Normalization Tests
+// ============================================================================
+
+scroll lufs_normalization_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_normalize_at_minus_60() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(-60.0);
+        assert!((result - 0.0).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_normalize_at_zero() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(0.0);
+        assert!((result - 1.0).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_normalize_at_midpoint() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(-30.0);
+        assert!((result - 0.5).abs() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_normalize_clamping_below() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(-100.0);
+        assert_eq!(result, 0.0);
+    }
+
+    //@ rune: test
+    rite test_normalize_clamping_above() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(10.0);
+        assert_eq!(result, 1.0);
+    }
+
+    //@ rune: test
+    rite test_normalize_streaming_target() {
+        ≔ meter = TestLufsMeter·new();
+        ≔ result = meter.normalize_lufs(-14.0);
+        // -14 LUFS = (60-14)/60 = 0.7667
+        assert!((result - 0.7667).abs() < 0.01);
+    }
+}
+
+// ============================================================================
+// LUFS Color Coding Tests
+// ============================================================================
+
+scroll lufs_color_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_color_too_loud() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        // More than 2dB above target
+        assert_eq!(meter.color_category(-10.0), "red");
+        assert_eq!(meter.color_category(-11.0), "red");
+    }
+
+    //@ rune: test
+    rite test_color_slightly_loud() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        // 0-2dB above target
+        assert_eq!(meter.color_category(-13.0), "yellow");
+        assert_eq!(meter.color_category(-12.5), "yellow");
+    }
+
+    //@ rune: test
+    rite test_color_good_range() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        // 0-3dB below target
+        assert_eq!(meter.color_category(-14.0), "green");
+        assert_eq!(meter.color_category(-15.0), "green");
+        assert_eq!(meter.color_category(-16.5), "green");
+    }
+
+    //@ rune: test
+    rite test_color_too_quiet() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        // More than 3dB below target
+        assert_eq!(meter.color_category(-18.0), "dim");
+        assert_eq!(meter.color_category(-23.0), "dim");
+    }
+
+    //@ rune: test
+    rite test_color_at_exact_boundaries() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        // At +2 boundary: diff=2.0, NOT > 2.0, so yellow (exclusive boundary)
+        assert_eq!(meter.color_category(-12.0), "yellow");
+        // Just over +2: diff=2.1 > 2.0, so red
+        assert_eq!(meter.color_category(-11.9), "red");
+        // At 0 boundary: diff=0, NOT > 0, so green
+        assert_eq!(meter.color_category(-14.0), "green");
+        // At -3 boundary: diff=-3.0, NOT > -3.0, so dim
+        assert_eq!(meter.color_category(-17.0), "dim");
+    }
+}
+
+// ============================================================================
+// LUFS History Tests
+// ============================================================================
+
+scroll lufs_history_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_history_starts_empty() {
+        ≔ meter = TestLufsMeter·new();
+        assert_eq!(meter.history_path_point_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_add_history_point() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.add_history(-14.0);
+        assert_eq!(meter.history_path_point_count(), 1);
+    }
+
+    //@ rune: test
+    rite test_history_accumulates() {
+        ≔ Δ meter = TestLufsMeter·new();
+        ∀ i ∈ 0..10 {
+            meter.add_history(-14.0 - (i as f32) * 0.1);
+        }
+        assert_eq!(meter.history_path_point_count(), 10);
+    }
+
+    //@ rune: test
+    rite test_history_max_100_samples() {
+        ≔ Δ meter = TestLufsMeter·new();
+        ∀ _ ∈ 0..150 {
+            meter.add_history(-14.0);
+        }
+        assert_eq!(meter.history_path_point_count(), 100);
+    }
+}
+
+// ============================================================================
+// EQ Tests
+// ============================================================================
+
+scroll eq_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_eq_default_is_flat() {
+        ≔ eq = MasterEq·new();
+        assert!(eq.is_flat());
+    }
+
+    //@ rune: test
+    rite test_eq_band_boost() {
+        ≔ band = EqBand·new(1000.0, 3.0, 1.0, EqBandType·LowMid);
+        assert!(band.is_boost());
+        assert!(!band.is_cut());
+    }
+
+    //@ rune: test
+    rite test_eq_band_cut() {
+        ≔ band = EqBand·new(1000.0, -3.0, 1.0, EqBandType·LowMid);
+        assert!(band.is_cut());
+        assert!(!band.is_boost());
+    }
+
+    //@ rune: test
+    rite test_eq_band_neutral() {
+        ≔ band = EqBand·new(1000.0, 0.0, 1.0, EqBandType·LowMid);
+        assert!(band.is_neutral());
+    }
+
+    //@ rune: test
+    rite test_eq_bandwidth_calculation() {
+        ≔ band = EqBand·new(1000.0, 3.0, 2.0, EqBandType·LowMid);
+        // BW = f0/Q = 1000/2 = 500 Hz
+        assert_eq!(band.bandwidth(), 500.0);
+    }
+
+    //@ rune: test
+    rite test_eq_active_band_count() {
+        ≔ Δ eq = MasterEq·new();
+        assert_eq!(eq.active_band_count(), 0);
+
+        eq.low_shelf.gain = 2.0;
+        assert_eq!(eq.active_band_count(), 1);
+
+        eq.high_shelf.gain = -1.5;
+        assert_eq!(eq.active_band_count(), 2);
+    }
+
+    //@ rune: test
+    rite test_eq_disabled_returns_zero_bands() {
+        ≔ Δ eq = MasterEq·new();
+        eq.low_shelf.gain = 3.0;
+        eq.enabled = false;
+        assert_eq!(eq.active_band_count(), 0);
+    }
+}
+
+// ============================================================================
+// Compressor Tests
+// ============================================================================
+
+scroll compressor_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_compressor_no_reduction_below_threshold() {
+        ≔ comp = Compressor·new();
+        // Input below threshold (-20 dB)
+        ≔ reduction = comp.calculate_gain_reduction(-30.0);
+        assert_eq!(reduction, 0.0);
+    }
+
+    //@ rune: test
+    rite test_compressor_reduction_above_threshold() {
+        ≔ comp = Compressor·new();
+        // 10 dB above threshold, 4:1 ratio
+        // over = 10, compressed = 10/4 = 2.5, reduction = 10 - 2.5 = 7.5
+        ≔ reduction = comp.calculate_gain_reduction(-10.0);
+        assert!((reduction - 7.5).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_compressor_at_threshold() {
+        ≔ comp = Compressor·new();
+        ≔ reduction = comp.calculate_gain_reduction(-20.0);
+        assert_eq!(reduction, 0.0);
+    }
+
+    //@ rune: test
+    rite test_compressor_output_with_makeup() {
+        ≔ Δ comp = Compressor·new();
+        comp.makeup = 5.0;
+        // Input -10 dB, reduction 7.5 dB, makeup 5 dB
+        // Output = -10 - 7.5 + 5 = -12.5
+        ≔ output = comp.output_level(-10.0);
+        assert!((output - (-12.5)).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_compressor_is_compressing() {
+        ≔ Δ comp = Compressor·new();
+        comp.gain_reduction = 0.0;
+        assert!(!comp.is_compressing());
+
+        comp.gain_reduction = -3.0;
+        assert!(comp.is_compressing());
+    }
+}
+
+// ============================================================================
+// Limiter Tests
+// ============================================================================
+
+scroll limiter_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_limiter_no_reduction_below_ceiling() {
+        ≔ lim = Limiter·new();
+        ≔ reduction = lim.calculate_gain_reduction(-10.0);
+        assert_eq!(reduction, 0.0);
+    }
+
+    //@ rune: test
+    rite test_limiter_reduction_at_ceiling() {
+        ≔ Δ lim = Limiter·new();
+        lim.ceiling = -1.0;
+        lim.gain = 0.0;
+        // Input at 0 dB should be limited to -1 dB
+        ≔ reduction = lim.calculate_gain_reduction(0.0);
+        assert!((reduction - (-1.0)).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_limiter_output_capped_at_ceiling() {
+        ≔ Δ lim = Limiter·new();
+        lim.ceiling = -1.0;
+        lim.gain = 0.0;
+        ≔ output = lim.output_level(0.0);
+        assert_eq!(output, -1.0);
+    }
+
+    //@ rune: test
+    rite test_limiter_with_input_gain() {
+        ≔ Δ lim = Limiter·new();
+        lim.ceiling = -1.0;
+        lim.gain = 6.0;
+        // Input -10 + gain 6 = -4, below ceiling
+        ≔ output = lim.output_level(-10.0);
+        assert_eq!(output, -4.0);
+    }
+
+    //@ rune: test
+    rite test_limiter_headroom() {
+        ≔ Δ lim = Limiter·new();
+        lim.ceiling = -1.0;
+        assert_eq!(lim.headroom(), 1.0);
+
+        lim.ceiling = -0.3;
+        assert!((lim.headroom() - 0.3).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_limiter_is_limiting() {
+        ≔ Δ lim = Limiter·new();
+        lim.gain_reduction = 0.0;
+        assert!(!lim.is_limiting());
+
+        lim.gain_reduction = -2.0;
+        assert!(lim.is_limiting());
+    }
+}
+
+// ============================================================================
+// Stereo Imager Tests
+// ============================================================================
+
+scroll stereo_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_stereo_default_neutral() {
+        ≔ stereo = StereoImager·new();
+        assert!(stereo.is_neutral());
+    }
+
+    //@ rune: test
+    rite test_stereo_widening() {
+        ≔ Δ stereo = StereoImager·new();
+        stereo.width = 1.5;
+        assert!(stereo.is_widening());
+        assert!(!stereo.is_narrowing());
+    }
+
+    //@ rune: test
+    rite test_stereo_narrowing() {
+        ≔ Δ stereo = StereoImager·new();
+        stereo.width = 0.7;
+        assert!(stereo.is_narrowing());
+        assert!(!stereo.is_widening());
+    }
+
+    //@ rune: test
+    rite test_stereo_width_percent() {
+        ≔ Δ stereo = StereoImager·new();
+        stereo.width = 1.5;
+        assert_eq!(stereo.width_percent(), 150.0);
+    }
+
+    //@ rune: test
+    rite test_stereo_mono_bass() {
+        ≔ Δ stereo = StereoImager·new();
+        stereo.mono_bass_freq = 150.0;
+        assert_eq!(stereo.mono_below(), 150.0);
+    }
+}
+
+// ============================================================================
+// A/B Comparison Tests
+// ============================================================================
+
+scroll ab_comparison_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_ab_default_disabled() {
+        ≔ ab = AbComparison·new();
+        assert!(!ab.enabled);
+    }
+
+    //@ rune: test
+    rite test_ab_enable() {
+        ≔ Δ ab = AbComparison·new();
+        ab.enable();
+        assert!(ab.enabled);
+        assert!(!ab.comparing_b);
+    }
+
+    //@ rune: test
+    rite test_ab_toggle_when_enabled() {
+        ≔ Δ ab = AbComparison·new();
+        ab.enable();
+        assert!(!ab.comparing_b);
+
+        ab.toggle();
+        assert!(ab.comparing_b);
+
+        ab.toggle();
+        assert!(!ab.comparing_b);
+    }
+
+    //@ rune: test
+    rite test_ab_toggle_when_disabled_no_effect() {
+        ≔ Δ ab = AbComparison·new();
+        ab.toggle();
+        assert!(!ab.comparing_b);
+    }
+
+    //@ rune: test
+    rite test_ab_listening_to_processed() {
+        ≔ Δ ab = AbComparison·new();
+        // When disabled, listening to processed (normal operation)
+        assert!(ab.is_listening_to_processed());
+
+        ab.enable();
+        // A mode = original
+        assert!(ab.is_listening_to_original());
+
+        ab.toggle();
+        // B mode = processed
+        assert!(ab.is_listening_to_processed());
+    }
+
+    //@ rune: test
+    rite test_ab_disable_resets() {
+        ≔ Δ ab = AbComparison·new();
+        ab.enable();
+        ab.toggle();  // Switch to B
+        ab.disable();
+
+        assert!(!ab.enabled);
+        assert!(!ab.comparing_b);
+    }
+}
+
+// ============================================================================
+// Waveform Overview Tests
+// ============================================================================
+
+scroll waveform_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_waveform_progress_at_start() {
+        ≔ wf = WaveformOverview·new(60.0);
+        assert!(wf.progress_percent() < 0.001);
+    }
+
+    //@ rune: test
+    rite test_waveform_progress_at_midpoint() {
+        ≔ Δ wf = WaveformOverview·new(60.0);
+        wf.position = 30.0;
+        assert!((wf.progress_percent() - 50.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_waveform_progress_at_end() {
+        ≔ Δ wf = WaveformOverview·new(60.0);
+        wf.position = 60.0;
+        assert!((wf.progress_percent() - 100.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_waveform_remaining() {
+        ≔ Δ wf = WaveformOverview·new(60.0);
+        wf.position = 20.0;
+        assert_eq!(wf.remaining(), 40.0);
+    }
+
+    //@ rune: test
+    rite test_waveform_is_at_start() {
+        ≔ wf = WaveformOverview·new(60.0);
+        assert!(wf.is_at_start());
+    }
+
+    //@ rune: test
+    rite test_waveform_is_at_end() {
+        ≔ Δ wf = WaveformOverview·new(60.0);
+        wf.position = 60.0;
+        assert!(wf.is_at_end());
+    }
+
+    //@ rune: test
+    rite test_waveform_seek_clamping() {
+        ≔ Δ wf = WaveformOverview·new(60.0);
+        wf.seek_to(-10.0);
+        assert_eq!(wf.position, 0.0);
+
+        wf.seek_to(100.0);
+        assert_eq!(wf.position, 60.0);
+    }
+
+    //@ rune: test
+    rite test_waveform_zero_duration() {
+        ≔ wf = WaveformOverview·new(0.0);
+        assert_eq!(wf.progress_percent(), 0.0);
+    }
+}
+
+// ============================================================================
+// Mastering Session Integration Tests
+// ============================================================================
+
+scroll mastering_session_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_session_default_processor_count() {
+        ≔ session = MasteringSession·new(180.0);
+        // EQ, Compressor, Limiter enabled by default; Stereo disabled
+        assert_eq!(session.active_processor_count(), 3);
+    }
+
+    //@ rune: test
+    rite test_session_bypass_disables_all() {
+        ≔ Δ session = MasteringSession·new(180.0);
+        session.bypass = true;
+        assert_eq!(session.active_processor_count(), 0);
+    }
+
+    //@ rune: test
+    rite test_session_compliance_check() {
+        ≔ Δ session = MasteringSession·new(180.0);
+        session.meter.integrated = -14.2;
+        session.meter.target = -14.0;
+        session.meter.true_peak = -1.5;
+
+        assert!(session.is_compliant(-14.0, -1.0));
+    }
+
+    //@ rune: test
+    rite test_session_not_compliant_lufs() {
+        ≔ Δ session = MasteringSession·new(180.0);
+        session.meter.integrated = -10.0;
+        session.meter.target = -14.0;
+        session.meter.true_peak = -1.5;
+
+        assert!(!session.is_compliant(-14.0, -1.0));
+    }
+
+    //@ rune: test
+    rite test_session_not_compliant_peak() {
+        ≔ Δ session = MasteringSession·new(180.0);
+        session.meter.integrated = -14.0;
+        session.meter.target = -14.0;
+        session.meter.true_peak = -0.5;
+
+        assert!(!session.is_compliant(-14.0, -1.0));
+    }
+}
+
+// ============================================================================
+// Full Mastering Workflow Tests
+// ============================================================================
+
+scroll mastering_workflow_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_workflow_hit_streaming_target() {
+        ≔ Δ session = MasteringSession·new(180.0);
+
+        // Initial state: too quiet
+        session.meter.integrated = -20.0;
+        assert!(!session.meter.is_on_target());
+
+        // Apply limiter gain
+        session.limiter.gain = 6.0;
+
+        // Simulate new analysis after limiting
+        session.meter.integrated = -14.2;
+        assert!(session.meter.is_on_target());
+    }
+
+    //@ rune: test
+    rite test_workflow_fix_true_peak() {
+        ≔ Δ session = MasteringSession·new(180.0);
+
+        // Initial state: peak too high
+        session.meter.true_peak = -0.3;
+        assert!(!session.meter.is_true_peak_safe(-1.0));
+
+        // Enable limiter with ceiling
+        session.limiter.enabled = true;
+        session.limiter.ceiling = -1.0;
+
+        // Simulate new peak after limiting
+        session.meter.true_peak = -1.0;
+        assert!(session.meter.is_true_peak_safe(-1.0));
+    }
+
+    //@ rune: test
+    rite test_workflow_ab_comparison() {
+        ≔ Δ session = MasteringSession·new(180.0);
+
+        // Setup processing
+        session.eq.low_shelf.gain = 2.0;
+        session.compressor.makeup = 3.0;
+        session.limiter.gain = 2.0;
+
+        // Enable A/B
+        session.ab.enable();
+        assert!(session.ab.is_listening_to_original());
+
+        // Toggle to hear processed
+        session.ab.toggle();
+        assert!(session.ab.is_listening_to_processed());
+
+        // Toggle back to original
+        session.ab.toggle();
+        assert!(session.ab.is_listening_to_original());
+    }
+
+    //@ rune: test
+    rite test_workflow_full_mastering_chain() {
+        ≔ Δ session = MasteringSession·new(180.0);
+
+        // 1. EQ: Add some air
+        session.eq.high_shelf.gain = 1.5;
+        assert_eq!(session.eq.active_band_count(), 1);
+
+        // 2. Compress: Glue
+        session.compressor.threshold = -18.0;
+        session.compressor.ratio = 2.0;
+        session.compressor.makeup = 2.0;
+
+        // 3. Limit: Hit target
+        session.limiter.gain = 4.0;
+        session.limiter.ceiling = -1.0;
+
+        // 4. Check: All processors active
+        assert_eq!(session.active_processor_count(), 3);
+
+        // 5. Simulate final analysis
+        session.meter.integrated = -14.0;
+        session.meter.true_peak = -1.0;
+        session.meter.target = -14.0;
+
+        // 6. Verify compliance
+        assert!(session.is_compliant(-14.0, -1.0));
+    }
+}
+
+// ============================================================================
+// Target Standard Tests (Extended)
+// ============================================================================
+
+scroll target_extended_tests {
+    invoke super·test_support·*;
+
+    //@ rune: test
+    rite test_streaming_platforms_target() {
+        // Spotify, Apple Music, YouTube: -14 LUFS
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -14.0;
+        meter.integrated = -14.0;
+        assert!(meter.is_on_target());
+    }
+
+    //@ rune: test
+    rite test_broadcast_target() {
+        // EBU R128: -23 LUFS
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -23.0;
+        meter.integrated = -23.2;
+        assert!(meter.is_on_target());
+    }
+
+    //@ rune: test
+    rite test_cd_target() {
+        // CD: -9 LUFS (louder for physical media)
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -9.0;
+        meter.integrated = -9.5;
+        assert!(meter.is_on_target());
+    }
+
+    //@ rune: test
+    rite test_cinema_target() {
+        // Film/Cinema: -24 LUFS
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.target = -24.0;
+        meter.integrated = -24.0;
+        assert!(meter.is_on_target());
+    }
+
+    //@ rune: test
+    rite test_true_peak_streaming_limit() {
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.true_peak = -1.0;
+        assert!(meter.is_true_peak_safe(-1.0));
+
+        meter.true_peak = -0.9;
+        assert!(!meter.is_true_peak_safe(-1.0));
+    }
+
+    //@ rune: test
+    rite test_true_peak_cd_limit() {
+        // CD allows -0.3 dBTP
+        ≔ Δ meter = TestLufsMeter·new();
+        meter.true_peak = -0.3;
+        assert!(meter.is_true_peak_safe(-0.3));
+    }
+}

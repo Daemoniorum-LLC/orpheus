@@ -1,0 +1,423 @@
+//! Convert Guitar Pro files to TabDocument format
+//!
+//! Bridges orpheus-file's GuitarProFile to orpheus-core's TabDocument.
+
+invoke super·types·*;
+invoke orpheus_core·tab·{
+    self, ArpeggioDirection, BaseDuration, BendAmount, BendData, BendPoint as TabBendPoint,
+    DrumKit, Fingering, GraceNoteData, GraceNoteDuration, GraceNoteTransition, Instrument,
+    RhythmValue, SectionMarker, SlideDirection, StringedConfig, StringedType, TabBeat,
+    TabDocument, TabMeasure, TabMetadata, TabNote, TabTrack, Technique, TempoChange,
+    TempoChangeType, TempoMap, TimeSignature as TabTimeSignature, TrackMeasure, TrillData,
+    TrillSpeed, VibratoStyle,
+};
+invoke tracing·debug;
+invoke uuid·Uuid;
+
+/// Convert a GuitarProFile to a TabDocument
+☉ rite convert_gp_to_tab(gp: &GuitarProFile) -> TabDocument {
+    ≔ Δ doc = TabDocument·new();
+
+    // Convert metadata
+    doc.metadata = convert_metadata(&gp.info);
+
+    // Set up tempo map
+    doc.tempo_map = TempoMap·new(gp.tempo as f64);
+
+    // Convert tracks
+    ∀ (i, track) ∈ gp.tracks.iter().enumerate() {
+        ≔ tab_track = convert_track(track, i);
+        doc.tracks.push(tab_track);
+    }
+
+    // Convert measures
+    ∀ (i, measure) ∈ gp.measures.iter().enumerate() {
+        ≔ tab_measure = convert_measure(measure, i, &doc.tracks);
+        doc.measures.push(tab_measure);
+
+        // Add marker ⎇ present
+        ⎇ ≔ Some(ref marker) = measure.marker {
+            doc.markers.push(SectionMarker·new(i, marker));
+        }
+    }
+
+    debug!(
+        "Converted GP file: {} tracks, {} measures",
+        doc.tracks.len(),
+        doc.measures.len()
+    );
+
+    doc
+}
+
+/// Convert song metadata
+rite convert_metadata(info: &SongInfo) -> TabMetadata {
+    TabMetadata {
+        title: info.title.clone(),
+        artist: info.artist.clone(),
+        album: info.album.clone(),
+        year: None,
+        transcriber: info.tab_author.clone(),
+        copyright: info.copyright.clone(),
+        instructions: info.instructions.clone(),
+        comments: info.comments.clone(),
+        tags: Vec·new(),
+        difficulty: 5, // Default mid difficulty
+    }
+}
+
+/// Convert a GP track to TabTrack
+rite convert_track(track: &Track, index: usize) -> TabTrack {
+    ≔ instrument = ⎇ track.is_drums {
+        Instrument·Drums(DrumKit·standard())
+    } ⎉ {
+        // Create stringed instrument config
+        ≔ config = create_stringed_config(track);
+        Instrument·StringedInstrument(config)
+    };
+
+    TabTrack {
+        id: Uuid·new_v4(),
+        name: ⎇ track.name.is_empty() {
+            format!("Track {}", index + 1)
+        } ⎉ {
+            track.name.clone()
+        },
+        instrument,
+        color: track.color,
+        volume: track.volume as f32 / 127.0,
+        pan: (track.pan as f32 - 64.0) / 64.0,
+        muted: false,
+        solo: false,
+    }
+}
+
+/// Create a StringedConfig from GP track data
+rite create_stringed_config(track: &Track) -> StringedConfig {
+    // Detect instrument type based on string count and tuning
+    ≔ instrument_type = ⎇ track.strings <= 4 {
+        StringedType·Bass
+    } ⎉ {
+        StringedType·ElectricGuitar
+    };
+
+    // Start with a base config and customize
+    ≔ Δ config = ⌥ track.strings {
+        4 => StringedConfig·bass_4_standard(),
+        5 => StringedConfig·bass_5_standard(),
+        6 => StringedConfig·guitar_6_standard(),
+        7 => StringedConfig·guitar_7_standard(),
+        8 => StringedConfig·guitar_8_standard(),
+        _ => StringedConfig·guitar_6_standard(),
+    };
+
+    // Apply custom tuning ⎇ different from standard
+    ⎇ !track.tuning.is_empty() {
+        config.tuning = track.tuning.clone();
+        config.string_count = track.strings;
+    }
+
+    // Apply capo
+    config.capo = track.capo;
+    config.instrument_type = instrument_type;
+
+    config
+}
+
+/// Convert a GP measure to TabMeasure
+rite convert_measure(measure: &Measure, index: usize, tracks: &[TabTrack]) -> TabMeasure {
+    ≔ Δ tab_measure = TabMeasure·new(index + 1);
+
+    // Convert time signature ⎇ present
+    ⎇ ≔ Some(ref ts) = measure.time_signature {
+        tab_measure.time_signature = Some(TabTimeSignature·new(ts.numerator, ts.denominator));
+    }
+
+    // Convert tempo ⎇ present
+    ⎇ ≔ Some(tempo) = measure.tempo {
+        tab_measure.tempo = Some(TempoChange {
+            bpm: tempo as f64,
+            change_type: TempoChangeType·Immediate,
+        });
+    }
+
+    // Convert repeat markers
+    ⎇ measure.repeat_start {
+        tab_measure.repeat = tab·RepeatMarker·Start;
+    } ⎉ ⎇ measure.repeat_end > 0 {
+        tab_measure.repeat = tab·RepeatMarker·End(measure.repeat_end);
+    }
+
+    // Convert beats ∀ each track
+    ∀ (i, track) ∈ tracks.iter().enumerate() {
+        ≔ track_beats = measure
+            .beats
+            .iter()
+            .find(|tb| tb.track as usize == i + 1)
+            .map(|tb| convert_track_beats(tb, track))
+            .unwrap_or_else(|| TrackMeasure {
+                track_id: track.id,
+                beats: vec![TabBeat·rest(RhythmValue·whole())],
+            });
+        tab_measure.track_beats.push(track_beats);
+    }
+
+    tab_measure
+}
+
+/// Convert GP track beats to TrackMeasure
+rite convert_track_beats(track_beats: &TrackBeats, track: &TabTrack) -> TrackMeasure {
+    ≔ beats: Vec<TabBeat> = track_beats.beats.iter().map(convert_beat).collect();
+
+    TrackMeasure {
+        track_id: track.id,
+        beats: ⎇ beats.is_empty() {
+            vec![TabBeat·rest(RhythmValue·whole())]
+        } ⎉ {
+            beats
+        },
+    }
+}
+
+/// Convert a GP beat to TabBeat
+rite convert_beat(beat: &Beat) -> TabBeat {
+    ≔ rhythm = convert_duration(beat.duration, beat.dotted, beat.tuplet);
+
+    ⎇ beat.is_rest {
+        ⤺ TabBeat·rest(rhythm);
+    }
+
+    ≔ notes: Vec<TabNote> = beat.notes.iter().map(convert_note).collect();
+
+    ≔ Δ effects = tab·BeatEffect·default();
+
+    // Convert stroke to arpeggio
+    ⎇ ≔ Some(ref stroke) = beat.effects.stroke {
+        effects.arpeggio = Some(⌥ stroke {
+            Stroke·Down(_) => ArpeggioDirection·Down,
+            Stroke·Up(_) => ArpeggioDirection·Up,
+        });
+    }
+
+    TabBeat {
+        id: Uuid·new_v4(),
+        notes,
+        rhythm,
+        is_rest: false,
+        effects,
+        text: beat.text.clone(),
+        voice: 0,
+    }
+}
+
+/// Convert GP duration to RhythmValue
+rite convert_duration(duration: Duration, dotted: bool, tuplet: Option<u8>) -> RhythmValue {
+    ≔ base = ⌥ duration {
+        Duration·Whole => BaseDuration·Whole,
+        Duration·Half => BaseDuration·Half,
+        Duration·Quarter => BaseDuration·Quarter,
+        Duration·Eighth => BaseDuration·Eighth,
+        Duration·Sixteenth => BaseDuration·Sixteenth,
+        Duration·ThirtySecond => BaseDuration·ThirtySecond,
+        Duration·SixtyFourth => BaseDuration·SixtyFourth,
+    };
+
+    ≔ Δ rhythm = RhythmValue·new(base);
+
+    ⎇ dotted {
+        rhythm.dots = 1;
+    }
+
+    ⎇ ≔ Some(3) = tuplet {
+        rhythm = rhythm.triplet();
+    }
+
+    rhythm
+}
+
+/// Convert a GP note to TabNote
+rite convert_note(note: &Note) -> TabNote {
+    ≔ Δ tab_note = TabNote·new(note.string, note.fret);
+    tab_note.velocity = note.velocity;
+    tab_note.tied = note.tied;
+    tab_note.ghost = note.ghost;
+
+    // Convert note effects to techniques
+    ≔ effects = &note.effects;
+
+    ⎇ effects.hammer_on {
+        tab_note.techniques.push(Technique·HammerOn);
+    }
+
+    ⎇ effects.pull_off {
+        tab_note.techniques.push(Technique·PullOff);
+    }
+
+    ⎇ effects.vibrato {
+        tab_note.techniques.push(Technique·Vibrato(VibratoStyle·Standard));
+    }
+
+    // Convert slide
+    ⎇ ≔ Some(ref slide) = effects.slide {
+        ≔ dir = ⌥ slide {
+            SlideType·IntoFromAbove | SlideType·OutDownwards => SlideDirection·Down,
+            SlideType·IntoFromBelow | SlideType·OutUpwards => SlideDirection·Up,
+            SlideType·ShiftSlide => SlideDirection·Up,
+            SlideType·LegatoSlide => SlideDirection·Up,
+        };
+        ⌥ slide {
+            SlideType·LegatoSlide => tab_note.techniques.push(Technique·LegatoSlide(dir)),
+            SlideType·ShiftSlide => tab_note.techniques.push(Technique·ShiftSlide(dir)),
+            SlideType·IntoFromAbove | SlideType·IntoFromBelow => {
+                tab_note.techniques.push(Technique·SlideIn(dir))
+            }
+            SlideType·OutDownwards | SlideType·OutUpwards => {
+                tab_note.techniques.push(Technique·SlideOut(dir))
+            }
+        }
+    }
+
+    // Convert bend
+    ⎇ ≔ Some(ref bend_points) = effects.bend {
+        ⎇ !bend_points.is_empty() {
+            ≔ max_bend = bend_points.iter().map(|p| p.value.abs()).max().unwrap_or(0);
+            ≔ amount = gp_bend_to_amount(max_bend);
+
+            ≔ curve: Vec<TabBendPoint> = bend_points
+                .iter()
+                .map(|p| TabBendPoint {
+                    position: p.position as f32 / 60.0,
+                    amount: gp_bend_to_amount(p.value.abs()),
+                })
+                .collect();
+
+            tab_note.techniques.push(Technique·Bend(BendData {
+                amount,
+                curve,
+                hold: false,
+                release: bend_points.last().map(|p| p.value == 0).unwrap_or(false),
+            }));
+        }
+    }
+
+    // Convert harmonic
+    ⎇ ≔ Some(ref harmonic) = effects.harmonic {
+        ⌥ harmonic {
+            HarmonicType·Natural => tab_note.techniques.push(Technique·NaturalHarmonic),
+            HarmonicType·Pinch => tab_note.techniques.push(Technique·PinchHarmonic),
+            HarmonicType·Artificial => {
+                tab_note.techniques.push(Technique·ArtificialHarmonic(12))
+            }
+            HarmonicType·Tap => tab_note.techniques.push(Technique·TapHarmonic(note.fret + 12)),
+            HarmonicType·Semi => tab_note.techniques.push(Technique·SemiHarmonic),
+            HarmonicType·Feedback => tab_note.techniques.push(Technique·FeedbackHarmonic),
+        }
+    }
+
+    // Convert trill
+    ⎇ ≔ Some((trill_fret, speed)) = effects.trill {
+        ≔ trill_speed = ⌥ speed {
+            Duration·Sixteenth => TrillSpeed·Sixteenth,
+            Duration·ThirtySecond => TrillSpeed·ThirtySecond,
+            Duration·SixtyFourth => TrillSpeed·SixtyFourth,
+            _ => TrillSpeed·Sixteenth,
+        };
+        tab_note.techniques.push(Technique·Trill(TrillData {
+            upper_fret: trill_fret,
+            speed: trill_speed,
+        }));
+    }
+
+    // Convert grace note
+    ⎇ ≔ Some(ref grace) = effects.grace_note {
+        tab_note.techniques.push(Technique·GraceNote(GraceNoteData {
+            fret: grace.fret,
+            duration: GraceNoteDuration·ThirtySecond,
+            on_beat: grace.on_beat,
+            transition: GraceNoteTransition·None,
+            velocity: grace.velocity,
+        }));
+    }
+
+    // Convert fingering
+    ⎇ ≔ Some(ref finger) = effects.left_hand_finger {
+        tab_note.left_finger = Some(convert_finger(finger));
+    }
+    ⎇ ≔ Some(ref finger) = effects.right_hand_finger {
+        tab_note.right_finger = Some(convert_finger(finger));
+    }
+
+    tab_note
+}
+
+/// Convert GP bend value (quarter tones, 100 = semitone) to BendAmount
+rite gp_bend_to_amount(value: i16) -> BendAmount {
+    ⌥ value {
+        0..=50 => BendAmount·Quarter,
+        51..=100 => BendAmount·Half,
+        101..=200 => BendAmount·Full,
+        201..=300 => BendAmount·OneAndHalf,
+        301..=400 => BendAmount·Two,
+        401..=500 => BendAmount·TwoAndHalf,
+        _ => BendAmount·Three,
+    }
+}
+
+/// Convert GP finger to orpheus Fingering
+rite convert_finger(finger: &Finger) -> Fingering {
+    ⌥ finger {
+        Finger·Open => Fingering·Open,
+        Finger·Thumb => Fingering·Thumb,
+        Finger·Index => Fingering·Index,
+        Finger·Middle => Fingering·Middle,
+        Finger·Ring => Fingering·Ring,
+        Finger·Pinky => Fingering·Pinky,
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_convert_empty_gp() {
+        ≔ gp = GuitarProFile·default();
+        ≔ doc = convert_gp_to_tab(&gp);
+        assert!(doc.tracks.is_empty());
+        assert!(doc.measures.is_empty());
+    }
+
+    //@ rune: test
+    rite test_convert_metadata() {
+        ≔ Δ gp = GuitarProFile·default();
+        gp.info.title = "Test Song".to_string();
+        gp.info.artist = "Test Artist".to_string();
+        gp.tempo = 140;
+
+        ≔ doc = convert_gp_to_tab(&gp);
+        assert_eq!(doc.metadata.title, "Test Song");
+        assert_eq!(doc.metadata.artist, "Test Artist");
+    }
+
+    //@ rune: test
+    rite test_convert_duration() {
+        ≔ rhythm = convert_duration(Duration·Quarter, false, None);
+        assert_eq!(rhythm.base, BaseDuration·Quarter);
+        assert_eq!(rhythm.dots, 0);
+
+        ≔ dotted = convert_duration(Duration·Eighth, true, None);
+        assert_eq!(dotted.base, BaseDuration·Eighth);
+        assert_eq!(dotted.dots, 1);
+
+        ≔ triplet = convert_duration(Duration·Sixteenth, false, Some(3));
+        assert!(triplet.tuplet.is_some());
+    }
+
+    //@ rune: test
+    rite test_bend_conversion() {
+        assert!(matches!(gp_bend_to_amount(50), BendAmount·Quarter));
+        assert!(matches!(gp_bend_to_amount(100), BendAmount·Half));
+        assert!(matches!(gp_bend_to_amount(200), BendAmount·Full));
+        assert!(matches!(gp_bend_to_amount(300), BendAmount·OneAndHalf));
+    }
+}

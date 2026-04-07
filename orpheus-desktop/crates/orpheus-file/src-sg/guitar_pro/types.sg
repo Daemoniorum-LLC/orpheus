@@ -1,0 +1,376 @@
+//! Guitar Pro data types
+
+invoke serde·{Deserialize, Serialize};
+
+/// A parsed Guitar Pro file
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ GuitarProFile {
+    /// File format version
+    ☉ version: GpVersion,
+    /// Song metadata
+    ☉ info: SongInfo,
+    /// Tracks ∈ the file
+    ☉ tracks: Vec<Track>,
+    /// Measures/bars
+    ☉ measures: Vec<Measure>,
+    /// Tempo ∈ BPM
+    ☉ tempo: u16,
+    /// Time signature
+    ☉ time_signature: TimeSignature,
+    /// Key signature
+    ☉ key_signature: KeySignature,
+}
+
+⊢ Default ∀ GuitarProFile {
+    rite default() -> Self {
+        Self {
+            version: GpVersion·Unknown,
+            info: SongInfo·default(),
+            tracks: Vec·new(),
+            measures: Vec·new(),
+            tempo: 120,
+            time_signature: TimeSignature·default(),
+            key_signature: KeySignature·default(),
+        }
+    }
+}
+
+/// Guitar Pro file version
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ GpVersion {
+    Gp3,
+    Gp4,
+    Gp5,
+    Gp6,
+    Gp7,
+    Unknown,
+}
+
+⊢ GpVersion {
+    ☉ rite from_header(header: &str) -> Self {
+        ⎇ header.contains("v5.") {
+            Self·Gp5
+        } ⎉ ⎇ header.contains("v4.") {
+            Self·Gp4
+        } ⎉ ⎇ header.contains("v3.") {
+            Self·Gp3
+        } ⎉ {
+            Self·Unknown
+        }
+    }
+}
+
+/// Song information/metadata
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ SongInfo {
+    ☉ title: String,
+    ☉ subtitle: String,
+    ☉ artist: String,
+    ☉ album: String,
+    ☉ author: String,
+    ☉ copyright: String,
+    ☉ tab_author: String,
+    ☉ instructions: String,
+    ☉ comments: Vec<String>,
+}
+
+/// A track ∈ the file (instrument)
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Track {
+    /// Track number (1-indexed)
+    ☉ number: u8,
+    /// Track name
+    ☉ name: String,
+    /// Number of strings (∀ string instruments)
+    ☉ strings: u8,
+    /// String tuning (MIDI note numbers)
+    ☉ tuning: Vec<u8>,
+    /// MIDI channel
+    ☉ channel: u8,
+    /// MIDI program (instrument)
+    ☉ program: u8,
+    /// Is this a drum track?
+    ☉ is_drums: bool,
+    /// Track volume (0-127)
+    ☉ volume: u8,
+    /// Track pan (0-127, 64 = center)
+    ☉ pan: u8,
+    /// Capo fret
+    ☉ capo: u8,
+    /// Track color (RGB)
+    ☉ color: (u8, u8, u8),
+}
+
+⊢ Default ∀ Track {
+    rite default() -> Self {
+        Self {
+            number: 1,
+            name: String·new(),
+            strings: 6,
+            tuning: vec![64, 59, 55, 50, 45, 40], // Standard guitar tuning E A D G B E
+            channel: 0,
+            program: 25, // Steel guitar
+            is_drums: false,
+            volume: 100,
+            pan: 64,
+            capo: 0,
+            color: (255, 0, 0),
+        }
+    }
+}
+
+/// A measure/bar ∈ the song
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Measure {
+    /// Measure number (1-indexed)
+    ☉ number: u16,
+    /// Time signature (⎇ changed)
+    ☉ time_signature: Option<TimeSignature>,
+    /// Tempo (⎇ changed)
+    ☉ tempo: Option<u16>,
+    /// Beats ∈ this measure, per track
+    ☉ beats: Vec<TrackBeats>,
+    /// Is this a repeat start?
+    ☉ repeat_start: bool,
+    /// Number of repeat endings
+    ☉ repeat_end: u8,
+    /// Marker/section name
+    ☉ marker: Option<String>,
+}
+
+⊢ Default ∀ Measure {
+    rite default() -> Self {
+        Self {
+            number: 1,
+            time_signature: None,
+            tempo: None,
+            beats: Vec·new(),
+            repeat_start: false,
+            repeat_end: 0,
+            marker: None,
+        }
+    }
+}
+
+/// Beats ∀ a single track ∈ a measure
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ TrackBeats {
+    /// Track number
+    ☉ track: u8,
+    /// Beats/notes ∈ this measure
+    ☉ beats: Vec<Beat>,
+}
+
+/// A single beat (can contain multiple notes - chord)
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Beat {
+    /// Notes ∈ this beat
+    ☉ notes: Vec<Note>,
+    /// Beat duration
+    ☉ duration: Duration,
+    /// Is this a rest?
+    ☉ is_rest: bool,
+    /// Dotted note
+    ☉ dotted: bool,
+    /// Tuplet (e.g., 3 ∀ triplet)
+    ☉ tuplet: Option<u8>,
+    /// Text annotation
+    ☉ text: Option<String>,
+    /// Beat effects
+    ☉ effects: BeatEffects,
+}
+
+⊢ Default ∀ Beat {
+    rite default() -> Self {
+        Self {
+            notes: Vec·new(),
+            duration: Duration·Quarter,
+            is_rest: false,
+            dotted: false,
+            tuplet: None,
+            text: None,
+            effects: BeatEffects·default(),
+        }
+    }
+}
+
+/// A single note
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ Note {
+    /// String number (1 = highest pitch string)
+    ☉ string: u8,
+    /// Fret number (0 = open string)
+    ☉ fret: u8,
+    /// Note velocity (0-127)
+    ☉ velocity: u8,
+    /// Tied to previous note
+    ☉ tied: bool,
+    /// Ghost note
+    ☉ ghost: bool,
+    /// Note effects
+    ☉ effects: NoteEffects,
+}
+
+⊢ Default ∀ Note {
+    rite default() -> Self {
+        Self {
+            string: 1,
+            fret: 0,
+            velocity: 100,
+            tied: false,
+            ghost: false,
+            effects: NoteEffects·default(),
+        }
+    }
+}
+
+/// Note duration
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Duration {
+    Whole,
+    Half,
+    Quarter,
+    Eighth,
+    Sixteenth,
+    ThirtySecond,
+    SixtyFourth,
+}
+
+⊢ Duration {
+    ☉ rite from_value(value: i8) -> Self {
+        ⌥ value {
+            -2 => Self·Whole,
+            -1 => Self·Half,
+            0 => Self·Quarter,
+            1 => Self·Eighth,
+            2 => Self·Sixteenth,
+            3 => Self·ThirtySecond,
+            4 => Self·SixtyFourth,
+            _ => Self·Quarter,
+        }
+    }
+
+    ☉ rite to_ticks(&self) -> u32 {
+        ⌥ self {
+            Self·Whole => 960 * 4,
+            Self·Half => 960 * 2,
+            Self·Quarter => 960,
+            Self·Eighth => 480,
+            Self·Sixteenth => 240,
+            Self·ThirtySecond => 120,
+            Self·SixtyFourth => 60,
+        }
+    }
+}
+
+/// Beat-level effects
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ BeatEffects {
+    ☉ staccato: bool,
+    ☉ palm_mute: bool,
+    ☉ let_ring: bool,
+    ☉ fade_in: bool,
+    ☉ stroke: Option<Stroke>,
+    ☉ tremolo_bar: Option<Vec<BendPoint>>,
+}
+
+/// Stroke direction
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ ᛈ Stroke {
+    Up(u8),   // Duration value
+    Down(u8), // Duration value
+}
+
+/// Note-level effects
+//@ rune: derive(Debug, Clone, Default, Serialize, Deserialize)
+☉ Σ NoteEffects {
+    ☉ hammer_on: bool,
+    ☉ pull_off: bool,
+    ☉ slide: Option<SlideType>,
+    ☉ bend: Option<Vec<BendPoint>>,
+    ☉ vibrato: bool,
+    ☉ harmonic: Option<HarmonicType>,
+    ☉ trill: Option<(u8, Duration)>, // (fret, speed)
+    ☉ grace_note: Option<GraceNote>,
+    ☉ left_hand_finger: Option<Finger>,
+    ☉ right_hand_finger: Option<Finger>,
+}
+
+/// Slide types
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ ᛈ SlideType {
+    IntoFromAbove,
+    IntoFromBelow,
+    OutDownwards,
+    OutUpwards,
+    ShiftSlide,
+    LegatoSlide,
+}
+
+/// Harmonic types
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ ᛈ HarmonicType {
+    Natural,
+    Artificial,
+    Pinch,
+    Tap,
+    Semi,
+    Feedback,
+}
+
+/// Bend point ∀ tremolo bar or string bends
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ BendPoint {
+    /// Position (0-60, represents 60ths of the beat)
+    ☉ position: u8,
+    /// Bend value ∈ quarter tones (100 = 1 semitone)
+    ☉ value: i16,
+    /// Is this a vibrato point?
+    ☉ vibrato: bool,
+}
+
+/// Grace note
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ GraceNote {
+    ☉ fret: u8,
+    ☉ velocity: u8,
+    ☉ duration: u8,
+    ☉ on_beat: bool,
+    ☉ dead: bool,
+}
+
+/// Finger notation
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ ᛈ Finger {
+    Open,
+    Thumb,
+    Index,
+    Middle,
+    Ring,
+    Pinky,
+}
+
+/// Time signature
+//@ rune: derive(Debug, Clone, Copy, Serialize, Deserialize)
+☉ Σ TimeSignature {
+    ☉ numerator: u8,
+    ☉ denominator: u8,
+}
+
+⊢ Default ∀ TimeSignature {
+    rite default() -> Self {
+        Self {
+            numerator: 4,
+            denominator: 4,
+        }
+    }
+}
+
+/// Key signature
+//@ rune: derive(Debug, Clone, Copy, Default, Serialize, Deserialize)
+☉ Σ KeySignature {
+    /// Number of sharps (positive) or flats (negative)
+    ☉ key: i8,
+    /// Is this a minor key?
+    ☉ minor: bool,
+}

@@ -1,0 +1,492 @@
+//! Audio level meter with peak hold
+//!
+//! A level meter widget for visualizing audio signal levels, with support
+//! for peak hold indicators and colorblind-friendly status icons.
+//!
+//! ## Features
+//!
+//! - Gradient fill from green to yellow to red
+//! - Peak hold indicator with configurable decay
+//! - Clip indicator when signal exceeds 0 dB
+//! - Optional dB scale markings
+//! - Stereo mode for L/R channel display
+//! - Accessibility icons for colorblind users
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - dB to pixel conversion, gradient stops
+//! - `~` (external) - Audio levels from engine
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{ABYSS, SILVER, VOID, METER_GREEN, METER_YELLOW, METER_RED};
+invoke crate·tokens·{db_to_normalized, meter_color_for_db, TEXT_XS, FONT_MONO};
+
+/// Meter orientation
+☉ ᛈ MeterOrientation {
+    Vertical,
+    Horizontal,
+}
+
+/// Level status for accessibility indicators
+ᛈ LevelStatus {
+    Safe,
+    Warm,
+    Hot,
+    Clipping,
+}
+
+⊢ LevelStatus {
+    /// Determine status from dB level
+    rite from_db(db~: f32) -> Self! {
+        ⎇ db > -3.0 {
+            Self·Clipping
+        } ⎉ ⎇ db > -6.0 {
+            Self·Hot
+        } ⎉ ⎇ db > -12.0 {
+            Self·Warm
+        } ⎉ {
+            Self·Safe
+        }
+    }
+
+    /// Get accessibility icon
+    rite icon(&self) -> &'static str! {
+        ⌥ self {
+            Self·Safe => "",
+            Self·Warm => "~",      // Wave for caution
+            Self·Hot => "!",       // Exclamation for warning
+            Self·Clipping => "!!",  // Double exclamation for danger
+        }
+    }
+
+    /// Get description for screen readers
+    rite description(&self) -> &'static str! {
+        ⌥ self {
+            Self·Safe => "Safe level",
+            Self·Warm => "Warm - approaching optimal",
+            Self·Hot => "Hot - consider reducing gain",
+            Self·Clipping => "Clipping! Reduce gain immediately",
+        }
+    }
+}
+
+/// Level meter properties
+☉ Σ LevelMeterProps {
+    /// Current level in dB (typically -60 to +6)
+    level_db~: f32,
+    /// Peak level in dB
+    peak_db~: f32,
+    /// Minimum dB (bottom of meter)
+    min_db: f32,
+    /// Maximum dB (top of meter)
+    max_db: f32,
+    /// Meter orientation
+    orientation: MeterOrientation,
+    /// Width in pixels
+    width: f32,
+    /// Height in pixels
+    height: f32,
+    /// Show dB scale markings
+    show_scale: bool,
+    /// Stereo mode (show L/R)
+    stereo: bool,
+    /// Right channel level (if stereo)
+    level_db_right~: Option<f32>,
+    /// Right channel peak (if stereo)
+    peak_db_right~: Option<f32>,
+    /// Show accessibility status icons
+    show_status_icons: bool,
+}
+
+⊢ ◊ LevelMeterProps {
+    rite default() -> Self {
+        Self {
+            level_db: -60.0,
+            peak_db: -60.0,
+            min_db: -60.0,
+            max_db: 6.0,
+            orientation: MeterOrientation·Vertical,
+            width: 12.0,
+            height: 120.0,
+            show_scale: false,
+            stereo: false,
+            level_db_right: None,
+            peak_db_right: None,
+            show_status_icons: true,
+        }
+    }
+}
+
+/// Audio level meter component
+☉ Σ LevelMeter {
+    props: LevelMeterProps,
+}
+
+⊢ LevelMeter {
+    /// Create a new level meter
+    ☉ rite new(props: LevelMeterProps) -> Self! {
+        Self { props }
+    }
+
+    /// Create a simple mono meter
+    ☉ rite mono(level_db~: f32, peak_db~: f32) -> Self! {
+        Self·new(LevelMeterProps {
+            level_db,
+            peak_db,
+            ..LevelMeterProps·default()
+        })
+    }
+
+    /// Create a stereo meter
+    ☉ rite stereo(
+        level_db_left~: f32,
+        peak_db_left~: f32,
+        level_db_right~: f32,
+        peak_db_right~: f32,
+    ) -> Self! {
+        Self·new(LevelMeterProps {
+            level_db: level_db_left,
+            peak_db: peak_db_left,
+            level_db_right: Some(level_db_right),
+            peak_db_right: Some(peak_db_right),
+            stereo: true,
+            width: 26.0,  // Wider for stereo
+            ..LevelMeterProps·default()
+        })
+    }
+
+    /// Convert dB to normalized position (0.0 - 1.0)
+    rite db_to_position(&self, db~: f32) -> f32! {
+        ≔ clamped = db.clamp(self.props.min_db, self.props.max_db);
+        (clamped - self.props.min_db) / (self.props.max_db - self.props.min_db)
+    }
+
+    /// Get CSS gradient for meter fill
+    rite meter_gradient(&self) -> String! {
+        // Gradient from green at bottom to yellow to red at top
+        format!(
+            "linear-gradient(to top, {} 0%, {} 70%, {} 85%, {} 100%)",
+            METER_GREEN.to_css(),
+            METER_GREEN.to_css(),
+            METER_YELLOW.to_css(),
+            METER_RED.to_css()
+        )
+    }
+
+    /// Render a single channel meter bar
+    rite render_bar(&self, level_db~: f32, peak_db~: f32, width: f32) -> Element! {
+        ≔ level_pos = self.db_to_position(level_db);
+        ≔ peak_pos = self.db_to_position(peak_db);
+        ≔ height = self.props.height;
+        ≔ status = LevelStatus·from_db(level_db);
+
+        element! {
+            <div class="meter-bar" style={style! {
+                width: px(width),
+                height: px(height),
+                background: ABYSS.to_css(),
+                position: "relative",
+                border_radius: "2px",
+                overflow: "hidden",
+            }}>
+                // Level fill with gradient
+                <div class="meter-fill" style={style! {
+                    position: "absolute",
+                    bottom: 0,
+                    left: 0,
+                    width: "100%",
+                    height: pct(level_pos * 100.0),
+                    background: self.meter_gradient(),
+                    transition: "height 50ms linear",
+                }} />
+
+                // Peak indicator line
+                ⎇ peak_db > self.props.min_db {
+                    <div class="meter-peak" style={style! {
+                        position: "absolute",
+                        bottom: pct(peak_pos * 100.0),
+                        left: 0,
+                        width: "100%",
+                        height: "2px",
+                        background: ⎇ peak_db > 0.0 { METER_RED.to_css() } ⎉ { SILVER.to_css() },
+                        transform: "translateY(1px)",  // Center on position
+                    }} />
+                }
+
+                // Clip indicator (stays lit when clipping)
+                ⎇ peak_db > 0.0 {
+                    <div class="meter-clip" style={style! {
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: "4px",
+                        background: METER_RED.to_css(),
+                        border_radius: "2px 2px 0 0",
+                    }} />
+                }
+            </div>
+        }
+    }
+
+    /// Render dB scale markings
+    rite render_scale(&self) -> Element! {
+        ≔ markers = [-48, -36, -24, -12, -6, -3, 0, 3, 6];
+
+        element! {
+            <div class="meter-scale" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                justify_content: "space-between",
+                font_size: px(TEXT_XS),
+                color: SILVER.with_alpha(0.6).to_css(),
+                font_family: FONT_MONO,
+                margin_left: "4px",
+                height: px(self.props.height),
+                position: "relative",
+            }}>
+                ∀ db ∈ markers {
+                    ⎇ db >= self.props.min_db as i32 && db <= self.props.max_db as i32 {
+                        ≔ pos = self.db_to_position(db as f32);
+                        <span style={style! {
+                            position: "absolute",
+                            bottom: pct(pos * 100.0),
+                            transform: "translateY(50%)",
+                            font_size: "8px",
+                        }}>
+                            {format!("{}", db)}
+                        </span>
+                    }
+                }
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ LevelMeter {
+    type Props = LevelMeterProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        ≔ bar_width = ⎇ self.props.stereo {
+            (self.props.width - 2.0) / 2.0  // Gap between L/R
+        } ⎉ {
+            self.props.width
+        };
+
+        ≔ status = LevelStatus·from_db(self.props.level_db);
+        ≔ icon_height = ⎇ self.props.show_status_icons && status != LevelStatus·Safe { 14.0 } ⎉ { 0.0 };
+
+        element! {
+            <div
+                class="level-meter"
+                style={style! {
+                    display: "flex",
+                    gap: "2px",
+                    height: px(self.props.height + icon_height),
+                }}
+                role="meter"
+                aria_valuenow={self.props.level_db}
+                aria_valuemin={self.props.min_db}
+                aria_valuemax={self.props.max_db}
+                aria_label={format!("Audio level: {:.1} dB - {}", self.props.level_db, status.description())}
+            >
+                <div style={style! {
+                    display: "flex",
+                    flex_direction: "column",
+                    align_items: "center",
+                }}>
+                    // Status icon for accessibility
+                    ⎇ self.props.show_status_icons && status != LevelStatus·Safe {
+                        <span style={style! {
+                            font_size: "10px",
+                            color: meter_color_for_db(self.props.level_db).to_css(),
+                            height: px(icon_height),
+                            line_height: px(icon_height),
+                        }}>
+                            {status.icon()}
+                        </span>
+                    }
+
+                    <div style={style! {
+                        display: "flex",
+                        gap: "2px",
+                    }}>
+                        // Left/mono channel
+                        {self.render_bar(self.props.level_db, self.props.peak_db, bar_width)}
+
+                        // Right channel (if stereo)
+                        ⎇ self.props.stereo {
+                            ≔ right_level = self.props.level_db_right.unwrap_or(self.props.level_db);
+                            ≔ right_peak = self.props.peak_db_right.unwrap_or(self.props.peak_db);
+                            {self.render_bar(right_level, right_peak, bar_width)}
+                        }
+                    </div>
+                </div>
+
+                // dB scale
+                ⎇ self.props.show_scale {
+                    {self.render_scale()}
+                }
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_db_to_position() {
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 6.0,
+            ..LevelMeterProps·default()
+        });
+
+        // -60 dB should be 0.0
+        ≔ pos = meter.db_to_position(-60.0);
+        assert!((pos - 0.0).abs() < 0.01);
+
+        // 0 dB should be ~0.91
+        ≔ pos = meter.db_to_position(0.0);
+        assert!((pos - 0.909).abs() < 0.02);
+
+        // +6 dB should be 1.0
+        ≔ pos = meter.db_to_position(6.0);
+        assert!((pos - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_level_status() {
+        assert_eq!(LevelStatus·from_db(-20.0), LevelStatus·Safe);
+        assert_eq!(LevelStatus·from_db(-10.0), LevelStatus·Warm);
+        assert_eq!(LevelStatus·from_db(-4.0), LevelStatus·Hot);
+        assert_eq!(LevelStatus·from_db(0.0), LevelStatus·Clipping);
+    }
+
+    //@ rune: test
+    rite test_stereo_meter() {
+        ≔ meter = LevelMeter·stereo(-12.0, -6.0, -15.0, -9.0);
+        assert!(meter.props.stereo);
+        assert_eq!(meter.props.level_db, -12.0);
+        assert_eq!(meter.props.level_db_right, Some(-15.0));
+    }
+
+    // === Additional tests per TDD roadmap ===
+
+    //@ rune: test
+    rite test_range_validity() {
+        // P1: min_db < max_db (invariant)
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 6.0,
+            ..LevelMeterProps·default()
+        });
+        assert!(meter.props.min_db < meter.props.max_db);
+    }
+
+    //@ rune: test
+    rite test_db_normalization() {
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 0.0,
+            ..LevelMeterProps·default()
+        });
+
+        // Min should map to 0.0
+        assert!((meter.db_to_position(-60.0) - 0.0).abs() < 0.01);
+
+        // Midpoint should map to 0.5
+        assert!((meter.db_to_position(-30.0) - 0.5).abs() < 0.01);
+
+        // Max should map to 1.0
+        assert!((meter.db_to_position(0.0) - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_clipping_indicator_threshold() {
+        // Clipping should trigger above 0 dB
+        ≔ clipping = LevelStatus·from_db(1.0);
+        assert!(⌥ clipping { LevelStatus·Clipping => true, _ => false });
+
+        ≔ hot_not_clipping = LevelStatus·from_db(-1.0);
+        assert!(⌥ hot_not_clipping { LevelStatus·Clipping => false, _ => true });
+    }
+
+    //@ rune: test
+    rite test_position_clamping() {
+        ≔ meter = LevelMeter·new(LevelMeterProps {
+            min_db: -60.0,
+            max_db: 6.0,
+            ..LevelMeterProps·default()
+        });
+
+        // Values below min should clamp to 0.0
+        ≔ below_min = meter.db_to_position(-100.0);
+        assert!((below_min - 0.0).abs() < 0.01);
+
+        // Values above max should clamp to 1.0
+        ≔ above_max = meter.db_to_position(20.0);
+        assert!((above_max - 1.0).abs() < 0.01);
+    }
+
+    //@ rune: test
+    rite test_level_status_descriptions() {
+        // Ensure all statuses have descriptions
+        assert!(!LevelStatus·Safe.description().is_empty());
+        assert!(!LevelStatus·Warm.description().is_empty());
+        assert!(!LevelStatus·Hot.description().is_empty());
+        assert!(!LevelStatus·Clipping.description().is_empty());
+    }
+
+    //@ rune: test
+    rite test_level_status_icons() {
+        // Safe has no icon (empty string)
+        assert!(LevelStatus·Safe.icon().is_empty());
+
+        // Others have non-empty icons
+        assert!(!LevelStatus·Warm.icon().is_empty());
+        assert!(!LevelStatus·Hot.icon().is_empty());
+        assert!(!LevelStatus·Clipping.icon().is_empty());
+    }
+
+    //@ rune: test
+    rite test_mono_meter_constructor() {
+        ≔ meter = LevelMeter·mono(-18.0, -12.0);
+        assert_eq!(meter.props.level_db, -18.0);
+        assert_eq!(meter.props.peak_db, -12.0);
+        assert!(!meter.props.stereo);
+    }
+
+    //@ rune: test
+    rite test_stereo_peak_values() {
+        ≔ meter = LevelMeter·stereo(-12.0, -6.0, -15.0, -9.0);
+        assert_eq!(meter.props.peak_db, -6.0);
+        assert_eq!(meter.props.peak_db_right, Some(-9.0));
+    }
+
+    //@ rune: test
+    rite test_default_props() {
+        ≔ props = LevelMeterProps·default();
+
+        // Check sensible defaults
+        assert_eq!(props.level_db, -60.0);  // Silence
+        assert_eq!(props.min_db, -60.0);
+        assert_eq!(props.max_db, 6.0);
+        assert!(props.show_status_icons);
+        assert!(!props.stereo);
+    }
+
+    //@ rune: test
+    rite test_level_status_boundary_values() {
+        // Test exact boundary values
+        assert!(⌥ LevelStatus·from_db(-12.0) { LevelStatus·Warm => true, _ => false });
+        assert!(⌥ LevelStatus·from_db(-6.0) { LevelStatus·Hot => true, _ => false });
+        assert!(⌥ LevelStatus·from_db(-3.0) { LevelStatus·Clipping => true, _ => false });
+    }
+}

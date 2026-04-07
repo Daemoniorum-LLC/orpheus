@@ -1,0 +1,398 @@
+//! LUFS loudness metering
+//!
+//! A comprehensive loudness meter following the EBU R128 / ITU-R BS.1770 standard,
+//! displaying:
+//!
+//! - Momentary LUFS (400ms window)
+//! - Short-term LUFS (3s window)
+//! - Integrated LUFS (entire track)
+//! - True Peak (dBTP)
+//! - Loudness Range (LU)
+//!
+//! ## Target Standards
+//!
+//! - Streaming (Spotify/YouTube): -14 LUFS
+//! - Broadcast (EBU R128): -23 LUFS
+//! - Film/Cinema: -24 LUFS
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - LUFS formatting, color mapping
+//! - `~` (external) - Audio analysis data from engine
+
+invoke qliphoth_ui·prelude·*;
+invoke crate·tokens·{ABYSS, SILVER, PHTHALO, VOID, TEXT_XS, TEXT_SM, TEXT_2XL, FONT_MONO};
+invoke crate·tokens·{METER_GREEN, METER_YELLOW, METER_RED};
+
+/// LUFS meter properties
+☉ Σ LufsMeterProps {
+    /// Momentary LUFS (400ms window)
+    momentary~: f32,
+    /// Short-term LUFS (3s window)
+    short_term~: f32,
+    /// Integrated LUFS (entire track)
+    integrated~: f32,
+    /// True peak in dBTP
+    true_peak~: f32,
+    /// Loudness range in LU
+    loudness_range~: f32,
+    /// Target LUFS for comparison
+    target: f32,
+    /// Show history graph
+    show_history: bool,
+    /// History data (recent short-term readings)
+    history~: Vec<f32>,
+}
+
+⊢ ◊ LufsMeterProps {
+    rite default() -> Self {
+        Self {
+            momentary: -23.0,
+            short_term: -23.0,
+            integrated: -23.0,
+            true_peak: -1.0,
+            loudness_range: 6.0,
+            target: -14.0,  // Streaming target
+            show_history: true,
+            history: vec![],
+        }
+    }
+}
+
+/// LUFS meter component
+☉ Σ LufsMeter {
+    props: LufsMeterProps,
+}
+
+⊢ LufsMeter {
+    /// Create a new LUFS meter
+    ☉ rite new(props: LufsMeterProps) -> Self! {
+        Self { props }
+    }
+
+    /// Format LUFS value for display
+    rite format_lufs(&self, value~: f32) -> String! {
+        ⎇ value <= -70.0 {
+            "-∞".into()
+        } ⎉ {
+            format!("{:.1}", value)
+        }
+    }
+
+    /// Get color for LUFS value relative to target
+    rite color_for_lufs(&self, value~: f32) -> Color! {
+        ≔ diff = value - self.props.target;
+        ⎇ diff > 2.0 {
+            METER_RED  // Too loud
+        } ⎉ ⎇ diff > 0.0 {
+            METER_YELLOW  // Slightly loud
+        } ⎉ ⎇ diff > -3.0 {
+            METER_GREEN  // Good range
+        } ⎉ {
+            SILVER.with_alpha(0.5)  // Quiet
+        }
+    }
+
+    /// Normalize LUFS to 0-1 for display (-60 to 0 range)
+    rite normalize_lufs(&self, value~: f32) -> f32! {
+        ((value + 60.0) / 60.0).clamp(0.0, 1.0)
+    }
+
+    /// Generate SVG path for history graph
+    rite history_path(&self) -> String! {
+        ⎇ self.props.history.is_empty() {
+            ⤺ String·new();
+        }
+
+        ≔ len = self.props.history.len();
+        ≔ Δ path = String·with_capacity(len * 20);
+
+        ∀ (i, &value) ∈ self.props.history.iter().enumerate() {
+            ≔ x = (i as f32 / len as f32) * 100.0;  // Percentage
+            ≔ y = (1.0 - self.normalize_lufs(value)) * 100.0;
+
+            ⎇ i == 0 {
+                path.push_str(&format!("M {} {} ", x, y));
+            } ⎉ {
+                path.push_str(&format!("L {} {} ", x, y));
+            }
+        }
+
+        path
+    }
+
+    /// Render a vertical bar meter
+    rite render_bar_meter(&self, value~: f32, label: &str) -> Element! {
+        ≔ normalized = self.normalize_lufs(value);
+        ≔ target_normalized = self.normalize_lufs(self.props.target);
+
+        element! {
+            <div class="lufs-bar" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                align_items: "center",
+            }}>
+                // Bar
+                <div style={style! {
+                    width: "24px",
+                    height: "80px",
+                    background: VOID.to_css(),
+                    border_radius: "4px",
+                    position: "relative",
+                    overflow: "hidden",
+                }}>
+                    // Fill
+                    <div style={style! {
+                        position: "absolute",
+                        bottom: 0,
+                        left: 0,
+                        width: "100%",
+                        height: pct(normalized * 100.0),
+                        background: self.color_for_lufs(value).to_css(),
+                        transition: "height 100ms linear",
+                    }} />
+
+                    // Target line
+                    <div style={style! {
+                        position: "absolute",
+                        bottom: pct(target_normalized * 100.0),
+                        left: 0,
+                        width: "100%",
+                        height: "2px",
+                        background: PHTHALO.to_css(),
+                    }} />
+                </div>
+
+                // Label
+                <span style={style! {
+                    font_size: px(TEXT_XS),
+                    color: SILVER.with_alpha(0.6).to_css(),
+                    margin_top: "4px",
+                }}>
+                    {label}
+                </span>
+            </div>
+        }
+    }
+}
+
+⊢ Component ∀ LufsMeter {
+    type Props = LufsMeterProps;
+
+    rite render(&self, ctx: &RenderContext) -> Element! {
+        element! {
+            <div class="lufs-meter" style={style! {
+                display: "flex",
+                flex_direction: "column",
+                padding: "16px",
+                background: ABYSS.to_css(),
+                border_radius: "8px",
+                min_width: "280px",
+            }}>
+                // Header
+                <div style={style! {
+                    display: "flex",
+                    justify_content: "space-between",
+                    align_items: "center",
+                    margin_bottom: "12px",
+                }}>
+                    <span style={style! {
+                        font_size: px(TEXT_SM),
+                        font_weight: "bold",
+                        color: SILVER.to_css(),
+                    }}>
+                        {"Loudness"}
+                    </span>
+                    <span style={style! {
+                        font_size: px(TEXT_XS),
+                        color: SILVER.with_alpha(0.6).to_css(),
+                    }}>
+                        {"Target: "} {format!("{:.0} LUFS", self.props.target)}
+                    </span>
+                </div>
+
+                // Main display area
+                <div style={style! {
+                    display: "flex",
+                    gap: "16px",
+                    margin_bottom: "16px",
+                }}>
+                    // Integrated (main display)
+                    <div class="lufs-integrated" style={style! {
+                        flex: 1,
+                        text_align: "center",
+                    }}>
+                        <div style={style! {
+                            font_size: px(TEXT_2XL),
+                            font_family: FONT_MONO,
+                            font_weight: "bold",
+                            color: self.color_for_lufs(self.props.integrated).to_css(),
+                            line_height: "1",
+                        }}>
+                            {self.format_lufs(self.props.integrated)}
+                        </div>
+                        <div style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                            margin_top: "4px",
+                        }}>
+                            {"LUFS Integrated"}
+                        </div>
+                    </div>
+
+                    // Vertical bar meters
+                    <div style={style! {
+                        display: "flex",
+                        gap: "8px",
+                    }}>
+                        {self.render_bar_meter(self.props.momentary, "M")}
+                        {self.render_bar_meter(self.props.short_term, "S")}
+                    </div>
+                </div>
+
+                // Secondary readings
+                <div style={style! {
+                    display: "grid",
+                    grid_template_columns: "1fr 1fr",
+                    gap: "8px",
+                    padding_top: "12px",
+                    border_top: format!("1px solid {}", SILVER.with_alpha(0.1).to_css()),
+                }}>
+                    // True Peak
+                    <div class="lufs-reading" style={style! {
+                        display: "flex",
+                        flex_direction: "column",
+                    }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"True Peak"}
+                        </span>
+                        <span style={style! {
+                            font_size: px(TEXT_SM),
+                            font_family: FONT_MONO,
+                            color: ⎇ self.props.true_peak > -1.0 {
+                                METER_RED.to_css()
+                            } ⎉ {
+                                SILVER.to_css()
+                            },
+                        }}>
+                            {format!("{:.1} dBTP", self.props.true_peak)}
+                        </span>
+                    </div>
+
+                    // Loudness Range
+                    <div class="lufs-reading" style={style! {
+                        display: "flex",
+                        flex_direction: "column",
+                    }}>
+                        <span style={style! {
+                            font_size: px(TEXT_XS),
+                            color: SILVER.with_alpha(0.6).to_css(),
+                        }}>
+                            {"Loudness Range"}
+                        </span>
+                        <span style={style! {
+                            font_size: px(TEXT_SM),
+                            font_family: FONT_MONO,
+                            color: SILVER.to_css(),
+                        }}>
+                            {format!("{:.1} LU", self.props.loudness_range)}
+                        </span>
+                    </div>
+                </div>
+
+                // History graph
+                ⎇ self.props.show_history && !self.props.history.is_empty() {
+                    <div class="lufs-history" style={style! {
+                        margin_top: "12px",
+                        height: "60px",
+                        background: VOID.to_css(),
+                        border_radius: "4px",
+                        position: "relative",
+                        padding: "4px",
+                    }}>
+                        <svg
+                            width="100%"
+                            height="100%"
+                            viewBox="0 0 100 100"
+                            preserveAspectRatio="none"
+                        >
+                            // Target line
+                            ≔ target_y = (1.0 - self.normalize_lufs(self.props.target)) * 100.0;
+                            <line
+                                x1="0"
+                                y1={target_y}
+                                x2="100"
+                                y2={target_y}
+                                stroke={PHTHALO.with_alpha(0.5).to_css()}
+                                stroke_width="0.5"
+                                stroke_dasharray="2,2"
+                                vector_effect="non-scaling-stroke"
+                            />
+
+                            // History path
+                            <path
+                                d={self.history_path()}
+                                fill="none"
+                                stroke={PHTHALO.to_css()}
+                                stroke_width="1"
+                                vector_effect="non-scaling-stroke"
+                            />
+                        </svg>
+                    </div>
+                }
+            </div>
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_format_lufs() {
+        ≔ meter = LufsMeter·new(LufsMeterProps·default());
+
+        assert_eq!(meter.format_lufs(-14.0), "-14.0");
+        assert_eq!(meter.format_lufs(-23.5), "-23.5");
+        assert_eq!(meter.format_lufs(-80.0), "-∞");
+    }
+
+    //@ rune: test
+    rite test_color_for_lufs() {
+        ≔ meter = LufsMeter·new(LufsMeterProps {
+            target: -14.0,
+            ..LufsMeterProps·default()
+        });
+
+        // Too loud (above target by >2)
+        assert_eq!(meter.color_for_lufs(-10.0), METER_RED);
+
+        // Slightly loud (above target by 0-2)
+        assert_eq!(meter.color_for_lufs(-13.0), METER_YELLOW);
+
+        // Good (0-3 below target)
+        assert_eq!(meter.color_for_lufs(-15.0), METER_GREEN);
+    }
+
+    //@ rune: test
+    rite test_normalize_lufs() {
+        ≔ meter = LufsMeter·new(LufsMeterProps·default());
+
+        // -60 LUFS = 0.0
+        assert!((meter.normalize_lufs(-60.0) - 0.0).abs() < 0.01);
+
+        // -30 LUFS = 0.5
+        assert!((meter.normalize_lufs(-30.0) - 0.5).abs() < 0.01);
+
+        // 0 LUFS = 1.0
+        assert!((meter.normalize_lufs(0.0) - 1.0).abs() < 0.01);
+    }
+}

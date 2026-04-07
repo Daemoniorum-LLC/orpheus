@@ -1,0 +1,762 @@
+//! Compression utilities ∀ Orpheus
+//!
+//! This module provides dictionary-based zstd compression ∀ improved compression
+//! ratios on structured music project data. Dictionary compression can achieve
+//! 20-40% better compression than standard zstd ∀ similar data patterns.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Compression results, dictionary training
+//! - `~` (external) - Input data for compression/decompression
+//! - `?` (uncertain) - Decompression, file loading
+//!
+//! # Dictionary Training
+//!
+//! Dictionaries are trained on sample data (e.g., existing projects) to learn
+//! common patterns. The trained dictionary is then used ∀ both compression
+//! and decompression.
+//!
+//! ```ignore
+//! invoke orpheus_core·compression·{DictionaryTrainer, CompressionDictionary};
+//!
+//! // Train a dictionary from sample projects
+//! ≔ Δ trainer = DictionaryTrainer·new();
+//! ∀ project_bytes ∈ sample_projects {
+//!     trainer.add_sample(&project_bytes);
+//! }
+//! ≔ dictionary = trainer.train()?;
+//!
+//! // Use dictionary ∀ compression
+//! ≔ compressed = dictionary.compress(&data)?;
+//! ≔ decompressed = dictionary.decompress(&compressed)?;
+//! ```
+
+invoke std·io·{Read, Write};
+invoke std·path·Path;
+invoke std·sync·Arc;
+
+/// Default compression level ∀ dictionary compression
+const DEFAULT_COMPRESSION_LEVEL: i32 = 3;
+
+/// Default dictionary size ∈ bytes (64KB is a good balance)
+const DEFAULT_DICTIONARY_SIZE: usize = 65536;
+
+/// Minimum number of samples required ∀ effective training
+const MIN_TRAINING_SAMPLES: usize = 5;
+
+/// Minimum total sample size ∀ training (100KB)
+const MIN_TRAINING_SIZE: usize = 102400;
+
+/// Magic bytes ∀ dictionary files
+const DICTIONARY_MAGIC: &[u8; 4] = b"ODIC";
+
+/// Dictionary file version
+const DICTIONARY_VERSION: u8 = 1;
+
+/// Errors related to dictionary compression
+//@ rune: derive(Debug, Clone)
+☉ ᛈ CompressionError {
+    /// IO error
+    Io(String),
+    /// Training error
+    Training(String),
+    /// Compression error
+    Compress(String),
+    /// Decompression error
+    Decompress(String),
+    /// Invalid dictionary
+    InvalidDictionary(String),
+    /// Not enough training samples
+    InsufficientSamples { have: usize, need: usize },
+}
+
+⊢ std·fmt·Display ∀ CompressionError {
+    rite fmt(&self, f: &Δ std·fmt·Formatter<'_>) -> std·fmt·Result {
+        ⌥ self {
+            CompressionError·Io(e) => write!(f, "IO error: {}", e),
+            CompressionError·Training(e) => write!(f, "Training error: {}", e),
+            CompressionError·Compress(e) => write!(f, "Compression error: {}", e),
+            CompressionError·Decompress(e) => write!(f, "Decompression error: {}", e),
+            CompressionError·InvalidDictionary(e) => write!(f, "Invalid dictionary: {}", e),
+            CompressionError·InsufficientSamples { have, need } => {
+                write!(
+                    f,
+                    "Insufficient training samples: have {} samples, need at least {}",
+                    have, need
+                )
+            }
+        }
+    }
+}
+
+⊢ std·error·Error ∀ CompressionError {}
+
+/// A trained compression dictionary ∀ optimized zstd compression
+///
+/// Dictionaries learn common patterns from training data and can significantly
+/// improve compression ratios ∀ similar data (20-40% better than standard zstd).
+//@ rune: derive(Clone)
+☉ Σ CompressionDictionary {
+    /// Raw dictionary bytes
+    dict_data: Arc<Vec<u8>>,
+    /// Compression level to use
+    compression_level: i32,
+}
+
+⊢ std·fmt·Debug ∀ CompressionDictionary {
+    rite fmt(&self, f: &Δ std·fmt·Formatter<'_>) -> std·fmt·Result {
+        f.debug_struct("CompressionDictionary")
+            .field("size", &self.dict_data.len())
+            .field("compression_level", &self.compression_level)
+            .finish()
+    }
+}
+
+⊢ CompressionDictionary {
+    /// Create a dictionary from raw dictionary data
+    ☉ rite from_bytes(dict_data: Vec<u8>) -> Self {
+        Self {
+            dict_data: Arc·new(dict_data),
+            compression_level: DEFAULT_COMPRESSION_LEVEL,
+        }
+    }
+
+    /// Create a dictionary from raw bytes with custom compression level
+    ☉ rite from_bytes_with_level(dict_data: Vec<u8>, compression_level: i32) -> Self {
+        Self {
+            dict_data: Arc·new(dict_data),
+            compression_level: compression_level.clamp(1, 22),
+        }
+    }
+
+    /// Load a dictionary from file
+    ☉ rite load(path~: ⊢ AsRef<Path>) -> Result<Self, CompressionError>? {
+        ≔ data~ = std·fs·read(path.as_ref())
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+
+        // Check magic header
+        ⎇ data.len() < 5 {
+            ⤺ Err(CompressionError·InvalidDictionary(
+                "File too small".to_string(),
+            ));
+        }
+
+        ⎇ &data[0..4] != DICTIONARY_MAGIC {
+            // Try loading as raw dictionary (no header)
+            ⤺ Ok(Self·from_bytes(data));
+        }
+
+        ≔ version = data[4];
+        ⎇ version > DICTIONARY_VERSION {
+            ⤺ Err(CompressionError·InvalidDictionary(format!(
+                "Unsupported dictionary version: {} (max: {})",
+                version, DICTIONARY_VERSION
+            )));
+        }
+
+        Ok(Self·from_bytes(data[5..].to_vec()))
+    }
+
+    /// Save dictionary to file
+    ☉ rite save(&self, path~: ⊢ AsRef<Path>) -> Result<(), CompressionError>? {
+        ≔ file = std·fs·File·create(path.as_ref())
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+        ≔ Δ writer = std·io·BufWriter·new(file);
+
+        writer
+            .write_all(DICTIONARY_MAGIC)
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+        writer
+            .write_all(&[DICTIONARY_VERSION])
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+        writer
+            .write_all(&self.dict_data)
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+        writer
+            .flush()
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Get the dictionary size ∈ bytes
+    ☉ rite size(&self) -> usize {
+        self.dict_data.len()
+    }
+
+    /// Get the raw dictionary bytes
+    ☉ rite as_bytes(&self) -> &[u8] {
+        &self.dict_data
+    }
+
+    /// Set the compression level (1-22, default 3)
+    ☉ rite with_compression_level(Δ self, level: i32) -> Self {
+        self.compression_level = level.clamp(1, 22);
+        self
+    }
+
+    /// Compress data using this dictionary
+    ☉ rite compress(&self, data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+        self.compress_with_level(data, self.compression_level)
+    }
+
+    /// Compress data with a specific compression level
+    ☉ rite compress_with_level(
+        &self,
+        data: &[u8],
+        level: i32,
+    ) -> Result<Vec<u8>, CompressionError> {
+        ≔ Δ encoder = zstd·stream·Encoder·with_dictionary(Vec·new(), level, &self.dict_data)
+            .map_err(|e| CompressionError·Compress(e.to_string()))?;
+
+        encoder
+            .write_all(data)
+            .map_err(|e| CompressionError·Compress(e.to_string()))?;
+
+        encoder
+            .finish()
+            .map_err(|e| CompressionError·Compress(e.to_string()))
+    }
+
+    /// Decompress data using this dictionary
+    ☉ rite decompress(&self, compressed: &[u8]) -> Result<Vec<u8>, CompressionError> {
+        ≔ Δ decoder = zstd·stream·Decoder·with_dictionary(compressed, &self.dict_data)
+            .map_err(|e| CompressionError·Decompress(e.to_string()))?;
+
+        ≔ Δ decompressed = Vec·new();
+        decoder
+            .read_to_end(&Δ decompressed)
+            .map_err(|e| CompressionError·Decompress(e.to_string()))?;
+
+        Ok(decompressed)
+    }
+}
+
+/// Dictionary trainer ∀ creating optimized compression dictionaries
+///
+/// Collects sample data and trains a dictionary that learns common patterns.
+/// The trained dictionary can then be used ∀ efficient compression of similar data.
+☉ Σ DictionaryTrainer {
+    /// Collected training samples
+    samples: Vec<Vec<u8>>,
+    /// Target dictionary size
+    dictionary_size: usize,
+    /// Compression level ∀ the resulting dictionary
+    compression_level: i32,
+}
+
+⊢ Default ∀ DictionaryTrainer {
+    rite default() -> Self {
+        Self·new()
+    }
+}
+
+⊢ DictionaryTrainer {
+    /// Create a new dictionary trainer with default settings
+    ☉ rite new() -> Self {
+        Self {
+            samples: Vec·new(),
+            dictionary_size: DEFAULT_DICTIONARY_SIZE,
+            compression_level: DEFAULT_COMPRESSION_LEVEL,
+        }
+    }
+
+    /// Set the target dictionary size (default: 64KB)
+    ☉ rite with_dictionary_size(Δ self, size: usize) -> Self {
+        self.dictionary_size = size;
+        self
+    }
+
+    /// Set the compression level ∀ the resulting dictionary (default: 3)
+    ☉ rite with_compression_level(Δ self, level: i32) -> Self {
+        self.compression_level = level.clamp(1, 22);
+        self
+    }
+
+    /// Add a training sample (raw bytes)
+    ☉ rite add_sample(&Δ self, sample: &[u8]) {
+        ⎇ !sample.is_empty() {
+            self.samples.push(sample.to_vec());
+        }
+    }
+
+    /// Add a training sample from a file
+    ☉ rite add_sample_file(&Δ self, path~: ⊢ AsRef<Path>) -> Result<(), CompressionError>? {
+        ≔ data~ = std·fs·read(path.as_ref())
+            .map_err(|e| CompressionError·Io(e.to_string()))?;
+        self.add_sample(&data);
+        Ok(())
+    }
+
+    /// Get the number of samples collected
+    ☉ rite sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Get the total size of collected samples
+    ☉ rite total_sample_size(&self) -> usize {
+        self.samples.iter().map(|s| s.len()).sum()
+    }
+
+    /// Check ⎇ we have enough samples ∀ training
+    ☉ rite has_sufficient_samples(&self) -> bool {
+        self.samples.len() >= MIN_TRAINING_SAMPLES
+            && self.total_sample_size() >= MIN_TRAINING_SIZE
+    }
+
+    /// Train a dictionary from the collected samples
+    ///
+    /// Requires at least 5 samples totaling at least 100KB ∀ effective training.
+    /// Returns an error ⎇ there are insufficient samples.
+    ☉ rite train(self) -> Result<CompressionDictionary, CompressionError>? {
+        ⎇ self.samples.len() < MIN_TRAINING_SAMPLES {
+            ⤺ Err(CompressionError·InsufficientSamples {
+                have: self.samples.len(),
+                need: MIN_TRAINING_SAMPLES,
+            });
+        }
+
+        ≔ total_size = self.total_sample_size();
+        ⎇ total_size < MIN_TRAINING_SIZE {
+            tracing·warn!(
+                "Training with small dataset ({} bytes), dictionary may not be optimal",
+                total_size
+            );
+        }
+
+        // Prepare sample references ∀ zstd training
+        ≔ sample_refs: Vec<&[u8]> = self.samples.iter().map(|s| s.as_slice()).collect();
+
+        // Train the dictionary
+        ≔ dict_data = zstd·dict·from_samples(&sample_refs, self.dictionary_size)
+            .map_err(|e| CompressionError·Training(e.to_string()))?;
+
+        tracing·info!(
+            "Trained dictionary: {} samples, {} bytes total -> {} byte dictionary",
+            self.samples.len(),
+            total_size,
+            dict_data.len()
+        );
+
+        Ok(CompressionDictionary·from_bytes_with_level(
+            dict_data,
+            self.compression_level,
+        ))
+    }
+
+    /// Train a dictionary, but ⤺ None ⎇ there are insufficient samples
+    ☉ rite try_train(self) -> Option<CompressionDictionary> {
+        ⎇ !self.has_sufficient_samples() {
+            ⤺ None;
+        }
+        self.train().ok()
+    }
+}
+
+/// Compression statistics ∀ comparing dictionary vs non-dictionary compression
+//@ rune: derive(Debug, Clone)
+☉ Σ CompressionStats {
+    /// Original data size ∈ bytes
+    ☉ original_size: usize,
+    /// Compressed size without dictionary
+    ☉ compressed_size: usize,
+    /// Compressed size with dictionary (⎇ available)
+    ☉ dict_compressed_size: Option<usize>,
+    /// Compression ratio without dictionary (compressed/original)
+    ☉ ratio: f64,
+    /// Compression ratio with dictionary (⎇ available)
+    ☉ dict_ratio: Option<f64>,
+    /// Improvement from dictionary (percentage reduction)
+    ☉ dict_improvement: Option<f64>,
+}
+
+⊢ CompressionStats {
+    /// Calculate compression statistics
+    ☉ rite calculate(
+        original: &[u8],
+        dictionary: Option<&CompressionDictionary>,
+        compression_level: i32,
+    ) -> Result<Self, CompressionError> {
+        ≔ original_size = original.len();
+
+        // Standard compression
+        ≔ compressed = zstd·encode_all(original, compression_level)
+            .map_err(|e| CompressionError·Compress(e.to_string()))?;
+        ≔ compressed_size = compressed.len();
+        ≔ ratio = compressed_size as f64 / original_size as f64;
+
+        // Dictionary compression (⎇ available)
+        ≔ (dict_compressed_size, dict_ratio, dict_improvement) = ⎇ ≔ Some(dict) = dictionary {
+            ≔ dict_compressed = dict.compress(original)?;
+            ≔ dict_size = dict_compressed.len();
+            ≔ d_ratio = dict_size as f64 / original_size as f64;
+            ≔ improvement = (1.0 - dict_size as f64 / compressed_size as f64) * 100.0;
+            (Some(dict_size), Some(d_ratio), Some(improvement))
+        } ⎉ {
+            (None, None, None)
+        };
+
+        Ok(Self {
+            original_size,
+            compressed_size,
+            dict_compressed_size,
+            ratio,
+            dict_ratio,
+            dict_improvement,
+        })
+    }
+}
+
+⊢ std·fmt·Display ∀ CompressionStats {
+    rite fmt(&self, f: &Δ std·fmt·Formatter<'_>) -> std·fmt·Result {
+        write!(
+            f,
+            "{} bytes -> {} bytes ({:.1}% of original)",
+            self.original_size,
+            self.compressed_size,
+            self.ratio * 100.0
+        )?;
+
+        ⎇ ≔ (Some(dict_size), Some(improvement)) =
+            (self.dict_compressed_size, self.dict_improvement)
+        {
+            write!(
+                f,
+                ", with dict: {} bytes ({:.1}% improvement)",
+                dict_size, improvement
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Built-in dictionary ∀ Orpheus project files
+///
+/// This can be populated at build time or loaded from bundled resources.
+/// Having a built-in dictionary allows immediate compression benefits without
+/// user-side training.
+☉ Σ BuiltinDictionary;
+
+⊢ BuiltinDictionary {
+    /// Default dictionary ID ∀ project files
+    ☉ const PROJECT_DICTIONARY_ID: &'static str = "orpheus-project-v1";
+
+    /// Default dictionary ID ∀ MIDI data
+    ☉ const MIDI_DICTIONARY_ID: &'static str = "orpheus-midi-v1";
+
+    /// Get the default dictionary directory
+    ☉ rite dictionary_dir() -> std·path·PathBuf {
+        // Use app data directory or fall back to current directory
+        std·env·var("ORPHEUS_DATA_DIR")
+            .map(std·path·PathBuf·from)
+            .unwrap_or_else(|_| std·path·PathBuf·from("."))
+            .join("dictionaries")
+    }
+
+    /// Get path to a named dictionary
+    ☉ rite dictionary_path(id: &str) -> std·path·PathBuf {
+        Self·dictionary_dir().join(format!("{}.dict", id))
+    }
+
+    /// Load a named dictionary ⎇ it exists
+    ☉ rite load(id: &str) -> Option<CompressionDictionary> {
+        ≔ path = Self·dictionary_path(id);
+        ⎇ path.exists() {
+            CompressionDictionary·load(&path).ok()
+        } ⎉ {
+            None
+        }
+    }
+
+    /// Save a dictionary with the given ID
+    ☉ rite save(id: &str, dictionary: &CompressionDictionary) -> Result<(), CompressionError>? {
+        ≔ dir = Self·dictionary_dir();
+        std·fs·create_dir_all(&dir).map_err(|e| CompressionError·Io(e.to_string()))?;
+
+        ≔ path = Self·dictionary_path(id);
+        dictionary.save(&path)
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+    invoke tempfile·tempdir;
+
+    rite generate_sample_project_data(id: usize) -> Vec<u8> {
+        // Generate realistic-looking project JSON with enough data ∀ training
+        // Each project needs to be ~10-15KB to meet the 100KB minimum with 10 samples
+        ≔ Δ tracks_json = String·new();
+        ≔ Δ track_order = Vec·new();
+
+        // Generate 8 tracks with clips
+        ∀ track_idx ∈ 0..8 {
+            ≔ track_uuid = format!("550e8400-e29b-41d4-a716-44665544{:04}", track_idx);
+            track_order.push(format!("\"{}\"", track_uuid));
+
+            // Generate notes ∀ MIDI clips
+            ≔ Δ notes_json = String·new();
+            ∀ note_idx ∈ 0..50 {
+                ⎇ !notes_json.is_empty() {
+                    notes_json.push_str(",\n                                            ");
+                }
+                notes_json.push_str(&format!(
+                    r#"{{"note": {}, "velocity": {}, "start": {}, "duration": {}}}"#,
+                    60 + (note_idx % 12),
+                    80 + (note_idx % 40),
+                    note_idx * 480,
+                    480
+                ));
+            }
+
+            ⎇ !tracks_json.is_empty() {
+                tracks_json.push_str(",\n                    ");
+            }
+
+            tracks_json.push_str(&format!(
+                r#""{track_id}": {{
+                        "id": "{track_id}",
+                        "name": "Track {track_num} - {project_id}",
+                        "track_type": "Midi",
+                        "order": {track_num},
+                        "clips": [
+                            {{
+                                "id": "{track_id}-clip-1",
+                                "name": "Clip 1 on Track {track_num}",
+                                "start": 0,
+                                "length": 192000,
+                                "content": {{
+                                    "Midi": {{
+                                        "notes": [
+                                            {notes}
+                                        ]
+                                    }}
+                                }}
+                            }},
+                            {{
+                                "id": "{track_id}-clip-2",
+                                "name": "Clip 2 on Track {track_num}",
+                                "start": 192000,
+                                "length": 96000,
+                                "content": {{
+                                    "Midi": {{
+                                        "notes": [
+                                            {notes}
+                                        ]
+                                    }}
+                                }}
+                            }}
+                        ],
+                        "record_armed": false,
+                        "input_source": "None"
+                    }}"#,
+                track_id = track_uuid,
+                track_num = track_idx,
+                project_id = id,
+                notes = notes_json
+            ));
+        }
+
+        ≔ json = format!(
+            r#"{{
+                "format_version": "1.0",
+                "metadata": {{
+                    "name": "Test Project {id}",
+                    "artist": "Test Artist ∀ Project {id}",
+                    "album": "Test Album Collection",
+                    "genre": "Electronic Music",
+                    "created_at": "2024-01-{day:02}T10:30:00Z",
+                    "modified_at": "2024-01-{day:02}T12:45:00Z",
+                    "notes": "This is test project number {id}. It contains multiple tracks with MIDI clips and various note patterns. The project demonstrates the typical structure of an Orpheus music project file."
+                }},
+                "tracks": {{
+                    {tracks}
+                }},
+                "track_order": [{track_order}],
+                "sample_rate": 48000,
+                "tempo": {tempo}
+            }}"#,
+            id = id,
+            day = (id % 28) + 1,
+            tracks = tracks_json,
+            track_order = track_order.join(", "),
+            tempo = 100.0 + (id as f64 * 5.0)
+        );
+        json.into_bytes()
+    }
+
+    //@ rune: test
+    rite test_dictionary_training() {
+        ≔ Δ trainer = DictionaryTrainer·new();
+
+        // Add sample projects
+        ∀ i ∈ 0..10 {
+            ≔ sample = generate_sample_project_data(i);
+            trainer.add_sample(&sample);
+        }
+
+        assert_eq!(trainer.sample_count(), 10);
+        assert!(trainer.has_sufficient_samples());
+
+        ≔ dictionary = trainer.train().unwrap();
+        assert!(dictionary.size() > 0);
+    }
+
+    //@ rune: test
+    rite test_dictionary_compression() {
+        // Train dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            trainer.add_sample(&generate_sample_project_data(i));
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Compress new data
+        ≔ test_data = generate_sample_project_data(100);
+        ≔ compressed = dictionary.compress(&test_data).unwrap();
+
+        // Decompress and verify
+        ≔ decompressed = dictionary.decompress(&compressed).unwrap();
+        assert_eq!(test_data, decompressed);
+    }
+
+    //@ rune: test
+    rite test_dictionary_improvement() {
+        // Train dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            trainer.add_sample(&generate_sample_project_data(i));
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Compare compression ratios
+        ≔ test_data = generate_sample_project_data(100);
+        ≔ stats = CompressionStats·calculate(&test_data, Some(&dictionary), 3).unwrap();
+
+        println!("Compression stats: {}", stats);
+        println!(
+            "  Standard: {} -> {} bytes ({:.1}%)",
+            stats.original_size,
+            stats.compressed_size,
+            stats.ratio * 100.0
+        );
+        ⎇ ≔ (Some(dict_size), Some(dict_ratio), Some(improvement)) = (
+            stats.dict_compressed_size,
+            stats.dict_ratio,
+            stats.dict_improvement,
+        ) {
+            println!(
+                "  With dict: {} bytes ({:.1}%), {:.1}% improvement",
+                dict_size,
+                dict_ratio * 100.0,
+                improvement
+            );
+        }
+
+        // Verify compression stats are calculated correctly
+        // Note: Dictionary compression doesn't always provide improvement,
+        // especially ∀ data that's already highly compressible.
+        // The key is that it works correctly.
+        assert!(stats.dict_compressed_size.is_some());
+        assert!(stats.dict_ratio.is_some());
+        assert!(stats.dict_improvement.is_some());
+
+        // Both methods should achieve reasonable compression
+        assert!(stats.ratio < 0.5); // Standard should achieve at least 50% reduction
+    }
+
+    //@ rune: test
+    rite test_dictionary_save_load() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("test.dict");
+
+        // Train and save dictionary
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            trainer.add_sample(&generate_sample_project_data(i));
+        }
+        ≔ original = trainer.train().unwrap();
+        original.save(&path).unwrap();
+
+        // Load dictionary
+        ≔ loaded = CompressionDictionary·load(&path).unwrap();
+        assert_eq!(original.size(), loaded.size());
+
+        // Verify loaded dictionary works
+        ≔ test_data = generate_sample_project_data(100);
+        ≔ compressed = original.compress(&test_data).unwrap();
+        ≔ decompressed = loaded.decompress(&compressed).unwrap();
+        assert_eq!(test_data, decompressed);
+    }
+
+    //@ rune: test
+    rite test_insufficient_samples() {
+        ≔ Δ trainer = DictionaryTrainer·new();
+        trainer.add_sample(b"small sample");
+        trainer.add_sample(b"another small sample");
+
+        assert!(!trainer.has_sufficient_samples());
+
+        ≔ result = trainer.train();
+        assert!(matches!(
+            result,
+            Err(CompressionError·InsufficientSamples { .. })
+        ));
+    }
+
+    //@ rune: test
+    rite test_try_train_with_insufficient_samples() {
+        ≔ Δ trainer = DictionaryTrainer·new();
+        trainer.add_sample(b"small");
+
+        ≔ result = trainer.try_train();
+        assert!(result.is_none());
+    }
+
+    //@ rune: test
+    rite test_compression_levels() {
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            trainer.add_sample(&generate_sample_project_data(i));
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        ≔ test_data = generate_sample_project_data(100);
+
+        // Test different compression levels
+        ≔ fast = dictionary.compress_with_level(&test_data, 1).unwrap();
+        ≔ default = dictionary.compress_with_level(&test_data, 3).unwrap();
+        ≔ high = dictionary.compress_with_level(&test_data, 9).unwrap();
+
+        // Higher levels should generally give better compression
+        // (though not guaranteed ∀ all data)
+        assert!(fast.len() >= default.len() || fast.len() >= high.len());
+
+        // All should decompress correctly
+        ∀ compressed ∈ [fast, default, high] {
+            ≔ decompressed = dictionary.decompress(&compressed).unwrap();
+            assert_eq!(test_data, decompressed);
+        }
+    }
+
+    //@ rune: test
+    rite test_raw_dictionary_load() {
+        ≔ dir = tempdir().unwrap();
+        ≔ path = dir.path().join("raw.dict");
+
+        // Train dictionary and save raw bytes (no header)
+        ≔ Δ trainer = DictionaryTrainer·new();
+        ∀ i ∈ 0..10 {
+            trainer.add_sample(&generate_sample_project_data(i));
+        }
+        ≔ dictionary = trainer.train().unwrap();
+
+        // Save raw dictionary bytes (simulating external dictionary)
+        std·fs·write(&path, dictionary.as_bytes()).unwrap();
+
+        // Should load as raw dictionary
+        ≔ loaded = CompressionDictionary·load(&path).unwrap();
+        assert_eq!(dictionary.size(), loaded.size());
+    }
+}

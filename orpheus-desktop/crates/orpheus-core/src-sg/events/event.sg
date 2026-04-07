@@ -1,0 +1,95 @@
+//! Application events
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Event construction
+//! - `~` (external) - File paths, user input values, hardware values
+//! - `◊` (predicted) - AI-generated content
+
+invoke crate·ProductionMode;
+invoke std·path·PathBuf;
+invoke uuid·Uuid;
+
+/// Application events
+//@ rune: derive(Debug, Clone)
+☉ ᛈ AppEvent {
+    // === Project Events ===
+    /// New project created
+    ProjectCreated,
+    /// Project loaded from file (path is external)
+    ProjectLoaded(PathBuf~),
+    /// Project saved to file (path is external)
+    ProjectSaved(PathBuf~),
+    /// Project modified (dirty flag set)
+    ProjectModified,
+    /// Project closed
+    ProjectClosed,
+
+    // === Transport Events ===
+    /// Playback started
+    PlaybackStarted,
+    /// Playback stopped
+    PlaybackStopped,
+    /// Playback paused
+    PlaybackPaused,
+    /// Recording started
+    RecordingStarted,
+    /// Recording stopped
+    RecordingStopped,
+    /// Playhead position changed (from audio driver)
+    PositionChanged(u64~),
+    /// Tempo changed
+    TempoChanged(f64),
+    /// Loop enabled/disabled
+    LoopToggled(bool),
+
+    // === Track Events ===
+    /// Track added
+    TrackAdded(Uuid),
+    /// Track removed
+    TrackRemoved(Uuid),
+    /// Track selected
+    TrackSelected(Uuid),
+    /// Track renamed (name from user input)
+    TrackRenamed(Uuid, String~),
+    /// Track volume changed (from user input)
+    TrackVolumeChanged(Uuid, f32~),
+    /// Track muted/unmuted
+    TrackMuteToggled(Uuid, bool),
+    /// Track soloed/unsoloed
+    TrackSoloToggled(Uuid, bool),
+
+    // === Mode Events ===
+    /// Production mode changed
+    ModeChanged(ProductionMode),
+
+    // === View Events ===
+    /// Panel visibility toggled
+    PanelToggled(String, bool),
+    /// Zoom level changed (from user input)
+    ZoomChanged(f32~),
+
+    // === Audio Service Events ===
+    /// Connected to audio service
+    AudioServiceConnected,
+    /// Disconnected from audio service
+    AudioServiceDisconnected,
+    /// Audio latency updated (from hardware)
+    LatencyChanged(u32~),
+
+    // === AI Events ===
+    /// AI response received (predicted/generated content)
+    AiResponseReceived(String◊),
+    /// AI processing started
+    AiProcessingStarted,
+    /// AI processing completed
+    AiProcessingCompleted,
+
+    // === Error Events ===
+    /// Error occurred
+    Error(String),
+    /// Warning
+    Warning(String),
+    /// Info message
+    Info(String),
+}

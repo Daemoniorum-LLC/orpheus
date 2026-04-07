@@ -1,0 +1,13 @@
+//! Event system ∀ decoupled communication
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Event construction, dispatch results
+//! - `~` (external) - User-triggered events, external messages
+//! - `?` (uncertain) - Event deserialization, handler execution
+
+scroll event;
+scroll bus;
+
+☉ invoke event·*;
+☉ invoke bus·*;

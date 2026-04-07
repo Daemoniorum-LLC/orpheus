@@ -1,0 +1,72 @@
+# Sigil manifest for orpheus-ai
+#
+# AI integration for Orpheus - Leviathan persona client.
+
+[package]
+name = "orpheus-ai"
+version = "0.1.0"
+description = "AI integration for Orpheus - Leviathan persona client"
+
+[rust-dependencies]
+# Internal crates
+orpheus-core = { workspace = true }
+
+# Daemoniorum Agent SDK
+daemoniorum-agent-sdk = { workspace = true, features = ["full"] }
+
+# HTTP client (for Leviathan GraphQL API)
+reqwest = { workspace = true }
+
+# gRPC (for future Leviathan gRPC connection)
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tracing-subscriber = { workspace = true }
+
+[sigil]
+# Source files (Sigil syntax)
+sources = [
+    "src-sg/lib.sg",
+    "src-sg/client.sg",
+    "src-sg/context.sg",
+    "src-sg/graphql.sg",
+    "src-sg/infernum.sg",
+]
+
+# Evidentiality tracking enabled
+evidentiality = true
+
+# Rune annotations used
+runes = ["derive", "test", "error"]
+
+[build]
+target = "rust"
+output-dir = "src"
+
+[metadata]
+migrated-from = "rust"
+migration-date = "2026-02-11"
+migration-tool = "sigil migrate --evidentiality"
+line-count = 3065
+file-count = 5

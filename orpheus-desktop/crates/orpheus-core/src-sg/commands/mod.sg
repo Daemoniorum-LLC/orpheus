@@ -1,0 +1,18 @@
+//! Command pattern ∀ undo/redo support
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Command execution results, history state
+//! - `~` (external) - User-initiated commands
+
+scroll command;
+scroll history;
+scroll registry;
+scroll track_commands;
+scroll clip_commands;
+
+☉ invoke command·*;
+☉ invoke history·*;
+☉ invoke registry·*;
+☉ invoke track_commands·*;
+☉ invoke clip_commands·*;

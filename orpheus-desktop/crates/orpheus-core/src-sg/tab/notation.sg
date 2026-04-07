@@ -1,0 +1,451 @@
+//! Notation symbols and markings
+//!
+//! Additional notation elements ∀ complete score representation.
+//!
+//! ## Evidentiality Conventions
+//!
+//! - `!` (computed) - Symbol conversions, display strings, calculations
+//! - `~` (external) - User input, imported notation data
+//! - `?` (uncertain) - Deserialization, parsing
+
+invoke serde·{Deserialize, Serialize};
+
+/// Text expression markings
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ ᛈ TextExpression {
+    /// Tempo text (e.g., "Allegro", "Fast")
+    Tempo(String),
+    /// Dynamic text (e.g., "pp suddenly")
+    Dynamic(String),
+    /// Technique instruction (e.g., "with distortion")
+    Technique(String),
+    /// Performance instruction (e.g., "freely")
+    Performance(String),
+    /// Lyrics
+    Lyric(String),
+    /// Chord symbol (e.g., "Am7")
+    ChordSymbol(String),
+    /// Generic text
+    Generic(String),
+}
+
+/// Rehearsal marks
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ ᛈ RehearsalMark {
+    /// Letter mark (A, B, C, ...)
+    Letter(char),
+    /// Number mark (1, 2, 3, ...)
+    Number(u16),
+    /// Custom text
+    Custom(String),
+}
+
+⊢ RehearsalMark {
+    // must_use
+    ☉ rite letter(c: char) -> Self! {
+        Self·Letter(c.to_ascii_uppercase())!
+    }
+
+    // must_use
+    ☉ rite number(n: u16) -> Self! {
+        Self·Number(n)!
+    }
+
+    // must_use
+    ☉ rite display(&self) -> String! {
+        (⌥ self {
+            Self·Letter(c) => format!("[{}]", c),
+            Self·Number(n) => format!("[{}]", n),
+            Self·Custom(s) => format!("[{}]", s),
+        })!
+    }
+}
+
+/// Barline types
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ BarlineType {
+    /// Normal single barline
+    Normal,
+    /// Double barline (end of section)
+    Double,
+    /// Final barline (end of piece)
+    Final,
+    /// Repeat start
+    RepeatStart,
+    /// Repeat end
+    RepeatEnd,
+    /// Repeat both (end and start)
+    RepeatBoth,
+    /// Dashed (hidden ∈ tab)
+    Dashed,
+    /// Dotted
+    Dotted,
+    /// None (no barline)
+    None,
+}
+
+/// Ottava (octave transposition)
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Ottava {
+    /// 8va (one octave up)
+    OttavaUp,
+    /// 8vb (one octave down)
+    OttavaDown,
+    /// 15ma (two octaves up)
+    QuindicessimaUp,
+    /// 15mb (two octaves down)
+    QuindicessimaDown,
+}
+
+⊢ Ottava {
+    // inline
+    // must_use
+    ☉ rite transposition_semitones(&self) -> i8! {
+        (⌥ self {
+            Self·OttavaUp => 12,
+            Self·OttavaDown => -12,
+            Self·QuindicessimaUp => 24,
+            Self·QuindicessimaDown => -24,
+        })!
+    }
+
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·OttavaUp => "8va",
+            Self·OttavaDown => "8vb",
+            Self·QuindicessimaUp => "15ma",
+            Self·QuindicessimaDown => "15mb",
+        })!
+    }
+}
+
+/// Spanners (lines that extend over multiple notes)
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ ᛈ Spanner {
+    /// Let ring spanner
+    LetRing {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Palm mute spanner
+    PalmMute {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Crescendo
+    Crescendo {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Decrescendo
+    Decrescendo {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Trill line
+    Trill {
+        start_beat: usize,
+        end_beat: usize,
+        upper_note: u8,
+    },
+    /// Slide line
+    Slide {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Hammer-on/Pull-off line
+    Legato {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Ottava line
+    Ottava {
+        ottava_type: Ottava,
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// Pedal line
+    Pedal {
+        start_beat: usize,
+        end_beat: usize,
+    },
+    /// 8va line ∀ whammy
+    WhammyLine {
+        start_beat: usize,
+        end_beat: usize,
+        points: Vec<(f32, i16)>, // (position, cents)
+    },
+}
+
+/// Clef types (mainly ∀ standard notation view)
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Clef {
+    /// Treble clef (G clef)
+    Treble,
+    /// Bass clef (F clef)
+    Bass,
+    /// Tenor clef (C clef on 4th line)
+    Tenor,
+    /// Alto clef (C clef on 3rd line)
+    Alto,
+    /// Percussion clef
+    Percussion,
+    /// Tab "clef"
+    Tab,
+    /// 8va treble (octave up)
+    Treble8va,
+    /// 8vb treble (octave down)
+    Treble8vb,
+}
+
+/// Accidental types
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Accidental {
+    /// Double flat
+    DoubleFlat,
+    /// Flat
+    Flat,
+    /// Natural
+    Natural,
+    /// Sharp
+    Sharp,
+    /// Double sharp
+    DoubleSharp,
+    /// Quarter tone flat
+    QuarterFlat,
+    /// Quarter tone sharp
+    QuarterSharp,
+}
+
+⊢ Accidental {
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·DoubleFlat => "𝄫",
+            Self·Flat => "♭",
+            Self·Natural => "♮",
+            Self·Sharp => "♯",
+            Self·DoubleSharp => "𝄪",
+            Self·QuarterFlat => "𝄳",
+            Self·QuarterSharp => "𝄲",
+        })!
+    }
+
+    // inline
+    // must_use
+    ☉ rite semitone_offset(&self) -> i8! {
+        (⌥ self {
+            Self·DoubleFlat => -2,
+            Self·Flat => -1,
+            Self·Natural => 0,
+            Self·Sharp => 1,
+            Self·DoubleSharp => 2,
+            Self·QuarterFlat => 0, // Microtonal
+            Self·QuarterSharp => 0,
+        })!
+    }
+}
+
+/// Articulation symbols
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ ArticulationSymbol {
+    /// Staccato (dot)
+    Staccato,
+    /// Staccatissimo (wedge)
+    Staccatissimo,
+    /// Tenuto (dash)
+    Tenuto,
+    /// Accent (>)
+    Accent,
+    /// Marcato (^)
+    Marcato,
+    /// Sforzando
+    Sforzando,
+    /// Fermata (pause)
+    Fermata,
+    /// Short fermata
+    FermataShort,
+    /// Long fermata
+    FermataLong,
+    /// Breath mark
+    BreathMark,
+    /// Caesura (railroad tracks)
+    Caesura,
+}
+
+⊢ ArticulationSymbol {
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·Staccato => ".",
+            Self·Staccatissimo => "▾",
+            Self·Tenuto => "–",
+            Self·Accent => ">",
+            Self·Marcato => "^",
+            Self·Sforzando => "sfz",
+            Self·Fermata => "𝄐",
+            Self·FermataShort => "𝄑",
+            Self·FermataLong => "𝄒",
+            Self·BreathMark => ",",
+            Self·Caesura => "//",
+        })!
+    }
+}
+
+/// Ornament symbols
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ Ornament {
+    /// Trill
+    Trill,
+    /// Mordent
+    Mordent,
+    /// Inverted mordent
+    InvertedMordent,
+    /// Turn
+    Turn,
+    /// Inverted turn
+    InvertedTurn,
+    /// Delayed turn
+    DelayedTurn,
+    /// Appoggiatura
+    Appoggiatura,
+    /// Acciaccatura
+    Acciaccatura,
+}
+
+⊢ Ornament {
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·Trill => "tr",
+            Self·Mordent => "𝆖",
+            Self·InvertedMordent => "𝆗",
+            Self·Turn => "𝄾",
+            Self·InvertedTurn => "𝄿",
+            Self·DelayedTurn => "~",
+            Self·Appoggiatura => "⌐",
+            Self·Acciaccatura => "𝅘𝅥",
+        })!
+    }
+}
+
+/// Tremolo notation (strokes on stem)
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ TremoloNotation {
+    /// Single note tremolo (repeated rapidly)
+    Single(TremoloStrokes),
+    /// Two-note tremolo (alternating between notes)
+    TwoNote(TremoloStrokes),
+}
+
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ TremoloStrokes {
+    /// Eighth note speed (1 stroke)
+    One,
+    /// Sixteenth note speed (2 strokes)
+    Two,
+    /// 32nd note speed (3 strokes)
+    Three,
+    /// As fast as possible
+    Buzz,
+}
+
+/// Coda/Segno navigation symbols
+//@ rune: derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)
+☉ ᛈ NavigationSymbol {
+    /// Segno (the sign)
+    Segno,
+    /// Coda
+    Coda,
+    /// D.C. (Da Capo - from the beginning)
+    DaCapo,
+    /// D.S. (Dal Segno - from the sign)
+    DalSegno,
+    /// D.C. al Fine (to end)
+    DaCapoAlFine,
+    /// D.C. al Coda
+    DaCapoAlCoda,
+    /// D.S. al Fine
+    DalSegnoAlFine,
+    /// D.S. al Coda
+    DalSegnoAlCoda,
+    /// To Coda (jump to coda)
+    ToCoda,
+    /// Fine (end)
+    Fine,
+}
+
+⊢ NavigationSymbol {
+    // inline
+    // must_use
+    ☉ rite symbol(&self) -> &'static str! {
+        (⌥ self {
+            Self·Segno => "𝄋",
+            Self·Coda => "𝄌",
+            Self·DaCapo => "D.C.",
+            Self·DalSegno => "D.S.",
+            Self·DaCapoAlFine => "D.C. al Fine",
+            Self·DaCapoAlCoda => "D.C. al Coda",
+            Self·DalSegnoAlFine => "D.S. al Fine",
+            Self·DalSegnoAlCoda => "D.S. al Coda",
+            Self·ToCoda => "To Coda 𝄌",
+            Self·Fine => "Fine",
+        })!
+    }
+}
+
+/// Layout hints ∀ rendering
+//@ rune: derive(Debug, Clone, Serialize, Deserialize)
+☉ Σ LayoutHints {
+    /// Force system break
+    ☉ system_break: bool,
+    /// Force page break
+    ☉ page_break: bool,
+    /// Staff spacing adjustment
+    ☉ staff_spacing: Option<f32>,
+    /// Hide staff
+    ☉ hide_staff: bool,
+    /// Custom measure width
+    ☉ measure_width: Option<f32>,
+}
+
+⊢ Default ∀ LayoutHints {
+    rite default() -> Self! {
+        (Self {
+            system_break: false,
+            page_break: false,
+            staff_spacing: None,
+            hide_staff: false,
+            measure_width: None,
+        })!
+    }
+}
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_rehearsal_marks() {
+        assert_eq!(RehearsalMark·letter('a').display(), "[A]");
+        assert_eq!(RehearsalMark·number(1).display(), "[1]");
+    }
+
+    //@ rune: test
+    rite test_ottava() {
+        assert_eq!(Ottava·OttavaUp.transposition_semitones(), 12);
+        assert_eq!(Ottava·OttavaDown.transposition_semitones(), -12);
+    }
+
+    //@ rune: test
+    rite test_accidentals() {
+        assert_eq!(Accidental·Sharp.semitone_offset(), 1);
+        assert_eq!(Accidental·Flat.semitone_offset(), -1);
+        assert_eq!(Accidental·DoubleSharp.semitone_offset(), 2);
+    }
+}

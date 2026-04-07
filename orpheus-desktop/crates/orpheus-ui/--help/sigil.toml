@@ -1,0 +1,23 @@
+[package]
+name = "--help"
+version = "0.1.0"
+authors = []
+description = ""
+
+# Evidentiality configuration
+[evidentiality]
+# Require explicit evidence markers on function boundaries
+strict = false
+# Default evidence level ∀ unmarked external data
+external_default = "reported"
+
+[dependencies]
+# Add dependencies here
+# example = { git = "https://github.com/user/example" }
+
+[dev-dependencies]
+# Add test dependencies here
+
+[[bin]]
+name = "--help"
+path = "src/main.sigil"

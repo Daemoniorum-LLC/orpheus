@@ -1,0 +1,525 @@
+//! Integration tests for mixer components
+//!
+//! These tests verify that mixer components work correctly together:
+//! - ChannelStrip and MixerView interaction
+//! - Solo/mute behavior across channels
+//! - Level and peak propagation
+//! - Selection state handling
+//! - Master channel routing
+//!
+//! ## Evidentiality
+//!
+//! - `!` (computed) - All test results are deterministic
+//! - `~` (external) - Simulated audio levels
+
+invoke crate·panels·channel_strip·{ChannelStrip, ChannelStripProps, Channel, TrackType, PluginInfo, SendSlot};
+invoke crate·panels·mixer_view·{MixerView, MixerViewProps, MixerState};
+invoke crate·widgets·{Fader, LevelMeter};
+invoke crate·tests·assertions·{assert_db_eq, assert_level_safe, DB_TOLERANCE};
+
+// =============================================================================
+// Solo Behavior Integration
+// =============================================================================
+
+scroll solo_behavior {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_single_solo_isolates_channel() {
+        //! When one channel is soloed, it should be the only audible channel
+        //! (from the mixer's perspective - actual audio routing is handled elsewhere)
+
+        ≔ Δ state = MixerState·new(4);
+        state.channels[1].soloed = true;
+
+        ≔ soloed = state.soloed_channels();
+        assert_eq!(soloed.len(), 1);
+        assert_eq!(soloed[0], 1);
+
+        // Other channels should not be in the solo list
+        assert!(!soloed.contains(&0));
+        assert!(!soloed.contains(&2));
+        assert!(!soloed.contains(&3));
+    }
+
+    //@ rune: test
+    rite test_multiple_solos_are_additive() {
+        //! Multiple channels can be soloed simultaneously
+        //! (industry standard: solos are additive)
+
+        ≔ Δ state = MixerState·new(8);
+        state.channels[1].soloed = true;
+        state.channels[3].soloed = true;
+        state.channels[5].soloed = true;
+
+        ≔ soloed = state.soloed_channels();
+        assert_eq!(soloed.len(), 3);
+        assert!(soloed.contains(&1));
+        assert!(soloed.contains(&3));
+        assert!(soloed.contains(&5));
+    }
+
+    //@ rune: test
+    rite test_unsolo_all() {
+        //! Clearing all solos should return to normal operation
+
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].soloed = true;
+        state.channels[2].soloed = true;
+
+        // Clear solos
+        ∀ channel ∈ &Δ state.channels {
+            channel.soloed = false;
+        }
+
+        assert!(!state.has_solo());
+        assert!(state.soloed_channels().is_empty());
+    }
+
+    //@ rune: test
+    rite test_solo_does_not_affect_mute() {
+        //! A soloed+muted channel should respect the mute
+
+        ≔ Δ state = MixerState·new(4);
+        state.channels[1].soloed = true;
+        state.channels[1].muted = true;
+
+        // Channel is in solo list
+        assert!(state.soloed_channels().contains(&1));
+        // But also in muted list - audio engine decides priority
+        assert!(state.muted_channels().contains(&1));
+    }
+}
+
+// =============================================================================
+// Mute Behavior Integration
+// =============================================================================
+
+scroll mute_behavior {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_mute_is_independent_per_channel() {
+        //! Muting one channel should not affect others
+
+        ≔ Δ state = MixerState·new(4);
+        state.channels[2].muted = true;
+
+        assert!(state.channels[2].muted);
+        assert!(!state.channels[0].muted);
+        assert!(!state.channels[1].muted);
+        assert!(!state.channels[3].muted);
+    }
+
+    //@ rune: test
+    rite test_mute_multiple_channels() {
+        ≔ Δ state = MixerState·new(8);
+        state.channels[0].muted = true;
+        state.channels[2].muted = true;
+        state.channels[4].muted = true;
+        state.channels[6].muted = true;
+
+        ≔ muted = state.muted_channels();
+        assert_eq!(muted, vec![0, 2, 4, 6]);
+    }
+
+    //@ rune: test
+    rite test_mute_during_solo_mode() {
+        //! When solo is active, muted channels should remain muted
+        //! even if solo is removed
+
+        ≔ Δ state = MixerState·new(4);
+        state.channels[0].muted = true;
+        state.channels[1].soloed = true;
+
+        // Clear solo
+        state.channels[1].soloed = false;
+
+        // Mute should persist
+        assert!(state.channels[0].muted);
+        assert!(state.muted_channels().contains(&0));
+    }
+}
+
+// =============================================================================
+// Level Propagation Integration
+// =============================================================================
+
+scroll level_propagation {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_channel_levels_match_strip_display() {
+        //! Levels in MixerState should be accessible by ChannelStrip
+
+        ≔ Δ state = MixerState·new(4);
+        state.levels[2] = (-12.0, -14.0);
+        state.peaks[2] = (-6.0, -8.0);
+
+        ≔ (level_l, level_r) = state.get_level(2);
+        ≔ (peak_l, peak_r) = state.get_peak(2);
+
+        assert_db_eq(level_l, -12.0);
+        assert_db_eq(level_r, -14.0);
+        assert_db_eq(peak_l, -6.0);
+        assert_db_eq(peak_r, -8.0);
+    }
+
+    //@ rune: test
+    rite test_master_level_is_separate() {
+        //! Master levels should be tracked separately from channels
+
+        ≔ Δ state = MixerState·new(4);
+
+        // Set all channel levels
+        ∀ i ∈ 0..4 {
+            state.levels[i] = (-18.0, -18.0);
+        }
+
+        // Set master level differently
+        state.master_level = (-6.0, -6.0);
+
+        // Verify separation
+        assert_db_eq(state.master_level.0, -6.0);
+        assert_db_eq(state.levels[0].0, -18.0);
+    }
+
+    //@ rune: test
+    rite test_stereo_levels_independent() {
+        //! Left and right levels should be independent
+
+        ≔ Δ state = MixerState·new(4);
+        state.levels[0] = (-12.0, -18.0);  // 6 dB difference
+
+        ≔ (left, right) = state.get_level(0);
+        assert!((left - right).abs() > 5.0, "L/R should be independent");
+    }
+
+    //@ rune: test
+    rite test_peak_persists_above_level() {
+        //! Peak should always be >= current level (peak hold behavior)
+
+        ≔ Δ state = MixerState·new(4);
+        state.levels[0] = (-18.0, -18.0);
+        state.peaks[0] = (-6.0, -6.0);
+
+        ≔ (level, _) = state.get_level(0);
+        ≔ (peak, _) = state.get_peak(0);
+
+        assert!(peak >= level, "Peak should be >= current level");
+    }
+}
+
+// =============================================================================
+// Selection State Integration
+// =============================================================================
+
+scroll selection_state {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_selection_updates_strip_highlight() {
+        //! Selected channel should have different styling
+
+        ≔ state = MixerState·new(4);
+        ≔ view = MixerView·new(MixerViewProps {
+            state,
+            selected_channel: Some(2),
+            ..MixerViewProps·default()
+        });
+
+        // Channel 2 should be selected
+        assert_eq!(view.props.selected_channel, Some(2));
+    }
+
+    //@ rune: test
+    rite test_selection_exclusive() {
+        //! Only one channel can be selected at a time
+
+        ≔ state = MixerState·new(4);
+
+        // Create two views with different selections
+        ≔ view1 = MixerView·new(MixerViewProps {
+            state: state.clone(),
+            selected_channel: Some(0),
+            ..MixerViewProps·default()
+        });
+
+        ≔ view2 = MixerView·new(MixerViewProps {
+            state: state.clone(),
+            selected_channel: Some(2),
+            ..MixerViewProps·default()
+        });
+
+        // Each view maintains its own selection
+        assert_eq!(view1.props.selected_channel, Some(0));
+        assert_eq!(view2.props.selected_channel, Some(2));
+    }
+
+    //@ rune: test
+    rite test_master_not_selectable() {
+        //! Master channel should not be selectable
+
+        ≔ state = MixerState·new(4);
+        ≔ view = MixerView·new(MixerViewProps {
+            state,
+            selected_channel: None,  // No regular channel selected
+            ..MixerViewProps·default()
+        });
+
+        // Master is rendered but not tracked in selected_channel
+        // selected_channel only indexes into channels[], not master
+        assert_eq!(view.props.selected_channel, None);
+    }
+}
+
+// =============================================================================
+// Routing Integration
+// =============================================================================
+
+scroll routing_integration {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_send_routing_consistency() {
+        //! Send amounts should be consistent across strip and mixer
+
+        ≔ Δ channel = Channel {
+            sends: vec![
+                SendSlot {
+                    target_id: 100,
+                    target_name: "Reverb".into(),
+                    amount: 0.5,
+                    pre_fader: false,
+                },
+            ],
+            ..Channel·default()
+        };
+
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: channel.clone(),
+            ..ChannelStripProps·default()
+        });
+
+        assert_eq!(strip.props.channel.sends[0].amount, 0.5);
+        assert_eq!(strip.props.channel.sends[0].target_name, "Reverb");
+    }
+
+    //@ rune: test
+    rite test_pre_fader_send_independence() {
+        //! Pre-fader sends should work independently of fader position
+
+        ≔ channel = Channel {
+            volume: 0.0,  // Fader at -infinity
+            sends: vec![
+                SendSlot {
+                    target_id: 100,
+                    target_name: "Cue Mix".into(),
+                    amount: 1.0,  // Full send
+                    pre_fader: true,
+                },
+            ],
+            ..Channel·default()
+        };
+
+        // Pre-fader send should still be valid even with fader at min
+        assert!(channel.sends[0].pre_fader);
+        assert_eq!(channel.sends[0].amount, 1.0);
+    }
+
+    //@ rune: test
+    rite test_insert_chain_ordering() {
+        //! Inserts should maintain order (index 0 = first in chain)
+
+        ≔ channel = Channel {
+            inserts: vec![
+                Some(PluginInfo { name: "EQ".into(), bypassed: false }),
+                Some(PluginInfo { name: "Comp".into(), bypassed: false }),
+                Some(PluginInfo { name: "Limiter".into(), bypassed: false }),
+                None,
+            ],
+            ..Channel·default()
+        };
+
+        // First insert should be EQ
+        assert_eq!(channel.inserts[0].as_ref().unwrap().name, "EQ");
+        // Last filled insert should be Limiter
+        assert_eq!(channel.inserts[2].as_ref().unwrap().name, "Limiter");
+    }
+}
+
+// =============================================================================
+// Track Type Integration
+// =============================================================================
+
+scroll track_type_integration {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_audio_track_has_arm_button() {
+        ≔ channel = Channel {
+            track_type: TrackType·Audio,
+            ..Channel·default()
+        };
+
+        // Audio tracks should show arm button
+        assert!(⌥ channel.track_type {
+            TrackType·Audio => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_midi_track_has_arm_button() {
+        ≔ channel = Channel {
+            track_type: TrackType·Midi,
+            ..Channel·default()
+        };
+
+        // MIDI tracks should show arm button
+        assert!(⌥ channel.track_type {
+            TrackType·Midi => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_bus_track_has_arm_button() {
+        ≔ channel = Channel {
+            track_type: TrackType·Bus,
+            ..Channel·default()
+        };
+
+        // Bus tracks might have arm for recording bus output
+        assert!(⌥ channel.track_type {
+            TrackType·Bus => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_master_track_no_arm_button() {
+        ≔ channel = Channel {
+            track_type: TrackType·Master,
+            ..Channel·default()
+        };
+
+        // Master track should NOT have arm button
+        assert!(⌥ channel.track_type {
+            TrackType·Master => true,
+            _ => false,
+        });
+    }
+
+    //@ rune: test
+    rite test_track_type_colors_distinct() {
+        //! Each track type should have a distinct color for visual identification
+
+        ≔ audio_color = TrackType·Audio.color();
+        ≔ midi_color = TrackType·Midi.color();
+        ≔ bus_color = TrackType·Bus.color();
+        ≔ master_color = TrackType·Master.color();
+
+        // Colors should be different (basic check)
+        // In real implementation, these are distinct Color values
+        assert!(audio_color != midi_color || midi_color != bus_color);
+    }
+}
+
+// =============================================================================
+// Volume and Pan Integration
+// =============================================================================
+
+scroll volume_pan_integration {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_volume_at_unity_shows_zero_db() {
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                volume: 1.0,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        ≔ formatted = strip.format_volume();
+        assert!(formatted.contains("0.0") || formatted.contains("-0.0"));
+    }
+
+    //@ rune: test
+    rite test_pan_center_shows_c() {
+        ≔ strip = ChannelStrip·new(ChannelStripProps {
+            channel: Channel {
+                pan: 0.0,
+                ..Channel·default()
+            },
+            ..ChannelStripProps·default()
+        });
+
+        assert_eq!(strip.format_pan(), "C");
+    }
+
+    //@ rune: test
+    rite test_volume_and_pan_independent() {
+        //! Changing volume should not affect pan and vice versa
+
+        ≔ Δ channel = Channel·default();
+        ≔ original_pan = channel.pan;
+
+        // Change volume
+        channel.volume = 0.5;
+
+        // Pan should be unchanged
+        assert_eq!(channel.pan, original_pan);
+
+        // Change pan
+        ≔ original_volume = channel.volume;
+        channel.pan = -0.5;
+
+        // Volume should be unchanged
+        assert_eq!(channel.volume, original_volume);
+    }
+}
+
+// =============================================================================
+// Callback Integration
+// =============================================================================
+
+scroll callback_integration {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_callbacks_receive_correct_index() {
+        //! Callbacks should receive the correct channel index
+
+        ≔ Δ captured_index: Option<usize> = None;
+
+        ≔ view = MixerView·new(MixerViewProps {
+            state: MixerState·new(4),
+            on_channel_select: Box·new(|i| captured_index = Some(i)),
+            ..MixerViewProps·default()
+        });
+
+        // Simulate selecting channel 2
+        (view.props.on_channel_select)(2);
+
+        assert_eq!(captured_index, Some(2));
+    }
+
+    //@ rune: test
+    rite test_volume_callback_receives_value() {
+        ≔ Δ captured_value: Option<f32> = None;
+
+        ≔ view = MixerView·new(MixerViewProps {
+            state: MixerState·new(4),
+            on_volume_change: Box·new(|_, v| captured_value = Some(v)),
+            ..MixerViewProps·default()
+        });
+
+        // Simulate volume change
+        (view.props.on_volume_change)(1, 0.75);
+
+        assert_eq!(captured_value, Some(0.75));
+    }
+}

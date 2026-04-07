@@ -1,0 +1,566 @@
+//! VST3 FFI Definitions
+//!
+//! Raw C type definitions from the VST3 SDK specification.
+//! These are manually defined to avoid external dependencies.
+
+// allow(non_camel_case_types)
+// allow(non_snake_case)
+// allow(dead_code)
+
+invoke super·com·*;
+invoke std·ffi·c_void;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Maximum length ∀ strings ∈ VST3
+☉ const VST3_MAX_STRING_LEN: usize = 128;
+
+/// Bus directions
+☉ const K_INPUT: i32 = 0;
+☉ const K_OUTPUT: i32 = 1;
+
+/// Bus types
+☉ const K_MAIN: i32 = 0;
+☉ const K_AUX: i32 = 1;
+
+/// Media types
+☉ const K_AUDIO: i32 = 0;
+☉ const K_EVENT: i32 = 1;
+
+/// IO modes
+☉ const K_SIMPLE: i32 = 0;
+☉ const K_ADVANCED: i32 = 1;
+☉ const K_OFFLINE_PROCESSING: i32 = 2;
+
+/// Component flags
+☉ const K_DISTRIBUTABLE: u32 = 1 << 0;
+☉ const K_SIMPLE_MODE_SUPPORTED: u32 = 1 << 1;
+
+/// Symbolic sample sizes
+☉ const K_SAMPLE_32: i32 = 0;
+☉ const K_SAMPLE_64: i32 = 1;
+
+/// Process modes
+☉ const K_REALTIME: i32 = 0;
+☉ const K_PREFETCH: i32 = 1;
+☉ const K_OFFLINE: i32 = 2;
+
+/// Event types
+☉ const K_NOTE_ON_EVENT: u16 = 0;
+☉ const K_NOTE_OFF_EVENT: u16 = 1;
+☉ const K_DATA_EVENT: u16 = 2;
+☉ const K_POLY_PRESSURE_EVENT: u16 = 3;
+☉ const K_NOTE_EXPRESSION_VALUE_EVENT: u16 = 4;
+☉ const K_NOTE_EXPRESSION_TEXT_EVENT: u16 = 5;
+☉ const K_CHORD_EVENT: u16 = 6;
+☉ const K_SCALE_EVENT: u16 = 7;
+☉ const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = 65535;
+
+// =============================================================================
+// Audio Types
+// =============================================================================
+
+/// Sample rate type
+☉ type SampleRate = f64;
+
+/// Sample32 type (single precision)
+☉ type Sample32 = f32;
+
+/// Sample64 type (double precision)
+☉ type Sample64 = f64;
+
+/// Parameter ID type
+☉ type ParamID = u32;
+
+/// Parameter value type
+☉ type ParamValue = f64;
+
+/// Note ID type
+☉ type NoteID = i32;
+
+/// Speaker arrangement (bit field)
+☉ type SpeakerArrangement = u64;
+
+// =============================================================================
+// Process Data
+// =============================================================================
+
+/// Audio bus buffers
+// repr(C)
+☉ Σ AudioBusBuffers {
+    /// Number of channels ∈ the bus
+    ☉ numChannels: i32,
+    /// Silent flags ∀ each channel (bit field)
+    ☉ silenceFlags: u64,
+    /// Channel buffer pointers (32-bit)
+    ☉ channelBuffers32: *Δ *Δ Sample32,
+    /// Channel buffer pointers (64-bit)
+    ☉ channelBuffers64: *Δ *Δ Sample64,
+}
+
+⊢ Default ∀ AudioBusBuffers {
+    rite default() -> Self {
+        Self {
+            numChannels: 0,
+            silenceFlags: 0,
+            channelBuffers32: std·ptr·null_mut(),
+            channelBuffers64: std·ptr·null_mut(),
+        }
+    }
+}
+
+/// Process setup information
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ Σ ProcessSetup {
+    /// Process mode (realtime, prefetch, offline)
+    ☉ processMode: i32,
+    /// Symbolic sample size (32 or 64 bit)
+    ☉ symbolicSampleSize: i32,
+    /// Maximum block size
+    ☉ maxSamplesPerBlock: i32,
+    /// Sample rate
+    ☉ sampleRate: SampleRate,
+}
+
+⊢ Default ∀ ProcessSetup {
+    rite default() -> Self {
+        Self {
+            processMode: K_REALTIME,
+            symbolicSampleSize: K_SAMPLE_32,
+            maxSamplesPerBlock: 1024,
+            sampleRate: 44100.0,
+        }
+    }
+}
+
+/// Process context (musical context, transport info)
+// repr(C)
+☉ Σ ProcessContext {
+    /// State flags
+    ☉ state: u32,
+    /// Sample rate
+    ☉ sampleRate: SampleRate,
+    /// Project time ∈ samples
+    ☉ projectTimeSamples: i64,
+    /// System time ∈ nanoseconds
+    ☉ systemTime: i64,
+    /// Continuous time samples (bar counter)
+    ☉ continousTimeSamples: i64,
+    /// Project time ∈ music (quarters)
+    ☉ projectTimeMusic: f64,
+    /// Bar position ∈ music (quarters)
+    ☉ barPositionMusic: f64,
+    /// Cycle start ∈ music (quarters)
+    ☉ cycleStartMusic: f64,
+    /// Cycle end ∈ music (quarters)
+    ☉ cycleEndMusic: f64,
+    /// Tempo ∈ BPM
+    ☉ tempo: f64,
+    /// Time signature numerator
+    ☉ timeSigNumerator: i32,
+    /// Time signature denominator
+    ☉ timeSigDenominator: i32,
+    /// Chord info
+    ☉ chord: i32,
+    /// SMPTE offset subframes
+    ☉ smpteOffsetSubframes: i32,
+    /// Frame rate
+    ☉ frameRate: u32,
+    /// Samples to next clock
+    ☉ samplesToNextClock: i32,
+}
+
+⊢ Default ∀ ProcessContext {
+    rite default() -> Self {
+        Self {
+            state: 0,
+            sampleRate: 44100.0,
+            projectTimeSamples: 0,
+            systemTime: 0,
+            continousTimeSamples: 0,
+            projectTimeMusic: 0.0,
+            barPositionMusic: 0.0,
+            cycleStartMusic: 0.0,
+            cycleEndMusic: 0.0,
+            tempo: 120.0,
+            timeSigNumerator: 4,
+            timeSigDenominator: 4,
+            chord: 0,
+            smpteOffsetSubframes: 0,
+            frameRate: 0,
+            samplesToNextClock: 0,
+        }
+    }
+}
+
+/// Process data passed to audio processor
+// repr(C)
+☉ Σ ProcessData {
+    /// Processing mode flags
+    ☉ processMode: i32,
+    /// Symbolic sample size
+    ☉ symbolicSampleSize: i32,
+    /// Number of samples to process
+    ☉ numSamples: i32,
+    /// Number of input audio buses
+    ☉ numInputs: i32,
+    /// Number of output audio buses
+    ☉ numOutputs: i32,
+    /// Input audio buffers
+    ☉ inputs: *Δ AudioBusBuffers,
+    /// Output audio buffers
+    ☉ outputs: *Δ AudioBusBuffers,
+    /// Input parameter changes
+    ☉ inputParameterChanges: *Δ c_void, // IParameterChanges*
+    /// Output parameter changes
+    ☉ outputParameterChanges: *Δ c_void, // IParameterChanges*
+    /// Input events
+    ☉ inputEvents: *Δ c_void, // IEventList*
+    /// Output events
+    ☉ outputEvents: *Δ c_void, // IEventList*
+    /// Process context
+    ☉ processContext: *Δ ProcessContext,
+}
+
+⊢ Default ∀ ProcessData {
+    rite default() -> Self {
+        Self {
+            processMode: K_REALTIME,
+            symbolicSampleSize: K_SAMPLE_32,
+            numSamples: 0,
+            numInputs: 0,
+            numOutputs: 0,
+            inputs: std·ptr·null_mut(),
+            outputs: std·ptr·null_mut(),
+            inputParameterChanges: std·ptr·null_mut(),
+            outputParameterChanges: std·ptr·null_mut(),
+            inputEvents: std·ptr·null_mut(),
+            outputEvents: std·ptr·null_mut(),
+            processContext: std·ptr·null_mut(),
+        }
+    }
+}
+
+// =============================================================================
+// Bus Info
+// =============================================================================
+
+/// Bus information
+// repr(C)
+☉ Σ BusInfo {
+    /// Media type (audio or event)
+    ☉ mediaType: i32,
+    /// Direction (input or output)
+    ☉ direction: i32,
+    /// Number of channels (audio) or events (event)
+    ☉ channelCount: i32,
+    /// Bus name (UTF-16)
+    ☉ name: [u16; 128],
+    /// Bus type (main or aux)
+    ☉ busType: i32,
+    /// Flags
+    ☉ flags: u32,
+}
+
+⊢ Default ∀ BusInfo {
+    rite default() -> Self {
+        Self {
+            mediaType: K_AUDIO,
+            direction: K_INPUT,
+            channelCount: 2,
+            name: [0; 128],
+            busType: K_MAIN,
+            flags: 0,
+        }
+    }
+}
+
+/// Routing info
+// repr(C)
+☉ Σ RoutingInfo {
+    /// Media type
+    ☉ mediaType: i32,
+    /// Bus index
+    ☉ busIndex: i32,
+    /// Channel
+    ☉ channel: i32,
+}
+
+// =============================================================================
+// Events
+// =============================================================================
+
+/// Note-on event
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ Σ NoteOnEvent {
+    /// Channel index
+    ☉ channel: i16,
+    /// Pitch (MIDI note number)
+    ☉ pitch: i16,
+    /// Tuning offset ∈ cents
+    ☉ tuning: f32,
+    /// Velocity (0.0 - 1.0)
+    ☉ velocity: f32,
+    /// Length ∈ samples (0 = no note-off)
+    ☉ length: i32,
+    /// Note ID
+    ☉ noteId: NoteID,
+}
+
+/// Note-off event
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ Σ NoteOffEvent {
+    /// Channel index
+    ☉ channel: i16,
+    /// Pitch (MIDI note number)
+    ☉ pitch: i16,
+    /// Velocity (0.0 - 1.0)
+    ☉ velocity: f32,
+    /// Note ID
+    ☉ noteId: NoteID,
+    /// Tuning offset ∈ cents
+    ☉ tuning: f32,
+}
+
+/// Data event (SysEx, etc.)
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ Σ DataEvent {
+    /// Size of data
+    ☉ size: u32,
+    /// Data type
+    ☉ type_: u32,
+    /// Data pointer
+    ☉ bytes: *const u8,
+}
+
+/// Polyphonic pressure event
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ Σ PolyPressureEvent {
+    /// Channel
+    ☉ channel: i16,
+    /// Pitch
+    ☉ pitch: i16,
+    /// Pressure (0.0 - 1.0)
+    ☉ pressure: f32,
+    /// Note ID
+    ☉ noteId: NoteID,
+}
+
+/// Event union
+// repr(C)
+//@ rune: derive(Clone, Copy)
+☉ union EventData {
+    ☉ noteOn: NoteOnEvent,
+    ☉ noteOff: NoteOffEvent,
+    ☉ data: DataEvent,
+    ☉ polyPressure: PolyPressureEvent,
+}
+
+/// Event structure
+// repr(C)
+☉ Σ Event {
+    /// Bus index
+    ☉ busIndex: i32,
+    /// Sample offset
+    ☉ sampleOffset: i32,
+    /// Position ∈ PPQ
+    ☉ ppqPosition: f64,
+    /// Event flags
+    ☉ flags: u16,
+    /// Event type
+    ☉ type_: u16,
+    /// Event data
+    ☉ data: EventData,
+}
+
+// =============================================================================
+// Component Interfaces
+// =============================================================================
+
+/// IPluginBase VTable
+// repr(C)
+☉ Σ IPluginBaseVtbl {
+    /// Base FUnknown vtable
+    ☉ unknown: FUnknownVtbl,
+    /// Initialize the plugin
+    ☉ initialize: unsafe extern "system" rite(this: *Δ c_void, context: *Δ c_void) -> tresult,
+    /// Terminate the plugin
+    ☉ terminate: unsafe extern "system" rite(this: *Δ c_void) -> tresult,
+}
+
+/// IPluginBase interface
+// repr(C)
+☉ Σ IPluginBase {
+    ☉ vtbl: *const IPluginBaseVtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IPluginBase {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+/// IComponent VTable
+// repr(C)
+☉ Σ IComponentVtbl {
+    /// Base IPluginBase vtable
+    ☉ base: IPluginBaseVtbl,
+    /// Get controller class ID
+    ☉ getControllerClassId:
+        unsafe extern "system" rite(this: *Δ c_void, classId: *Δ TUID) -> tresult,
+    /// Set IO mode
+    ☉ setIoMode: unsafe extern "system" rite(this: *Δ c_void, mode: i32) -> tresult,
+    /// Get bus count
+    ☉ getBusCount:
+        unsafe extern "system" rite(this: *Δ c_void, type_: i32, dir: i32) -> i32,
+    /// Get bus info
+    ☉ getBusInfo: unsafe extern "system" rite(
+        this: *Δ c_void,
+        type_: i32,
+        dir: i32,
+        index: i32,
+        bus: *Δ BusInfo,
+    ) -> tresult,
+    /// Get routing info
+    ☉ getRoutingInfo: unsafe extern "system" rite(
+        this: *Δ c_void,
+        inInfo: *Δ RoutingInfo,
+        outInfo: *Δ RoutingInfo,
+    ) -> tresult,
+    /// Activate/deactivate bus
+    ☉ activateBus: unsafe extern "system" rite(
+        this: *Δ c_void,
+        type_: i32,
+        dir: i32,
+        index: i32,
+        state: u8,
+    ) -> tresult,
+    /// Set active state
+    ☉ setActive: unsafe extern "system" rite(this: *Δ c_void, state: u8) -> tresult,
+    /// Set/get state
+    ☉ setState: unsafe extern "system" rite(this: *Δ c_void, state: *Δ c_void) -> tresult,
+    /// Get state
+    ☉ getState: unsafe extern "system" rite(this: *Δ c_void, state: *Δ c_void) -> tresult,
+}
+
+/// IComponent interface
+// repr(C)
+☉ Σ IComponent {
+    ☉ vtbl: *const IComponentVtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IComponent {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+/// IAudioProcessor VTable
+// repr(C)
+☉ Σ IAudioProcessorVtbl {
+    /// Base FUnknown vtable
+    ☉ unknown: FUnknownVtbl,
+    /// Set bus arrangements
+    ☉ setBusArrangements: unsafe extern "system" rite(
+        this: *Δ c_void,
+        inputs: *Δ SpeakerArrangement,
+        numIns: i32,
+        outputs: *Δ SpeakerArrangement,
+        numOuts: i32,
+    ) -> tresult,
+    /// Get bus arrangement
+    ☉ getBusArrangement: unsafe extern "system" rite(
+        this: *Δ c_void,
+        dir: i32,
+        index: i32,
+        arr: *Δ SpeakerArrangement,
+    ) -> tresult,
+    /// Can process sample size
+    ☉ canProcessSampleSize:
+        unsafe extern "system" rite(this: *Δ c_void, symbolicSampleSize: i32) -> tresult,
+    /// Get latency samples
+    ☉ getLatencySamples: unsafe extern "system" rite(this: *Δ c_void) -> u32,
+    /// Setup processing
+    ☉ setupProcessing:
+        unsafe extern "system" rite(this: *Δ c_void, setup: *Δ ProcessSetup) -> tresult,
+    /// Set processing state
+    ☉ setProcessing: unsafe extern "system" rite(this: *Δ c_void, state: u8) -> tresult,
+    /// Process audio
+    ☉ process: unsafe extern "system" rite(this: *Δ c_void, data: *Δ ProcessData) -> tresult,
+    /// Get tail samples
+    ☉ getTailSamples: unsafe extern "system" rite(this: *Δ c_void) -> u32,
+}
+
+/// IAudioProcessor interface
+// repr(C)
+☉ Σ IAudioProcessor {
+    ☉ vtbl: *const IAudioProcessorVtbl,
+}
+
+⊢ AsRef<FUnknown> ∀ IAudioProcessor {
+    rite as_ref(&self) -> &FUnknown {
+        unsafe { &*(self as *const _ as *const FUnknown) }
+    }
+}
+
+// =============================================================================
+// Module Entry
+// =============================================================================
+
+/// Module entry function type
+☉ type GetPluginFactoryFn = unsafe extern "C" rite() -> *Δ IPluginFactory;
+
+/// Module init function type (platform-specific)
+☉ type InitModuleFn = unsafe extern "C" rite() -> bool;
+
+/// Module exit function type (platform-specific)
+☉ type ExitModuleFn = unsafe extern "C" rite() -> bool;
+
+// cfg(test)
+scroll tests {
+    invoke super·*;
+
+    //@ rune: test
+    rite test_constants() {
+        assert_eq!(K_INPUT, 0);
+        assert_eq!(K_OUTPUT, 1);
+        assert_eq!(K_AUDIO, 0);
+        assert_eq!(K_EVENT, 1);
+    }
+
+    //@ rune: test
+    rite test_process_setup_default() {
+        ≔ setup = ProcessSetup·default();
+        assert_eq!(setup.processMode, K_REALTIME);
+        assert_eq!(setup.sampleRate, 44100.0);
+    }
+
+    //@ rune: test
+    rite test_audio_bus_buffers_default() {
+        ≔ buffers = AudioBusBuffers·default();
+        assert_eq!(buffers.numChannels, 0);
+        assert!(buffers.channelBuffers32.is_null());
+    }
+
+    //@ rune: test
+    rite test_process_data_default() {
+        ≔ data = ProcessData·default();
+        assert_eq!(data.numSamples, 0);
+        assert!(data.inputs.is_null());
+        assert!(data.outputs.is_null());
+    }
+
+    //@ rune: test
+    rite test_bus_info_default() {
+        ≔ info = BusInfo·default();
+        assert_eq!(info.mediaType, K_AUDIO);
+        assert_eq!(info.channelCount, 2);
+    }
+}
